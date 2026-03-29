@@ -9,7 +9,6 @@ import { mockData } from './data/mockData';
 function App() {
   const [structure, setStructure] = useState({});
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
   const [activeSubspecialty, setActiveSubspecialty] = useState(null);
 
   // Re-implement basic mock parser just in case Drive API fails without a key
@@ -47,7 +46,6 @@ function App() {
       } catch (err) {
         console.error("Failed to load data from Drive, using mock", err);
         setStructure(fallbackMockData());
-        setError("Could not load from Google Drive. Showing sample data.");
       } finally {
         setLoading(false);
       }
