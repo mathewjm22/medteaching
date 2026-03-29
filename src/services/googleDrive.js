@@ -1,3 +1,4 @@
+import { fetchYouTubeVideoDetails, extractYouTubeVideoId } from './youtube';
 // src/services/googleDrive.js
 
 const API_KEY = import.meta.env.VITE_GOOGLE_API || import.meta.env.VITE_GOOGLE_API_KEY || '';
@@ -138,6 +139,13 @@ const formatDriveFileToCard = async (file) => {
     if (extractedUrl.includes('youtube.com') || extractedUrl.includes('youtu.be')) {
       type = 'video';
       url = extractedUrl;
+      const videoId = extractYouTubeVideoId(extractedUrl);
+      if (videoId) {
+        const details = await fetchYouTubeVideoDetails(videoId);
+        if (details && details.title) {
+          title = details.title; // Override the .txt file's name with YouTube title
+        }
+      }
     } else if (extractedUrl) {
       // It's a generic link
       type = 'article';
