@@ -3,7 +3,7 @@ import { Routes, Route, HashRouter } from 'react-router-dom';
 import MainLayout from './layouts/MainLayout';
 import Home from './pages/Home';
 import ConditionDetail from './pages/ConditionDetail';
-import { fetchSheetData, parseDataStructure } from './services/googleSheets';
+import { fetchFolderStructure } from './services/googleDrive';
 import { mockData } from './data/mockData';
 
 function App() {
@@ -12,24 +12,42 @@ function App() {
   const [error, setError] = useState(null);
   const [activeSubspecialty, setActiveSubspecialty] = useState(null);
 
+  // Re-implement basic mock parser just in case Drive API fails without a key
+  const fallbackMockData = () => {
+    const struct = {};
+    mockData.forEach(item => {
+      const sub = item.Subspecialty;
+      const cond = item.Condition;
+      if (!struct[sub]) struct[sub] = {};
+      if (!struct[sub][cond]) struct[sub][cond] = { _folderId: 'mock', items: [] };
+      struct[sub][cond].items.push({
+        type: item.Type || 'link',
+        title: item.Title,
+        url: item.Content_URL,
+        notes: item.Notes
+      });
+    });
+    return struct;
+  };
+
   useEffect(() => {
     const loadData = async () => {
       try {
         setLoading(true);
-        // Try fetching real data if URL is set in env
-        const rawData = await fetchSheetData();
         
-        if (rawData && rawData.length > 0) {
-          setStructure(parseDataStructure(rawData));
+        // Fetch folder hierarchy from Google Drive
+        const driveStructure = await fetchFolderStructure();
+
+        if (Object.keys(driveStructure).length > 0) {
+          setStructure(driveStructure);
         } else {
-          // Fallback to mock data
-          console.log("Using mock data");
-          setStructure(parseDataStructure(mockData));
+          console.log("Using mock data (Drive returned empty or no key)");
+          setStructure(fallbackMockData());
         }
       } catch (err) {
-        console.error("Failed to load data, using mock", err);
-        setStructure(parseDataStructure(mockData));
-        setError("Could not load from Google Sheets. Showing sample data.");
+        console.error("Failed to load data from Drive, using mock", err);
+        setStructure(fallbackMockData());
+        setError("Could not load from Google Drive. Showing sample data.");
       } finally {
         setLoading(false);
       }

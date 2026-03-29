@@ -1,19 +1,49 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import Masonry from 'react-masonry-css';
 import Card from '../components/Card';
+import { fetchConditionFiles } from '../services/googleDrive';
 
 const ConditionDetail = ({ structure }) => {
   const { subspecialty, condition } = useParams();
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(false);
 
   const decodedSub = decodeURIComponent(subspecialty);
   const decodedCond = decodeURIComponent(condition);
 
-  const conditionData = structure[decodedSub]?.[decodedCond] || [];
+  const conditionData = structure[decodedSub]?.[decodedCond];
 
   useEffect(() => {
     window.scrollTo(0, 0);
-  }, [subspecialty, condition]);
+
+    const loadFiles = async () => {
+      if (!conditionData || !conditionData._folderId) {
+        // Mock data or missing folder
+        setItems(conditionData?.items || []);
+        return;
+      }
+
+      // If we already fetched the items, use them
+      if (conditionData.items && conditionData.items.length > 0) {
+        setItems(conditionData.items);
+        return;
+      }
+
+      setLoading(true);
+      try {
+        const fetchedItems = await fetchConditionFiles(conditionData._folderId);
+        conditionData.items = fetchedItems; // Cache them
+        setItems(fetchedItems);
+      } catch (error) {
+        console.error("Failed to load files:", error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadFiles();
+  }, [subspecialty, condition, conditionData]);
 
   const breakpointColumnsObj = {
     default: 3,
@@ -21,7 +51,15 @@ const ConditionDetail = ({ structure }) => {
     768: 1
   };
 
-  if (conditionData.length === 0) {
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-[50vh]">
+        <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-blue-600"></div>
+      </div>
+    );
+  }
+
+  if (items.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center h-[70vh] text-slate-500 space-y-4">
         <svg className="w-16 h-16 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -29,7 +67,7 @@ const ConditionDetail = ({ structure }) => {
         </svg>
         <h2 className="text-2xl font-semibold text-slate-700">No Content Yet</h2>
         <p className="text-center max-w-md">
-          Add rows to your Google Sheet for "{decodedCond}" under "{decodedSub}" to see them appear here as interactive cards.
+          Add files to the Google Drive folder for "{decodedCond}" under "{decodedSub}" to see them appear here as interactive cards.
         </p>
       </div>
     );
@@ -47,8 +85,8 @@ const ConditionDetail = ({ structure }) => {
         className="my-masonry-grid"
         columnClassName="my-masonry-grid_column"
       >
-        {conditionData.map((item, index) => (
-          <Card key={index} item={item} />
+        {items.map((item, index) => (
+          <Card key={item.id || index} item={item} />
         ))}
       </Masonry>
     </div>
