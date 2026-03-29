@@ -36,9 +36,9 @@ const Card = ({ item }) => {
             {type || 'Resource'}
           </span>
         </div>
-
+        
         <h3 className="font-bold text-slate-800 text-lg mb-2 leading-tight">{title}</h3>
-
+        
         {t === 'video' && url && (
           <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black mt-3 mb-4">
             {url.includes('youtube.com/embed') ? (

@@ -15,8 +15,8 @@ const Sidebar = ({ structure, activeSubspecialty, setActiveSubspecialty, onNavig
       </div>
 
       <div className="p-4">
-        <NavLink
-          to="/"
+        <NavLink 
+          to="/" 
           onClick={onNavigate}
           className={({ isActive }) => `flex items-center space-x-2 py-2 px-3 rounded-md transition-colors ${isActive ? 'bg-blue-600 text-white' : 'text-slate-300 hover:bg-slate-800'}`}
         >
@@ -40,7 +40,7 @@ const Sidebar = ({ structure, activeSubspecialty, setActiveSubspecialty, onNavig
                 <ChevronRight size={16} className="text-slate-500" />
               )}
             </button>
-
+            
             {activeSubspecialty === subspecialty && (
               <div className="pl-6 mt-1 space-y-1">
                 {Object.keys(structure[subspecialty]).map((condition) => (
@@ -48,7 +48,7 @@ const Sidebar = ({ structure, activeSubspecialty, setActiveSubspecialty, onNavig
                     key={condition}
                     to={`/condition/${encodeURIComponent(subspecialty)}/${encodeURIComponent(condition)}`}
                     onClick={onNavigate}
-                    className={({ isActive }) =>
+                    className={({ isActive }) => 
                       `block py-1.5 px-3 rounded-md text-sm transition-colors ${
                         isActive ? 'bg-blue-600/20 text-blue-400 font-medium' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
                       }`

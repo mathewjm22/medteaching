@@ -18,7 +18,7 @@ function App() {
         setLoading(true);
         // Try fetching real data if URL is set in env
         const rawData = await fetchSheetData();
-
+        
         if (rawData && rawData.length > 0) {
           setStructure(parseDataStructure(rawData));
         } else {
@@ -50,13 +50,13 @@ function App() {
   return (
     <HashRouter>
       <Routes>
-        <Route
-          path="/"
+        <Route 
+          path="/" 
           element={
-            <MainLayout
-              structure={structure}
-              activeSubspecialty={activeSubspecialty}
-              setActiveSubspecialty={setActiveSubspecialty}
+            <MainLayout 
+              structure={structure} 
+              activeSubspecialty={activeSubspecialty} 
+              setActiveSubspecialty={setActiveSubspecialty} 
             />
           }
         >

@@ -21,12 +21,12 @@ const Home = () => {
         </div>
         <div className="p-8">
           <p className="text-lg text-slate-700 mb-6 leading-relaxed">
-            The start of the LIC represents the beginning of the foundational clinical medicine experience for most students.
+            The start of the LIC represents the beginning of the foundational clinical medicine experience for most students. 
             <span className="font-semibold text-blue-700"> Set clear expectations and a road map of progression.</span>
           </p>
 
           <div className="space-y-8 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-300 before:to-transparent">
-
+            
             {/* Phase 1 */}
             <div className="relative flex items-center justify-between md:justify-normal md:odd:flex-row-reverse group is-active">
                 <div className="flex items-center justify-center w-10 h-10 rounded-full border border-white bg-slate-300 group-[.is-active]:bg-blue-500 text-slate-500 group-[.is-active]:text-white shadow shrink-0 md:order-1 md:group-odd:-translate-x-1/2 md:group-even:translate-x-1/2">
@@ -38,8 +38,8 @@ const Home = () => {
                         <div className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded-full">Basics</div>
                     </div>
                     <div className="text-slate-600">
-                        Focus on the basics of medicine (orientation to the clinic, proficient histories, physical exams).
-                        Start to work on differentials and illness scripts. Expect students to be slow in the beginning.
+                        Focus on the basics of medicine (orientation to the clinic, proficient histories, physical exams). 
+                        Start to work on differentials and illness scripts. Expect students to be slow in the beginning. 
                         It is normal for a new student to see <span className="font-semibold text-slate-800">1-2 patients per ½ day</span>.
                     </div>
                 </div>
@@ -56,7 +56,7 @@ const Home = () => {
                         <div className="text-xs font-medium text-purple-600 bg-purple-50 px-2 py-1 rounded-full">Gaps</div>
                     </div>
                     <div className="text-slate-600">
-                        Focus on specific knowledge gaps. Students should be comfortable with clinic flow and can start targeting
+                        Focus on specific knowledge gaps. Students should be comfortable with clinic flow and can start targeting 
                         weaknesses in specific subspecialties or procedures.
                     </div>
                 </div>
@@ -73,8 +73,8 @@ const Home = () => {
                         <div className="text-xs font-medium text-green-600 bg-green-50 px-2 py-1 rounded-full">Advanced</div>
                     </div>
                     <div className="text-slate-600">
-                        Student should be ready for more advanced clinical rotations. This includes strong differentials,
-                        making basic plans, placing/pending orders, following up with patients.
+                        Student should be ready for more advanced clinical rotations. This includes strong differentials, 
+                        making basic plans, placing/pending orders, following up with patients. 
                         Efficiency should increase to <span className="font-semibold text-slate-800">3-4 patients per session</span>.
                     </div>
                 </div>
