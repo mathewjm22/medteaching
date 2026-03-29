@@ -1,5 +1,6 @@
 import React from 'react';
 import { PlayCircle, FileText, BrainCircuit, Image as ImageIcon, MessageSquare } from 'lucide-react';
+import { getYouTubeEmbedUrl } from '../services/youtube';
 
 const Card = ({ item }) => {
   const { type, title, url, notes } = item;
@@ -41,17 +42,17 @@ const Card = ({ item }) => {
         
         {t === 'video' && url && (
           <div className="relative w-full aspect-video rounded-lg overflow-hidden bg-black mt-3 mb-4">
-            {url.includes('youtube.com/embed') ? (
+            {(url.includes('youtube.com') || url.includes('youtu.be')) ? (
                <iframe
                className="absolute top-0 left-0 w-full h-full"
-               src={url}
+               src={getYouTubeEmbedUrl(url)}
                title="YouTube video player"
                allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
                allowFullScreen
              ></iframe>
             ) : (
               <a href={url} target="_blank" rel="noopener noreferrer" className="flex items-center justify-center w-full h-full bg-slate-100 text-blue-600 hover:underline">
-                View Video Externally
+                Play Video
               </a>
             )}
           </div>
