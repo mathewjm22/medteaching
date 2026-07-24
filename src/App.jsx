@@ -188,6 +188,110 @@ export default function App() {
     }
   };
 
+  // ===== Client-side note extractor =====
+  // Strips a clinical note down to just the fields needed for teaching content generation.
+  // Runs locally (no API call) to keep AI prompts small.
+  const extractEssentialNote = (note) => {
+    if (!note) return "";
+
+    // Sections we want to KEEP (in priority order)
+    const keepSections = [
+      "OVERALL ASSESSMENT",
+      "ROS",
+      "PAST MEDICAL HISTORY",
+      "EXAM",
+      "ASSESSMENT",  // per-problem assessments
+      "PLAN",        // per-problem plans
+      "DIAGNOSTICS", // labs/imaging
+      "ALLERGIES",
+    ];
+
+    // Sections we DROP entirely (bureaucratic/duplicative)
+    const dropSections = [
+      "COMPREHENSIVE MEDICATION MANAGEMENT",
+      "MED REC",
+      "CURRENT ACTIVE MEDICATIONS",
+      "RECENTLY DISCONTINUED",
+      "SIGNIFICANT HISTORICAL MEDICATIONS",
+      "MEDICATION RECONCILIATION",
+      "PREVENTIVE MEDICINE",
+      "SURGICAL HISTORY",
+      "FAMILY HISTORY",
+      "MILITARY HISTORY",
+      "CARE COORDINATION",
+      "ITEMS TO TAKE CARE OF",
+      "ICD CODES",
+      "UPDATES/RECENT VISITS",
+      "SOCIAL",   // keep the inline SOCIAL: line under ROS but drop the full block
+    ];
+
+    // Split on section headers (lines of "======" then a title, OR ALL-CAPS lines followed by content)
+    const lines = note.split("\n");
+    const chunks = [];
+    let currentTitle = "PREAMBLE";
+    let currentLines = [];
+
+    const isHeaderLine = (line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return false;
+      // Match ALL-CAPS section titles (possibly with parentheses, slashes, ampersands)
+      return /^[A-Z][A-Z0-9 /&\-,()]{3,}$/.test(trimmed) && trimmed.length < 80;
+    };
+
+    const isDividerLine = (line) => /^={5,}$/.test(line.trim());
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      // If we see a divider line, the next non-divider line is the section title
+      if (isDividerLine(line)) {
+        // Look ahead for the title
+        let titleIdx = i + 1;
+        while (titleIdx < lines.length && (isDividerLine(lines[titleIdx]) || !lines[titleIdx].trim())) titleIdx++;
+        if (titleIdx < lines.length && isHeaderLine(lines[titleIdx])) {
+          // Save current chunk
+          if (currentLines.length > 0) chunks.push({ title: currentTitle, content: currentLines.join("\n").trim() });
+          currentTitle = lines[titleIdx].trim();
+          currentLines = [];
+          // Skip past the title and any trailing divider
+          i = titleIdx;
+          while (i + 1 < lines.length && isDividerLine(lines[i + 1])) i++;
+          continue;
+        }
+      }
+      // Plain ALL-CAPS header (no divider)
+      if (isHeaderLine(line) && !line.includes(":")) {
+        if (currentLines.length > 0) chunks.push({ title: currentTitle, content: currentLines.join("\n").trim() });
+        currentTitle = line.trim();
+        currentLines = [];
+        continue;
+      }
+      currentLines.push(line);
+    }
+    if (currentLines.length > 0) chunks.push({ title: currentTitle, content: currentLines.join("\n").trim() });
+
+    // Filter: keep only relevant sections
+    const filtered = chunks.filter(ch => {
+      const t = ch.title.toUpperCase();
+      // Explicit drop
+      if (dropSections.some(d => t.includes(d))) return false;
+      // Per-problem sections (ALL CAPS problem names) — keep these; they contain ASSESSMENT + PLAN
+      // Explicit keep
+      if (keepSections.some(k => t.includes(k))) return true;
+      // Default: keep if it's not obviously a boilerplate section
+      // (per-problem sections are usually the diagnosis in caps)
+      if (ch.content.includes("ASSESSMENT") || ch.content.includes("PLAN") || ch.content.length > 200) return true;
+      return false;
+    });
+
+    // Reassemble with clear section separators
+    let result = filtered.map(ch => `## ${ch.title}\n${ch.content}`).join("\n\n");
+
+    // Additional cleanup: collapse whitespace, drop empty lines runs
+    result = result.replace(/\n{3,}/g, "\n\n").trim();
+
+    return result;
+  };
+
   // ===== Generate PubMed search queries via AI, then fetch papers =====
   const fetchPubmedForCase = async () => {
     if (!aiEnabled) return null;
@@ -290,7 +394,9 @@ Return ONLY valid JSON (no markdown fences):
     {"parameter": "lab name", "trend": "brief description", "teachingPoint": "what this teaches"}
   ]
 }`;
-      const user = `Clinical note (de-identified):\n\n${clinicalNote}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
+      const extractedForAnalysis = extractEssentialNote(clinicalNote);
+      console.log(`[analyzeNote] Note: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
+      const user = `Clinical note (de-identified):\n\n${extractedForAnalysis}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
       const response = await callAi(sys, user, 4000);
       const parsed = extractJson(response);
 
@@ -397,18 +503,23 @@ Return ONLY valid JSON (no markdown fences):
     };
     const includedSections = Object.entries(focusFilters).filter(([_, v]) => v).map(([k]) => k).join(", ");
 
-    // Truncate note and evidence to keep prompts small
-    const MAX_NOTE = 8000;
-    const notePayload = clinicalNote.length > MAX_NOTE
-      ? clinicalNote.slice(0, MAX_NOTE) + "\n[note truncated]"
-      : clinicalNote;
+// Extract only the essential sections from the note (client-side, no API call)
+    const extracted = extractEssentialNote(clinicalNote);
+    console.log(`[extractEssentialNote] Original: ${clinicalNote.length} chars → Extracted: ${extracted.length} chars (${Math.round(100 * extracted.length / clinicalNote.length)}%)`);
 
-    const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
-    const MAX_EVIDENCE = 2500;
+    // Belt-and-suspenders: still hard-cap in case extraction leaves too much
+    const MAX_NOTE = 6000;
+    const notePayload = extracted.length > MAX_NOTE
+      ? extracted.slice(0, MAX_NOTE) + "\n[truncated]"
+      : extracted;
+
+const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+    const MAX_EVIDENCE_TOTAL = 4000;  // ~1000 tokens total across all sources
+    const evidencePerSource = filledSources.length > 0 ? Math.floor(MAX_EVIDENCE_TOTAL / filledSources.length) : 0;
     const evidenceContext = filledSources.length > 0
       ? "\n\nCurated evidence from clinician-selected sources (attribute inline like '(per OpenEvidence)'; do NOT invent facts beyond this evidence and the note):\n" + filledSources.map(s => {
           const t = sourceResponses[s];
-          return `[${sourceLabels[s]}]: ${t.length > MAX_EVIDENCE ? t.slice(0, MAX_EVIDENCE) + "[truncated]" : t}`;
+          return `[${sourceLabels[s]}]: ${t.length > evidencePerSource ? t.slice(0, evidencePerSource) + "[truncated]" : t}`;
         }).join("\n\n")
       : "";
 
