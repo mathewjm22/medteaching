@@ -450,7 +450,8 @@ const problemsContext = problemsToTeach.map((p, i) => `${i+1}. ${p}`).join("\n")
       ? clinicalNote.slice(0, MAX_NOTE_LENGTH) + "\n[...note truncated for length]"
       : clinicalNote;
 
-    const user = `Clinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}${evidenceContext}\n\nEvery item must reference specific details from THIS case. When curated evidence is provided above, weave it directly into the relevant learning points, treatment recommendations, and citations.`;const response = await callAi(sys, user, 5000);
+    const user = `Clinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}${evidenceContext}\n\nEvery item must reference specific details from THIS case. When curated evidence is provided above, weave it directly into the relevant learning points, treatment recommendations, and citations.`;
+    const response = await callAi(sys, user, 3500);
     return extractJson(response);
   };
 
@@ -1488,328 +1489,401 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 
 // ============ FINAL DOCUMENT COMPONENT ============
 function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
+  const [editMode, setEditMode] = React.useState(true);
+  const [savedHtml, setSavedHtml] = React.useState(null);
+  const editableRef = React.useRef(null);
+
   if (!doc) return null;
   const s = doc.sections || {};
   const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
-  const printDoc = () => window.print();
 
-  // Helper: update a field via path like "chiefConcern" or "sections.sessionGoal.content"
-  const setField = (path, value) => {
-    if (!onUpdate) return;
-    onUpdate(next => {
-      const parts = path.split(".");
-      let obj = next;
-      for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
-      obj[parts[parts.length - 1]] = value;
-      return next;
-    });
+  const applyFormat = (cmd) => {
+    document.execCommand(cmd, false, null);
+    if (editableRef.current) editableRef.current.focus();
   };
 
-  // Helper: update within a specific teaching case
-  const setCaseField = (caseIdx, field, value) => {
-    if (!onUpdate) return;
-    onUpdate(next => {
-      next.sections.teachingCases[caseIdx].data[field] = value;
-      return next;
-    });
+  const saveChanges = () => {
+    if (editableRef.current) {
+      setSavedHtml(editableRef.current.innerHTML);
+    }
+    setEditMode(false);
   };
-  const setCaseNestedField = (caseIdx, field, subfield, value) => {
-    if (!onUpdate) return;
-    onUpdate(next => {
-      if (!next.sections.teachingCases[caseIdx].data[field]) next.sections.teachingCases[caseIdx].data[field] = {};
-      next.sections.teachingCases[caseIdx].data[field][subfield] = value;
-      return next;
-    });
+
+  const printDoc = () => {
+    // Ensure any pending edit is captured before print
+    if (editMode && editableRef.current) {
+      setSavedHtml(editableRef.current.innerHTML);
+    }
+    setTimeout(() => window.print(), 100);
   };
-  const setCaseArrayItem = (caseIdx, field, itemIdx, subfield, value) => {
-    if (!onUpdate) return;
-    onUpdate(next => {
-      next.sections.teachingCases[caseIdx].data[field][itemIdx][subfield] = value;
-      return next;
-    });
+
+  // If we've saved HTML edits, render those. Otherwise render the fresh doc.
+  const renderContent = () => {
+    if (savedHtml && !editMode) {
+      return <div dangerouslySetInnerHTML={{ __html: savedHtml }} />;
+    }
+    return <DocumentContent doc={doc} phase={phase} session={session} />;
   };
 
   return (
     <>
-      <div className="no-print flex gap-2 mb-4 items-center">
+      <div className="no-print flex gap-2 mb-4 items-center flex-wrap">
         <button onClick={printDoc} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"><Printer className="w-4 h-4" />Print / Save as PDF</button>
         <button onClick={onEdit} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back to Preview</button>
-        <div className="text-xs text-slate-500 italic ml-2">Click any text to edit. Bold/italic/underline available in the popup toolbar.</div>
+        {editMode ? (
+          <button onClick={saveChanges} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium">Lock Edits</button>
+        ) : (
+          <button onClick={() => setEditMode(true)} className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 text-sm font-medium">Resume Editing</button>
+        )}
+        <div className="text-xs text-slate-500 italic ml-2">
+          {editMode ? "Click any text to edit. Use toolbar for bold/italic/underline." : "Editing locked — click Resume Editing to make more changes."}
+        </div>
       </div>
 
+      {/* Floating formatting toolbar */}
+      {editMode && (
+        <div className="no-print sticky top-32 z-20 mb-2 flex items-center gap-1 bg-slate-800 text-white rounded-lg shadow-lg px-2 py-1 w-fit">
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("bold"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded font-bold text-sm" title="Bold (Ctrl+B)">B</button>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("italic"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded italic text-sm" title="Italic (Ctrl+I)">I</button>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("underline"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded underline text-sm" title="Underline (Ctrl+U)">U</button>
+          <div className="w-px h-5 bg-slate-600 mx-1"></div>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("removeFormat"); }} className="px-2 py-1.5 hover:bg-slate-700 rounded text-xs" title="Clear formatting">Clear</button>
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border border-slate-200 print-doc" style={{fontFamily: "Georgia, 'Times New Roman', serif"}}>
-        <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white px-8 py-6 print-header">
-          <div className="flex items-start justify-between">
-            <div>
-              <div className="text-xs uppercase tracking-widest text-slate-300 mb-1">Teaching Session</div>
-              <h1 className="text-2xl font-bold">Clinical Case Learning Document</h1>
-              <div className="text-sm text-slate-200 mt-2">
-                Prepared for <span className="font-semibold text-white">{doc.student}</span> · {session.sessionDate}
-              </div>
+        <div
+          ref={editableRef}
+          contentEditable={editMode}
+          suppressContentEditableWarning
+          spellCheck={false}
+          className={editMode ? "outline-none focus:outline-none" : ""}
+          style={editMode ? { boxShadow: "inset 0 0 0 2px rgba(251, 191, 36, 0.3)", borderRadius: "0.75rem" } : {}}
+        >
+          {renderContent()}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ============ DOCUMENT CONTENT (extracted for cleanliness) ============
+function DocumentContent({ doc, phase, session }) {
+  const s = doc.sections || {};
+  const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+
+  return (
+    <>
+      <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white px-8 py-6 print-header rounded-t-xl">
+        <div className="flex items-start justify-between">
+          <div>
+            <div className="text-xs uppercase tracking-widest text-slate-300 mb-1">Teaching Session</div>
+            <h1 className="text-2xl font-bold">Clinical Case Learning Document</h1>
+            <div className="text-sm text-slate-200 mt-2">
+              Prepared for <span className="font-semibold text-white">{doc.student}</span> · {session.sessionDate}
             </div>
-            <div className="text-right text-xs text-slate-300">
-              <div>Generated {doc.generated}</div>
-              <div className="mt-1 inline-block px-2 py-1 bg-white/10 rounded font-sans">
-                Month {doc.phase.monthsIn} · {doc.phase.name}
-              </div>
+          </div>
+          <div className="text-right text-xs text-slate-300">
+            <div>Generated {doc.generated}</div>
+            <div className="mt-1 inline-block px-2 py-1 bg-white/10 rounded font-sans">
+              Month {doc.phase.monthsIn} · {doc.phase.name}
             </div>
           </div>
         </div>
+      </div>
 
-        <div className="px-8 py-6 space-y-6">
-          {/* Case at a Glance */}
-          {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Case at a Glance</h2>
-              <table className="w-full text-sm border border-slate-300">
-                <tbody>
-                  {doc.chiefConcern && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 w-40 align-top">Chief concern</td><td className="px-3 py-2 text-slate-800"><Editable value={doc.chiefConcern} onSave={v => setField("chiefConcern", v.replace(/<[^>]+>/g, ""))} /></td></tr>}
-                  {doc.workingDx && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Primary working diagnosis</td><td className="px-3 py-2 text-slate-800"><Editable value={doc.workingDx} onSave={v => setField("workingDx", v.replace(/<[^>]+>/g, ""))} /></td></tr>}
-                  <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Complexity</td><td className="px-3 py-2 text-slate-800">{doc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td></tr>
-                  {doc.selectedProblems?.length > 0 && <tr><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Problems in focus</td><td className="px-3 py-2 text-slate-800"><ul className="list-disc ml-4">{doc.selectedProblems.map((p, i) => <li key={i}>{p}</li>)}</ul></td></tr>}
-                </tbody>
-              </table>
-            </section>
-          )}
+      <div className="px-8 py-6 space-y-6">
+        {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
+          <section>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Case at a Glance</h2>
+            <table className="w-full text-sm border border-slate-300">
+              <tbody>
+                {doc.chiefConcern && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 w-40 align-top">Chief concern</td><td className="px-3 py-2 text-slate-800">{doc.chiefConcern}</td></tr>}
+                {doc.workingDx && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Primary working diagnosis</td><td className="px-3 py-2 text-slate-800">{doc.workingDx}</td></tr>}
+                <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Complexity</td><td className="px-3 py-2 text-slate-800">{doc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td></tr>
+                {doc.selectedProblems?.length > 0 && <tr><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Problems in focus</td><td className="px-3 py-2 text-slate-800"><ul className="list-disc ml-4">{doc.selectedProblems.map((p, i) => <li key={i}>{p}</li>)}</ul></td></tr>}
+              </tbody>
+            </table>
+          </section>
+        )}
 
-          {/* Session Goal */}
-          {s.sessionGoal?.enabled && s.sessionGoal.content && (
-            <section>
-              <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3">
-                <div className="text-xs uppercase tracking-widest text-indigo-700 font-bold mb-1">Session Goal</div>
-                <div className="text-slate-800 font-medium"><Editable value={s.sessionGoal.content} onSave={v => setField("sections.sessionGoal.content", v)} multiline /></div>
+        {s.sessionGoal?.enabled && s.sessionGoal.content && (
+          <section>
+            <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3">
+              <div className="text-xs uppercase tracking-widest text-indigo-700 font-bold mb-1">Session Goal</div>
+              <div className="text-slate-800 font-medium">{s.sessionGoal.content}</div>
+            </div>
+          </section>
+        )}
+
+        {s.phaseFraming?.enabled && (
+          <section>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Phase-Aligned Framing</h2>
+            <div className="text-sm text-slate-700 leading-relaxed">
+              <strong>Developmental focus:</strong> {doc.phase.focus}
+            </div>
+          </section>
+        )}
+
+        {enabledCases.map((tc, idx) => {
+          const c = tc.data;
+          return (
+            <section key={idx} className="section-block">
+              <div className="bg-slate-800 text-white px-4 py-3 rounded-t">
+                <div className="text-xs uppercase tracking-widest text-slate-300">Teaching Case {idx + 1} of {enabledCases.length}</div>
+                <h2 className="text-lg font-bold mt-0.5">{c.problem}</h2>
               </div>
-            </section>
-          )}
-
-          {/* Phase Framing */}
-          {s.phaseFraming?.enabled && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Phase-Aligned Framing</h2>
-              <div className="text-sm text-slate-700 leading-relaxed">
-                <strong>Developmental focus:</strong> {doc.phase.focus}
-              </div>
-            </section>
-          )}
-
-          {/* Teaching Cases - only enabled ones */}
-          {enabledCases.map((tc, idx) => {
-            const c = tc.data;
-            return (
-              <section key={idx} className="section-block">
-                <div className="bg-slate-800 text-white px-4 py-3 rounded-t">
-                  <div className="text-xs uppercase tracking-widest text-slate-300">Teaching Case {idx + 1} of {enabledCases.length}</div>
-                  <h2 className="text-lg font-bold mt-0.5">{c.problem}</h2>
-                </div>
-                <div className="border border-t-0 border-slate-300 rounded-b p-4 space-y-4">
-                  {c.primaryDiagnosis?.name && (
-                    <div>
-                      <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1">Primary Diagnosis</div>
-                      <div className="text-sm text-slate-800">
-                        <span className="font-bold"><Editable value={c.primaryDiagnosis.name} onSave={v => setCaseNestedField(idx, "primaryDiagnosis", "name", v.replace(/<[^>]+>/g, ""))} /></span>
-                        <span>. </span>
-                        <Editable value={c.primaryDiagnosis.briefDefinition || ""} onSave={v => setCaseNestedField(idx, "primaryDiagnosis", "briefDefinition", v)} multiline />
-                      </div>
-                    </div>
-                  )}
-                  {c.keyLearningPoints?.length > 0 && (
-                    <div>
-                      <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Key Learning Points</div>
-                      <ol className="space-y-2">{c.keyLearningPoints.map((lp, i) => (
-                        <li key={i} className="text-sm text-slate-800 flex gap-2">
-                          <span className="font-bold text-slate-500 flex-shrink-0 min-w-[1.5rem]">{i+1}.</span>
-                          <div>
-                            <span className="font-semibold text-slate-900"><Editable value={lp.point} onSave={v => setCaseArrayItem(idx, "keyLearningPoints", i, "point", v.replace(/<[^>]+>/g, ""))} /></span>
-                            <span>. </span>
-                            <span className="text-slate-700"><Editable value={lp.explanation} onSave={v => setCaseArrayItem(idx, "keyLearningPoints", i, "explanation", v)} multiline /></span>
-                            {lp.citation && <span className="text-xs text-slate-500 italic ml-1">(<Editable value={lp.citation} onSave={v => setCaseArrayItem(idx, "keyLearningPoints", i, "citation", v.replace(/<[^>]+>/g, ""))} />)</span>}
-                          </div>
-                        </li>
-                      ))}</ol>
-                    </div>
-                  )}
-                  {c.shelfQuestions?.length > 0 && (
-                    <div>
-                      <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Shelf-Style Questions</div>
-                      <div className="space-y-4">{c.shelfQuestions.map((q, i) => (
-                        <div key={i} className="border border-slate-300 rounded overflow-hidden">
-                          <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
-                          <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200"><Editable value={q.vignette} onSave={v => {
-                            onUpdate(next => {
-                              next.sections.teachingCases[idx].data.shelfQuestions[i].vignette = v;
-                              return next;
-                            });
-                          }} multiline /></div>
-                          <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
-                              {q.options && Object.entries(q.options).map(([letter, opt]) => (
-                                <div key={letter} className={q.correctAnswer === letter ? "font-semibold" : ""}><span className="font-bold mr-1">{letter})</span>{opt}</div>
-                              ))}
-                            </div>
-                          </div>
-                          <div className="px-3 py-2 bg-emerald-50 text-sm">
-                            <div className="text-xs font-bold text-emerald-800 uppercase mb-1">Answer: {q.correctAnswer}</div>
-                            <div className="text-slate-800"><Editable value={q.explanation} onSave={v => {
-                              onUpdate(next => {
-                                next.sections.teachingCases[idx].data.shelfQuestions[i].explanation = v;
-                                return next;
-                              });
-                            }} multiline /></div>
-                          </div>
-                        </div>
-                      ))}</div>
-                    </div>
-                  )}
-                  {c.clinicalPearl && (
-                    <div className="border-l-4 border-purple-600 bg-purple-50 px-3 py-2">
-                      <div className="text-xs font-bold text-purple-900 mb-1 uppercase">Clinical Pearl</div>
-                      <div className="text-sm text-slate-800"><Editable value={c.clinicalPearl} onSave={v => setCaseField(idx, "clinicalPearl", v)} multiline /></div>
-                    </div>
-                  )}
-                </div>
-              </section>
-            );
-          })}
-            {/* Lab & Vital Trends */}
-          {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Lab & Vital Trends for Interpretation</h2>
-              <table className="w-full text-sm border border-slate-300">
-                <thead>
-                  <tr className="bg-slate-800 text-white">
-                    <th className="px-3 py-2 text-left font-semibold w-1/4">Parameter</th>
-                    <th className="px-3 py-2 text-left font-semibold w-1/3">Trend</th>
-                    <th className="px-3 py-2 text-left font-semibold">Teaching Point</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {s.labTrends.content.map((t, i) => (
-                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
-                      <td className="px-3 py-2 font-semibold text-slate-900 border-t border-slate-200">{t.parameter}</td>
-                      <td className="px-3 py-2 text-slate-700 border-t border-slate-200">{t.trend}</td>
-                      <td className="px-3 py-2 text-slate-700 border-t border-slate-200 italic">{t.teachingPoint || "—"}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </section>
-          )}
-
-          {/* Cross-Cutting Themes */}
-          {s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0 && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Cross-Cutting Themes</h2>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                {s.crossCuttingThemes.content.map((t, i) => (
-                  <div key={i} className="border border-slate-300 p-3 rounded bg-slate-50">
-                    <div className="text-xs uppercase font-bold text-slate-500 mb-1">Theme {i+1}</div>
-                    <div className="text-sm text-slate-800">{t}</div>
+              <div className="border border-t-0 border-slate-300 rounded-b p-4 space-y-4">
+                {c.primaryDiagnosis?.name && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1">Primary Diagnosis</div>
+                    <div className="text-sm text-slate-800"><span className="font-bold">{c.primaryDiagnosis.name}.</span> {c.primaryDiagnosis.briefDefinition}</div>
                   </div>
-                ))}
-              </div>
-            </section>
-          )}
-
-          {/* Synthesized Evidence */}
-          {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Summary</h2>
-              {s.synthesizedEvidence.content.synthesized ? (
-                <div className="space-y-3">
-                  {s.synthesizedEvidence.content.unifiedSummary && (
-                    <div className="border-l-4 border-indigo-500 bg-indigo-50 p-3">
-                      <div className="text-xs uppercase font-bold text-indigo-900 mb-1">Consensus</div>
-                      <div className="text-sm text-slate-800">{s.synthesizedEvidence.content.unifiedSummary}</div>
-                    </div>
-                  )}
-                  {s.synthesizedEvidence.content.consolidatedPoints?.length > 0 && (
+                )}
+                {c.differentialDiagnosis?.length > 0 && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Differential Diagnosis</div>
                     <table className="w-full text-sm border border-slate-200">
-                      <thead><tr className="bg-slate-100"><th className="px-3 py-1.5 text-left w-1/4">Topic</th><th className="px-3 py-1.5 text-left">Content</th><th className="px-3 py-1.5 text-left w-1/5">Sources</th></tr></thead>
-                      <tbody>{s.synthesizedEvidence.content.consolidatedPoints.map((p, i) => (
-                        <tr key={i} className="border-t border-slate-200">
-                          <td className="px-3 py-2 font-semibold align-top">{p.topic}</td>
-                          <td className="px-3 py-2 text-slate-700">{p.detail}</td>
-                          <td className="px-3 py-2 text-xs text-slate-600 align-top">{Array.isArray(p.sources) ? p.sources.join(", ") : p.sources}</td>
+                      <thead><tr className="bg-slate-100"><th className="px-3 py-1.5 text-left font-semibold text-slate-700 w-1/3">Alternative Diagnosis</th><th className="px-3 py-1.5 text-left font-semibold text-slate-700">Clinical Reasoning</th></tr></thead>
+                      <tbody>{c.differentialDiagnosis.map((dd, i) => (
+                        <tr key={i} className="border-t border-slate-200"><td className="px-3 py-2 font-semibold text-slate-900 align-top">{dd.diagnosis}</td><td className="px-3 py-2 text-slate-700">{dd.reasoning}</td></tr>
+                      ))}</tbody>
+                    </table>
+                  </div>
+                )}
+                {c.keyLearningPoints?.length > 0 && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Key Learning Points</div>
+                    <ol className="space-y-2">{c.keyLearningPoints.map((lp, i) => (
+                      <li key={i} className="text-sm text-slate-800 flex gap-2">
+                        <span className="font-bold text-slate-500 flex-shrink-0 min-w-[1.5rem]">{i+1}.</span>
+                        <div><span className="font-semibold text-slate-900">{lp.point}.</span> <span className="text-slate-700">{lp.explanation}</span>{lp.citation && <span className="text-xs text-slate-500 italic ml-1">({lp.citation})</span>}</div>
+                      </li>
+                    ))}</ol>
+                  </div>
+                )}
+                {c.focusedHistoryQuestions?.length > 0 && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Focused History Questions</div>
+                    <ul className="space-y-2">{c.focusedHistoryQuestions.map((hq, i) => (
+                      <li key={i} className="text-sm text-slate-800"><div className="font-semibold">{hq.question}</div><div className="text-xs text-slate-600 italic">Rationale: {hq.rationale}</div></li>
+                    ))}</ul>
+                  </div>
+                )}
+                {c.physicalExam?.maneuver && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Physical Examination</div>
+                    <div className="text-sm text-slate-800">
+                      <div className="font-semibold mb-1">{c.physicalExam.maneuver}</div>
+                      {c.physicalExam.steps?.length > 0 && <ol className="ml-4 list-decimal space-y-1 mb-2">{c.physicalExam.steps.map((st, i) => <li key={i}>{st}</li>)}</ol>}
+                      {c.physicalExam.interpretation && <div className="text-xs text-slate-600 italic">Interpretation: {c.physicalExam.interpretation}</div>}
+                    </div>
+                  </div>
+                )}
+                {c.keyLabsAndImaging?.length > 0 && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Key Labs & Imaging</div>
+                    <table className="w-full text-xs border border-slate-200">
+                      <thead><tr className="bg-slate-100"><th className="px-2 py-1.5 text-left">Study</th><th className="px-2 py-1.5 text-left">Purpose</th><th className="px-2 py-1.5 text-left">Interpretation</th><th className="px-2 py-1.5 text-left">Role</th></tr></thead>
+                      <tbody>{c.keyLabsAndImaging.map((lab, i) => (
+                        <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                          <td className="px-2 py-1.5 font-semibold text-slate-900 border-t align-top">{lab.study}</td>
+                          <td className="px-2 py-1.5 text-slate-700 border-t align-top">{lab.purpose}</td>
+                          <td className="px-2 py-1.5 text-slate-700 border-t align-top">{lab.interpretation}</td>
+                          <td className="px-2 py-1.5 text-slate-700 border-t align-top">{lab.role}</td>
                         </tr>
                       ))}</tbody>
                     </table>
-                  )}
-                </div>
-              ) : s.synthesizedEvidence.content.singleSource ? (
-                <div className="border border-slate-300 rounded p-3 bg-slate-50 text-sm whitespace-pre-wrap">
-                  <div className="text-xs font-bold text-slate-600 uppercase mb-1">From {s.synthesizedEvidence.content.singleSource.source}</div>
-                  {s.synthesizedEvidence.content.singleSource.content}
-                </div>
-              ) : null}
-            </section>
-          )}
-          {/* PubMed Recommended Reading */}
-          {s.pubmed?.enabled && s.pubmed.content?.some(r => r.papers?.length > 0) && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Recommended Reading — PubMed</h2>
-              <div className="space-y-4">
-                {s.pubmed.content.filter(r => r.papers?.length > 0).map((result, ri) => {
-                  const included = result.papers.filter(p => !result.excluded?.has?.(p.pmid));
-                  if (included.length === 0) return null;
-                  return (
-                    <div key={ri}>
-                      <div className="text-sm font-semibold text-slate-700 mb-2 border-b border-slate-300 pb-1">Related to: {result.problem}</div>
-                      <ol className="space-y-2 ml-4 list-decimal text-sm">
-                        {included.map((p, pi) => (
-                          <li key={pi} className="text-slate-800">
-                            <div className="font-semibold">{p.title}</div>
-                            <div className="text-xs text-slate-600">{p.authors} · <em>{p.journal}</em> · {p.year} · PMID: {p.pmid}</div>
-                            {p.abstract && <div className="text-xs text-slate-700 mt-1 italic">{p.abstract.slice(0, 300)}{p.abstract.length > 300 ? "..." : ""}</div>}
-                          </li>
-                        ))}
-                      </ol>
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="text-xs text-slate-500 italic mt-3">Results retrieved live from PubMed (NCBI E-utilities). Sorted by relevance, filtered to last 10 years.</div>
-            </section>
-          )}
-          {/* Long-Term Goals + Next Session Prep in two columns */}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (
-              <section>
-                <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Ongoing Learning Goals</h2>
-                <ul className="space-y-2">
-                  {s.longTermGoals.content.map(g => (
-                    <li key={g.id} className="text-sm text-slate-800 flex gap-2">
-                      <span className="text-indigo-700 font-bold flex-shrink-0">›</span>
-                      <div><div>{g.text}</div><div className="text-xs text-slate-500">Added {g.added}</div></div>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
-            {s.nextSessionPrep?.enabled && (
-              <section>
-                <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Prep for Next Session</h2>
-                {s.nextSessionPrep.reflectionQuestions?.length > 0 && (
-                  <div className="mb-3">
-                    <div className="text-xs uppercase font-bold text-slate-600 mb-1">Reflect on</div>
-                    <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
-                      {s.nextSessionPrep.reflectionQuestions.map((q, i) => <li key={i}>{q}</li>)}
-                    </ul>
                   </div>
                 )}
-                <div className="text-xs uppercase font-bold text-slate-600 mb-1">Come prepared to</div>
-                <ul className="space-y-1 text-sm text-slate-800 ml-4 list-disc">
-                  <li>Discuss the questions above.</li>
-                  <li>Bring 1 question that came up while working through this material.</li>
-                  <li>Identify 1 area where you felt unsure.</li>
-                </ul>
-              </section>
-            )}
-          </div>
+                {c.treatmentApproach && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Treatment Approach</div>
+                    {c.treatmentApproach.firstLine?.length > 0 && (
+                      <div className="mb-3">
+                        <div className="text-xs font-semibold text-slate-600 mb-1">First-Line Management</div>
+                        <table className="w-full text-sm border border-slate-200">
+                          <thead><tr className="bg-slate-100"><th className="px-2 py-1.5 text-left">Treatment</th><th className="px-2 py-1.5 text-left">Dosing</th><th className="px-2 py-1.5 text-left">Evidence</th></tr></thead>
+                          <tbody>{c.treatmentApproach.firstLine.map((t, i) => (
+                            <tr key={i} className="border-t"><td className="px-2 py-2 font-semibold align-top">{t.treatment}</td><td className="px-2 py-2 text-slate-700 align-top">{t.dosing}</td><td className="px-2 py-2 text-slate-600 italic align-top">{t.evidence}</td></tr>
+                          ))}</tbody>
+                        </table>
+                      </div>
+                    )}
+                    {c.treatmentApproach.additional?.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600 mb-1">Additional Considerations</div>
+                        <ul className="text-sm text-slate-800 space-y-1 ml-4 list-disc">{c.treatmentApproach.additional.map((a, i) => <li key={i}>{a}</li>)}</ul>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {c.patientContextConsiderations && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Patient Context</div>
+                    <div className="text-sm text-slate-800">{c.patientContextConsiderations}</div>
+                  </div>
+                )}
+                {c.communicationTeaching?.scenario && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Communication Teaching</div>
+                    <div className="text-sm text-slate-800">
+                      <div className="mb-2"><span className="font-semibold">Scenario:</span> {c.communicationTeaching.scenario}</div>
+                      {c.communicationTeaching.script && <div className="p-2 bg-slate-50 border-l-4 border-slate-400 italic">"{c.communicationTeaching.script}"</div>}
+                    </div>
+                  </div>
+                )}
+                {c.shelfQuestions?.length > 0 && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Shelf-Style Questions</div>
+                    <div className="space-y-4">{c.shelfQuestions.map((q, i) => (
+                      <div key={i} className="border border-slate-300 rounded overflow-hidden">
+                        <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
+                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
+                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
+                            {q.options && Object.entries(q.options).map(([letter, opt]) => (
+                              <div key={letter} className={q.correctAnswer === letter ? "font-semibold" : ""}><span className="font-bold mr-1">{letter})</span>{opt}</div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="px-3 py-2 bg-emerald-50 text-sm">
+                          <div className="text-xs font-bold text-emerald-800 uppercase mb-1">Answer: {q.correctAnswer}</div>
+                          <div className="text-slate-800">{q.explanation}</div>
+                        </div>
+                      </div>
+                    ))}</div>
+                  </div>
+                )}
+                {c.recommendedReading?.length > 0 && (
+                  <div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Recommended Reading</div>
+                    <ol className="space-y-1.5 ml-4 list-decimal text-sm">{c.recommendedReading.map((r, i) => (
+                      <li key={i} className="text-slate-800"><span className="font-semibold">{r.reference}</span>{r.relevance && <div className="text-xs text-slate-600 italic">{r.relevance}</div>}</li>
+                    ))}</ol>
+                  </div>
+                )}
+                {c.clinicalPearl && (
+                  <div className="border-l-4 border-purple-600 bg-purple-50 px-3 py-2">
+                    <div className="text-xs font-bold text-purple-900 mb-1 uppercase">Clinical Pearl</div>
+                    <div className="text-sm text-slate-800">{c.clinicalPearl}</div>
+                  </div>
+                )}
+                {c.quoteToDiscuss && (
+                  <div className="border-l-4 border-amber-500 bg-amber-50 px-3 py-2">
+                    <div className="text-xs font-bold text-amber-900 mb-1 uppercase">Quote to Discuss</div>
+                    <div className="italic text-sm text-slate-800">"{c.quoteToDiscuss}"</div>
+                  </div>
+                )}
+              </div>
+            </section>
+          );
+        })}
 
-          <div className="border-t-2 border-slate-800 pt-3 mt-6 text-xs text-slate-500 text-center space-y-1">
-            <div>Generated by LIC Teaching Document Generator · Aligned with the CU School of Medicine MEPO framework.</div>
-            <div className="italic">For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
-          </div>
+        {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
+          <section>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Lab & Vital Trends for Interpretation</h2>
+            <table className="w-full text-sm border border-slate-300">
+              <thead><tr className="bg-slate-800 text-white"><th className="px-3 py-2 text-left font-semibold w-1/4">Parameter</th><th className="px-3 py-2 text-left font-semibold w-1/3">Trend</th><th className="px-3 py-2 text-left font-semibold">Teaching Point</th></tr></thead>
+              <tbody>{s.labTrends.content.map((t, i) => (
+                <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                  <td className="px-3 py-2 font-semibold text-slate-900 border-t border-slate-200">{t.parameter}</td>
+                  <td className="px-3 py-2 text-slate-700 border-t border-slate-200">{t.trend}</td>
+                  <td className="px-3 py-2 text-slate-700 border-t border-slate-200 italic">{t.teachingPoint || "—"}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </section>
+        )}
+
+        {s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0 && (
+          <section>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Cross-Cutting Themes</h2>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">{s.crossCuttingThemes.content.map((t, i) => (
+              <div key={i} className="border border-slate-300 p-3 rounded bg-slate-50"><div className="text-xs uppercase font-bold text-slate-500 mb-1">Theme {i+1}</div><div className="text-sm text-slate-800">{t}</div></div>
+            ))}</div>
+          </section>
+        )}
+
+        {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
+          <section>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Summary</h2>
+            {s.synthesizedEvidence.content.synthesized ? (
+              <div className="space-y-3">
+                {s.synthesizedEvidence.content.unifiedSummary && <div className="border-l-4 border-indigo-500 bg-indigo-50 p-3"><div className="text-xs uppercase font-bold text-indigo-900 mb-1">Consensus</div><div className="text-sm text-slate-800">{s.synthesizedEvidence.content.unifiedSummary}</div></div>}
+                {s.synthesizedEvidence.content.consolidatedPoints?.length > 0 && (
+                  <table className="w-full text-sm border border-slate-200">
+                    <thead><tr className="bg-slate-100"><th className="px-3 py-1.5 text-left w-1/4">Topic</th><th className="px-3 py-1.5 text-left">Content</th><th className="px-3 py-1.5 text-left w-1/5">Sources</th></tr></thead>
+                    <tbody>{s.synthesizedEvidence.content.consolidatedPoints.map((p, i) => (
+                      <tr key={i} className="border-t"><td className="px-3 py-2 font-semibold align-top">{p.topic}</td><td className="px-3 py-2 text-slate-700">{p.detail}</td><td className="px-3 py-2 text-xs text-slate-600 align-top">{Array.isArray(p.sources) ? p.sources.join(", ") : p.sources}</td></tr>
+                    ))}</tbody>
+                  </table>
+                )}
+              </div>
+            ) : s.synthesizedEvidence.content.singleSource ? (
+              <div className="border border-slate-300 rounded p-3 bg-slate-50 text-sm whitespace-pre-wrap">
+                <div className="text-xs font-bold text-slate-600 uppercase mb-1">From {s.synthesizedEvidence.content.singleSource.source}</div>
+                {s.synthesizedEvidence.content.singleSource.content}
+              </div>
+            ) : null}
+          </section>
+        )}
+
+        {s.pubmed?.enabled && s.pubmed.content?.some(r => r.papers?.length > 0) && (
+          <section>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Recommended Reading — PubMed</h2>
+            <div className="space-y-4">
+              {s.pubmed.content.filter(r => r.papers?.length > 0).map((result, ri) => {
+                const included = result.papers.filter(p => !result.excluded?.has?.(p.pmid));
+                if (included.length === 0) return null;
+                return (
+                  <div key={ri}>
+                    <div className="text-sm font-semibold text-slate-700 mb-2 border-b border-slate-300 pb-1">Related to: {result.problem}</div>
+                    <ol className="space-y-2 ml-4 list-decimal text-sm">{included.map((p, pi) => (
+                      <li key={pi} className="text-slate-800">
+                        <div className="font-semibold">{p.title}</div>
+                        <div className="text-xs text-slate-600">{p.authors} · <em>{p.journal}</em> · {p.year} · PMID: {p.pmid}</div>
+                        {p.abstract && <div className="text-xs text-slate-700 mt-1 italic">{p.abstract.slice(0, 300)}{p.abstract.length > 300 ? "..." : ""}</div>}
+                      </li>
+                    ))}</ol>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        )}
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Ongoing Learning Goals</h2>
+              <ul className="space-y-2">{s.longTermGoals.content.map(g => (
+                <li key={g.id} className="text-sm text-slate-800 flex gap-2"><span className="text-indigo-700 font-bold flex-shrink-0">›</span><div><div>{g.text}</div><div className="text-xs text-slate-500">Added {g.added}</div></div></li>
+              ))}</ul>
+            </section>
+          )}
+          {s.nextSessionPrep?.enabled && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Prep for Next Session</h2>
+              {s.nextSessionPrep.reflectionQuestions?.length > 0 && (
+                <div className="mb-3">
+                  <div className="text-xs uppercase font-bold text-slate-600 mb-1">Reflect on</div>
+                  <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">{s.nextSessionPrep.reflectionQuestions.map((q, i) => <li key={i}>{q}</li>)}</ul>
+                </div>
+              )}
+              <div className="text-xs uppercase font-bold text-slate-600 mb-1">Come prepared to</div>
+              <ul className="space-y-1 text-sm text-slate-800 ml-4 list-disc">
+                <li>Discuss the questions above.</li>
+                <li>Bring 1 question that came up while working through this material.</li>
+                <li>Identify 1 area where you felt unsure.</li>
+              </ul>
+            </section>
+          )}
+        </div>
+
+        <div className="border-t-2 border-slate-800 pt-3 mt-6 text-xs text-slate-500 text-center space-y-1">
+          <div>Generated by LIC Teaching Document Generator · Aligned with the CU School of Medicine MEPO framework.</div>
+          <div className="italic">For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
         </div>
       </div>
     </>
