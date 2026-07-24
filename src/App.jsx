@@ -430,14 +430,27 @@ const problemsContext = problemsToTeach.map((p, i) => `${i+1}. ${p}`).join("\n")
     const quotesContext = patientQuotes.length > 0 ? `\n\nAvailable quotes:\n${patientQuotes.map(q => `- "${q}"`).join("\n")}` : "";
     const trendsContext = labTrends.length > 0 ? `\n\nLab/vital trends:\n${labTrends.map(t => `- ${t.parameter}: ${t.trend}`).join("\n")}` : "";
 
-    // Build evidence context from pasted external source responses
+    // Build evidence context from pasted external source responses.
+    // Truncate each source to keep the total prompt manageable.
     const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+    const MAX_EVIDENCE_PER_SOURCE = 4000; // ~1000 tokens per source
     const evidenceContext = filledSources.length > 0
-      ? `\n\n=== CURATED EVIDENCE (from clinician-selected sources) ===\nThe attending has curated the following evidence from trusted medical references. Use this content to STRENGTHEN your learning points, citations, treatment recommendations, and clinical pearls. When you cite something from these sources, attribute it inline like "(per OpenEvidence)" or "(per UpToDate)". Do NOT invent facts beyond what appears in the clinical note or this curated evidence.\n\n${filledSources.map(s => `--- ${sourceLabels[s]} ---\n${sourceResponses[s]}`).join("\n\n")}`
+      ? `\n\n=== CURATED EVIDENCE (from clinician-selected sources) ===\nThe attending has curated the following evidence. Use it to strengthen learning points, citations, and treatment recommendations. Cite inline like "(per OpenEvidence)". Do NOT invent facts beyond the note or this evidence.\n\n${filledSources.map(s => {
+          const text = sourceResponses[s];
+          const truncated = text.length > MAX_EVIDENCE_PER_SOURCE
+            ? text.slice(0, MAX_EVIDENCE_PER_SOURCE) + "\n[...truncated for length]"
+            : text;
+          return `--- ${sourceLabels[s]} ---\n${truncated}`;
+        }).join("\n\n")}`
       : "";
 
-    const user = `Clinical note:\n${clinicalNote}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}${evidenceContext}\n\nEvery item must reference specific details from THIS case. When curated evidence is provided above, weave it directly into the relevant learning points, treatment recommendations, and citations.`;
-    const response = await callAi(sys, user, 5000);
+    // Cap clinical note to prevent oversized prompts
+    const MAX_NOTE_LENGTH = 15000;
+    const notePayload = clinicalNote.length > MAX_NOTE_LENGTH
+      ? clinicalNote.slice(0, MAX_NOTE_LENGTH) + "\n[...note truncated for length]"
+      : clinicalNote;
+
+    const user = `Clinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}${evidenceContext}\n\nEvery item must reference specific details from THIS case. When curated evidence is provided above, weave it directly into the relevant learning points, treatment recommendations, and citations.`;const response = await callAi(sys, user, 5000);
     return extractJson(response);
   };
 
