@@ -464,8 +464,7 @@ I want to focus today's teaching on: ${focusText}.
     }
   };
 
-  // ===== Generate final document =====
-// ===== Generate preview (was: generate document) =====
+ // ===== Generate preview (was: generate document) =====
   const generateDocument = async () => {
     setAiStatus({ ...aiStatus, generating: true, error: null });
     let aiContent = null;
@@ -474,7 +473,6 @@ I want to focus today's teaching on: ${focusText}.
 
     if (aiEnabled && activeFocusList.length > 0) {
       try {
-        // Run teaching content, source synthesis, and pubmed fetch in parallel
         const [tc, syn, pm] = await Promise.all([
           generateAiTeachingContent(),
           synthesizeSources(),
@@ -496,8 +494,6 @@ I want to focus today's teaching on: ${focusText}.
       }
     }
 
-    // Build the preview data structure — each section has an `enabled` toggle
-    // and editable content. Default all enabled.
     const preview = {
       generated: new Date().toLocaleString(),
       student: session.studentName || "Student",
@@ -541,7 +537,6 @@ I want to focus today's teaching on: ${focusText}.
     setAiStatus({ analyzing: false, generating: false, error: aiStatus.error });
   };
 
-  // Commit the edited preview into the final document
   const commitPreviewToDocument = () => {
     if (!previewData) return;
     setGeneratedDoc(previewData);
