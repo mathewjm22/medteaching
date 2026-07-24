@@ -3,7 +3,7 @@ import { FileText, Printer, Copy, Check, Plus, X, BookOpen, Target, Stethoscope,
 
 // ===== Hardcoded config =====
 const WORKER_URL = "https://medteachingtool.sweet-dream-0ed6.workers.dev/";
-const DEFAULT_MODEL = "openai/gpt-oss-20b";
+const DEFAULT_MODEL = "gpt-oss-120b";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("setup");
