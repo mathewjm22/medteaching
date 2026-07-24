@@ -123,7 +123,8 @@ export default function App() {
   const activeFocusList = Object.keys(focusAreas).filter(k => focusAreas[k]);
 
   // ===== Worker API call =====
-  const callAi = async (systemPrompt, userPrompt, maxTokens = 2000) => {
+  const callAi = async (systemPrompt, userPrompt, maxTokens = 2000, retryCount = 0) => {
+    const MAX_RETRIES = 3;
     const res = await fetch(WORKER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -139,17 +140,52 @@ export default function App() {
     });
     if (!res.ok) {
       const err = await res.text();
+      const isRateLimit = res.status === 429 || (res.status === 413 && err.includes("rate_limit_exceeded"));
+      if (isRateLimit && retryCount < MAX_RETRIES) {
+        const waitMatch = err.match(/try again in ([\d.]+)s/i);
+        const waitSec = waitMatch ? Math.ceil(parseFloat(waitMatch[1])) + 3 : (retryCount + 1) * 30;
+        console.warn(`[callAi] Rate limit. Waiting ${waitSec}s, retry ${retryCount + 1}/${MAX_RETRIES}`);
+        setAiStatus(prev => ({ ...prev, error: `Rate limited — waiting ${waitSec}s then retrying (${retryCount + 1}/${MAX_RETRIES})...` }));
+        await new Promise(r => setTimeout(r, waitSec * 1000));
+        return callAi(systemPrompt, userPrompt, maxTokens, retryCount + 1);
+      }
       throw new Error(`API error (${res.status}): ${err}`);
     }
     const data = await res.json();
-    return data.choices?.[0]?.message?.content || "";
+    const content = data.choices?.[0]?.message?.content || "";
+    console.log("[callAi] Response length:", content.length, "Finish reason:", data.choices?.[0]?.finish_reason);
+    return content;
   };
 
   const extractJson = (text) => {
     let s = text.trim();
+    s = s.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
     const m = s.match(/\{[\s\S]*\}/);
     if (m) s = m[0];
-    return JSON.parse(s);
+    try {
+      return JSON.parse(s);
+    } catch (e) {
+      // Attempt to repair truncated JSON
+      let repaired = s;
+      const lastComma = repaired.lastIndexOf(",");
+      const lastQuote = repaired.lastIndexOf('"');
+      if (lastQuote > lastComma) {
+        repaired = repaired.slice(0, lastComma);
+      }
+      const opens = (repaired.match(/\{/g) || []).length;
+      const closes = (repaired.match(/\}/g) || []).length;
+      const openBrackets = (repaired.match(/\[/g) || []).length;
+      const closeBrackets = (repaired.match(/\]/g) || []).length;
+      for (let i = 0; i < openBrackets - closeBrackets; i++) repaired += "]";
+      for (let i = 0; i < opens - closes; i++) repaired += "}";
+      try {
+        console.warn("[extractJson] Repaired truncated JSON");
+        return JSON.parse(repaired);
+      } catch (e2) {
+        console.error("[extractJson] Raw response:", s.slice(0, 500));
+        throw new Error(`JSON parse failed (response likely truncated): ${e.message}`);
+      }
+    }
   };
 
   // ===== Generate PubMed search queries via AI, then fetch papers =====
@@ -173,7 +209,7 @@ For each problem, generate ONE focused query prioritizing recent guidelines, lan
 
     let queries = [];
     try {
-      const resp = await callAi(sys, user, 800);
+      const resp = await callAi(sys, user, 600);
       const parsed = extractJson(resp);
       queries = parsed.queries || [];
     } catch (e) {
@@ -255,7 +291,7 @@ Return ONLY valid JSON (no markdown fences):
   ]
 }`;
       const user = `Clinical note (de-identified):\n\n${clinicalNote}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
-      const response = await callAi(sys, user, 2500);
+      const response = await callAi(sys, user, 4000);
       const parsed = extractJson(response);
 
       setNoteAnalysis(parsed);
@@ -326,6 +362,8 @@ Return ONLY valid JSON (no markdown fences):
   };
 
   // ===== Generate case-specific teaching content =====
+  // Generates ONE teaching case per API call with waits between,
+  // to stay under Groq's tokens-per-minute rate limit.
   const generateAiTeachingContent = async () => {
     const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
     if (activeFocus.length === 0) return null;
@@ -333,126 +371,120 @@ Return ONLY valid JSON (no markdown fences):
 
     const lensGuidance = {
       general_im: "",
-      geriatrics: "\n\nGERIATRICS lens. For each problem, weave in: Beers criteria (cite specific medications from case), anticholinergic burden scoring, STOPP/START criteria, deprescribing algorithms, goals-of-care, functional assessment (ADLs/IADLs), fall risk (STEADI), 4Ms framework.",
-      primary_care: "\n\nPRIMARY CARE lens. Weave in: USPSTF grades and recommendations, shared decision-making, motivational interviewing, chronic disease guideline application.",
-      complex_multimorbidity: "\n\nCOMPLEX MULTIMORBIDITY lens. Weave in: problem prioritization, competing treatment goals, patient-centered outcomes, care coordination."
+      geriatrics: " Weave in Beers criteria, anticholinergic burden, STOPP/START, deprescribing, 4Ms framework where relevant.",
+      primary_care: " Weave in USPSTF grades, shared decision-making, chronic disease guidelines.",
+      complex_multimorbidity: " Weave in problem prioritization, competing goals, care coordination."
     };
 
     const problemsToTeach = selectedProblems.length > 0
       ? selectedProblems
-      : (workingDx ? [workingDx] : ["primary clinical problem in this case"]);
+      : (workingDx ? [workingDx] : ["primary clinical problem"]);
 
-    const difficultyGuidance = phase.monthsIn <= 3
-      ? "shelf questions should be Foundational level (basic pattern recognition, single-step reasoning)"
-      : phase.monthsIn <= 7
-      ? "shelf questions should be Developing level (multi-step reasoning, illness scripts, requires prioritization)"
-      : phase.monthsIn <= 10
-      ? "shelf questions should be Advancing level (complex vignettes, subtle findings, management with multiple defensible options)"
-      : "shelf questions should be Sub-I level (multi-problem integration, judgment under uncertainty, atypical presentations)";
+    const difficulty = phase.monthsIn <= 3 ? "Foundational (basic pattern recognition, single-step)"
+      : phase.monthsIn <= 7 ? "Developing (illness scripts, multi-step reasoning)"
+      : phase.monthsIn <= 10 ? "Advancing (complex vignettes, management judgment)"
+      : "Sub-I (multi-problem integration, judgment under uncertainty)";
 
     const focusFilters = {
+      differential: activeFocus.includes("differential"),
       history: activeFocus.includes("history"),
       physicalExam: activeFocus.includes("physicalExam"),
-      differential: activeFocus.includes("differential"),
       workup: activeFocus.includes("workup"),
       management: activeFocus.includes("management"),
       patientContext: activeFocus.includes("patientContext"),
       ebm: activeFocus.includes("ebm"),
       communication: activeFocus.includes("communication"),
     };
+    const includedSections = Object.entries(focusFilters).filter(([_, v]) => v).map(([k]) => k).join(", ");
 
-    const includedSections = [
-      focusFilters.differential && "differentialDiagnosis (3 alternatives with reasoning)",
-      focusFilters.history && "focusedHistoryQuestions (3-4 questions with rationale)",
-      focusFilters.physicalExam && "physicalExam (specific maneuvers with step-by-step technique)",
-      focusFilters.workup && "keyLabsAndImaging (5 studies each with purpose/interpretation/role)",
-      focusFilters.management && "treatmentApproach (first-line with dosing, plus additional considerations)",
-      focusFilters.patientContext && "patientContextConsiderations",
-      focusFilters.ebm && "recommendedReading (3 landmark trials/guidelines BY NAME ONLY)",
-      focusFilters.communication && "communicationTeaching (scenarios/scripts)",
-    ].filter(Boolean).join(", ");
-
-    const sys = `You are a medical education expert generating rigorous teaching content for a medical student in a longitudinal integrated clerkship.
-
-STUDENT LEVEL: Month ${phase.monthsIn} of LIC (${phase.name} phase).
-DEVELOPMENTAL FOCUS: ${phase.focus}
-DIFFICULTY: ${difficultyGuidance}
-${lensGuidance[teachingLens]}
-
-Generate a separate teaching case for EACH selected problem. Reference actual medications, doses, lab values, quotes, and clinical decisions from the note.
-
-CITATION RULES (CRITICAL):
-- Cite landmark trials by NAME ONLY (e.g., "RATE-AF trial", "SPRINT trial")
-- Cite guidelines by ORGANIZATION and YEAR only (e.g., "2023 AHA/ACC Guideline", "2019 Beers Criteria")
-- DO NOT fabricate journal names, page numbers, or authors
-- If unsure, write "Landmark evidence exists; recommend PubMed search for [topic]"
-
-Return ONLY valid JSON (no markdown fences):
-{
-  "teachingCases": [
-    {
-      "problem": "problem name matching selected problem",
-      "primaryDiagnosis": {"name": "primary dx", "briefDefinition": "1-2 sentence definition"},
-      "differentialDiagnosis": [
-        {"diagnosis": "alt dx 1", "reasoning": "why include/exclude referencing case features"}
-      ],
-      "keyLearningPoints": [
-        {"point": "learning point title", "explanation": "detailed 2-3 sentence explanation", "citation": "landmark trial NAME or guideline org/year"}
-      ],
-      "shelfQuestions": [
-        {"vignette": "clinical vignette", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed explanation"}
-      ],
-      "focusedHistoryQuestions": [{"question": "history question", "rationale": "why clinically"}],
-      "physicalExam": {"maneuver": "exam maneuver", "steps": ["step 1", "step 2"], "interpretation": "what findings mean"},
-      "keyLabsAndImaging": [
-        {"study": "name", "purpose": "why order", "interpretation": "how to read", "role": "impact on management"}
-      ],
-      "treatmentApproach": {
-        "firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "trial/guideline NAME"}],
-        "additional": ["supportive measures", "monitoring", "follow-up"]
-      },
-      "patientContextConsiderations": "2-3 sentences on SDoH/goals/systems for THIS patient",
-      "recommendedReading": [{"reference": "landmark trial/guideline NAME", "relevance": "why relevant"}],
-      "communicationTeaching": {"scenario": "communication challenge", "script": "example language"},
-      "clinicalPearl": "one high-yield teaching point",
-      "quoteToDiscuss": "direct quote from note if relevant, else empty string"
-    }
-  ],
-  "crossCuttingThemes": ["2-3 themes spanning problems"],
-  "questionsForReflection": ["2-3 open-ended reflective questions"]
-}
-
-Include ONLY these subsections in each teaching case: ${includedSections}
-
-Number of shelf questions per problem: 3.`;
-
-const problemsContext = problemsToTeach.map((p, i) => `${i+1}. ${p}`).join("\n");
-    const quotesContext = patientQuotes.length > 0 ? `\n\nAvailable quotes:\n${patientQuotes.map(q => `- "${q}"`).join("\n")}` : "";
-    const trendsContext = labTrends.length > 0 ? `\n\nLab/vital trends:\n${labTrends.map(t => `- ${t.parameter}: ${t.trend}`).join("\n")}` : "";
-
-    // Build evidence context from pasted external source responses.
-    // Truncate each source to keep the total prompt manageable.
-    const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
-    const MAX_EVIDENCE_PER_SOURCE = 4000; // ~1000 tokens per source
-    const evidenceContext = filledSources.length > 0
-      ? `\n\n=== CURATED EVIDENCE (from clinician-selected sources) ===\nThe attending has curated the following evidence. Use it to strengthen learning points, citations, and treatment recommendations. Cite inline like "(per OpenEvidence)". Do NOT invent facts beyond the note or this evidence.\n\n${filledSources.map(s => {
-          const text = sourceResponses[s];
-          const truncated = text.length > MAX_EVIDENCE_PER_SOURCE
-            ? text.slice(0, MAX_EVIDENCE_PER_SOURCE) + "\n[...truncated for length]"
-            : text;
-          return `--- ${sourceLabels[s]} ---\n${truncated}`;
-        }).join("\n\n")}`
-      : "";
-
-    // Cap clinical note to prevent oversized prompts
-    const MAX_NOTE_LENGTH = 15000;
-    const notePayload = clinicalNote.length > MAX_NOTE_LENGTH
-      ? clinicalNote.slice(0, MAX_NOTE_LENGTH) + "\n[...note truncated for length]"
+    // Truncate note and evidence to keep prompts small
+    const MAX_NOTE = 8000;
+    const notePayload = clinicalNote.length > MAX_NOTE
+      ? clinicalNote.slice(0, MAX_NOTE) + "\n[note truncated]"
       : clinicalNote;
 
-    const user = `Clinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}${evidenceContext}\n\nEvery item must reference specific details from THIS case. When curated evidence is provided above, weave it directly into the relevant learning points, treatment recommendations, and citations.`;
-    const response = await callAi(sys, user, 3500);
-    return extractJson(response);
+    const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+    const MAX_EVIDENCE = 2500;
+    const evidenceContext = filledSources.length > 0
+      ? "\n\nCurated evidence from clinician-selected sources (attribute inline like '(per OpenEvidence)'; do NOT invent facts beyond this evidence and the note):\n" + filledSources.map(s => {
+          const t = sourceResponses[s];
+          return `[${sourceLabels[s]}]: ${t.length > MAX_EVIDENCE ? t.slice(0, MAX_EVIDENCE) + "[truncated]" : t}`;
+        }).join("\n\n")
+      : "";
+
+    const wait = (ms) => new Promise(r => setTimeout(r, ms));
+    const teachingCases = [];
+
+    // Generate one teaching case per API call, with waits between
+    for (let i = 0; i < problemsToTeach.length; i++) {
+      const problem = problemsToTeach[i];
+      setAiStatus(prev => ({ ...prev, error: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}...` }));
+
+      const sys = `You are generating a teaching case for a medical student. Level: ${phase.name}. Difficulty: ${difficulty}.${lensGuidance[teachingLens]}
+
+CITATION RULES: Cite trials by NAME only (e.g., "SPRINT trial"). Cite guidelines by ORG + YEAR (e.g., "2023 AHA/ACC"). NEVER fabricate journal names, page numbers, or authors.
+
+Return ONLY valid JSON (no markdown fences, no commentary):
+{
+  "problem": "${problem}",
+  "primaryDiagnosis": {"name": "...", "briefDefinition": "..."},
+  "differentialDiagnosis": [{"diagnosis": "...", "reasoning": "..."}],
+  "keyLearningPoints": [{"point": "...", "explanation": "...", "citation": "..."}],
+  "shelfQuestions": [{"vignette": "...", "options": {"A":"","B":"","C":"","D":""}, "correctAnswer": "A", "explanation": "..."}],
+  "focusedHistoryQuestions": [{"question": "...", "rationale": "..."}],
+  "physicalExam": {"maneuver": "...", "steps": ["..."], "interpretation": "..."},
+  "keyLabsAndImaging": [{"study": "...", "purpose": "...", "interpretation": "...", "role": "..."}],
+  "treatmentApproach": {"firstLine": [{"treatment": "...", "dosing": "...", "evidence": "..."}], "additional": ["..."]},
+  "patientContextConsiderations": "...",
+  "recommendedReading": [{"reference": "...", "relevance": "..."}],
+  "communicationTeaching": {"scenario": "...", "script": "..."},
+  "clinicalPearl": "...",
+  "quoteToDiscuss": ""
+}
+
+Include ONLY these subsections: ${includedSections}. Include exactly 2 shelf questions. Keep explanations concise (2 sentences max per learning point).`;
+
+      const user = `Problem: ${problem}\n\nClinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}${evidenceContext}\n\nReference specific case details in your teaching content.`;
+
+      try {
+        const response = await callAi(sys, user, 3000);
+        const parsed = extractJson(response);
+        teachingCases.push(parsed);
+      } catch (e) {
+        console.error(`Failed to generate case for "${problem}":`, e);
+        // Continue with remaining problems instead of failing entirely
+      }
+
+      // Wait between cases to respect Groq's tokens-per-minute limit
+      if (i < problemsToTeach.length - 1) {
+        setAiStatus(prev => ({ ...prev, error: `Waiting to respect rate limits (${i+1}/${problemsToTeach.length} cases done)...` }));
+        await wait(20000);
+      }
+    }
+
+    // Cross-cutting themes as a separate small call
+    let crossCuttingThemes = [];
+    let questionsForReflection = [];
+    if (teachingCases.length > 1) {
+      await wait(20000);
+      setAiStatus(prev => ({ ...prev, error: "Generating cross-cutting themes..." }));
+      try {
+        const themesSys = `Return ONLY valid JSON (no markdown fences):
+{
+  "crossCuttingThemes": ["2-3 themes spanning problems"],
+  "questionsForReflection": ["2-3 open-ended reflection questions"]
+}`;
+        const themesUser = `Problems: ${teachingCases.map(tc => tc.problem).join("; ")}\nClinical context: ${chiefConcern || "internal medicine encounter"}`;
+        const themesResp = await callAi(themesSys, themesUser, 800);
+        const themesParsed = extractJson(themesResp);
+        crossCuttingThemes = themesParsed.crossCuttingThemes || [];
+        questionsForReflection = themesParsed.questionsForReflection || [];
+      } catch (e) {
+        console.warn("Themes generation failed:", e);
+      }
+    }
+
+    return { teachingCases, crossCuttingThemes, questionsForReflection };
   };
 
   // ===== Source prompt generator =====
@@ -501,8 +533,7 @@ I want to focus today's teaching on: ${focusText}.
       const errors = [];
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-      // Call 1: Teaching content (biggest — do first, alone)
-      setAiStatus({ analyzing: false, generating: true, error: "Generating teaching cases..." });
+// Call 1: Teaching content (handles its own internal rate-limiting waits)
       try {
         aiContent = await generateAiTeachingContent();
         setAiTeachingContent(aiContent);
@@ -510,8 +541,8 @@ I want to focus today's teaching on: ${focusText}.
         errors.push(`Teaching content: ${e.message}`);
       }
 
-      // Wait for TPM budget to reset before next call
-      await wait(15000);
+      // Extra wait before source synthesis
+      await wait(20000);
 
       // Call 2: Source synthesis (only if 2+ sources)
       const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
