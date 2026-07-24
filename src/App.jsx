@@ -425,7 +425,7 @@ Number of shelf questions per problem: 3.`;
 
     const user = `Clinical note:\n${clinicalNote}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}\n\nEvery item must reference specific details from THIS case.`;
 
-    const response = await callAi(sys, user, 8000);
+    const response = await callAi(sys, user, 5000);
     return extractJson(response);
   };
 
@@ -472,24 +472,51 @@ I want to focus today's teaching on: ${focusText}.
     let pubmed = null;
 
     if (aiEnabled && activeFocusList.length > 0) {
-      const results = await Promise.allSettled([
-        generateAiTeachingContent(),
-        synthesizeSources(),
-        fetchPubmedForCase(),
-      ]);
       const errors = [];
-      if (results[0].status === "fulfilled") aiContent = results[0].value;
-      else errors.push(`Teaching content: ${results[0].reason?.message || results[0].reason}`);
-      if (results[1].status === "fulfilled") synthesized = results[1].value;
-      else errors.push(`Source synthesis: ${results[1].reason?.message || results[1].reason}`);
-      if (results[2].status === "fulfilled") pubmed = results[2].value;
-      else errors.push(`PubMed: ${results[2].reason?.message || results[2].reason}`);
-      setAiTeachingContent(aiContent);
-      setSynthesizedEvidence(synthesized);
-      setPubmedResults(pubmed);
+      const wait = (ms) => new Promise(r => setTimeout(r, ms));
+
+      // Call 1: Teaching content (biggest — do first, alone)
+      setAiStatus({ analyzing: false, generating: true, error: "Generating teaching cases..." });
+      try {
+        aiContent = await generateAiTeachingContent();
+        setAiTeachingContent(aiContent);
+      } catch (e) {
+        errors.push(`Teaching content: ${e.message}`);
+      }
+
+      // Wait for TPM budget to reset before next call
+      await wait(15000);
+
+      // Call 2: Source synthesis (only if 2+ sources)
+      const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+      if (filledSources.length >= 2) {
+        setAiStatus({ analyzing: false, generating: true, error: "Synthesizing sources..." });
+        try {
+          synthesized = await synthesizeSources();
+          setSynthesizedEvidence(synthesized);
+        } catch (e) {
+          errors.push(`Source synthesis: ${e.message}`);
+        }
+        await wait(15000);
+      } else if (filledSources.length === 1) {
+        synthesized = { synthesized: false, singleSource: { source: sourceLabels[filledSources[0]], content: sourceResponses[filledSources[0]] } };
+        setSynthesizedEvidence(synthesized);
+      }
+
+      // Call 3: PubMed (smallest — do last)
+      setAiStatus({ analyzing: false, generating: true, error: "Fetching PubMed papers..." });
+      try {
+        pubmed = await fetchPubmedForCase();
+        setPubmedResults(pubmed);
+      } catch (e) {
+        errors.push(`PubMed: ${e.message}`);
+      }
+
       if (errors.length > 0) {
         console.error("Generation errors:", errors);
         setAiStatus({ analyzing: false, generating: false, error: errors.join(" · ") });
+      } else {
+        setAiStatus({ analyzing: false, generating: false, error: null });
       }
     } else {
       const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
