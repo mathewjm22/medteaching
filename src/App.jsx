@@ -353,8 +353,9 @@ For each problem, generate ONE focused query prioritizing recent guidelines, lan
   };
 
   // ===== Analyze note with AI =====
-  const analyzeNote = async () => {
+const analyzeNote = async () => {
     if (!clinicalNote.trim()) return;
+    if (aiStatus.analyzing || aiStatus.generating) return;
     if (!aiEnabled) {
       setAiStatus({ ...aiStatus, error: "Enable AI on the Setup tab first." });
       return;
@@ -368,36 +369,24 @@ For each problem, generate ONE focused query prioritizing recent guidelines, lan
         complex_multimorbidity: "This is a complex multi-morbid patient. Emphasize: problem prioritization, medication reconciliation, care coordination, competing treatment goals."
       };
 
-      const sys = `You are a medical education assistant analyzing a clinical note for a medical student in a longitudinal integrated clerkship.
-
-${lensGuidance[teachingLens]}
-
-The note may have structured sections (Assessment, Plan, PMH, Meds, Labs, etc.), multiple active problems, direct patient/caregiver quotes, and trended lab/vital data. Extract all of this.
-
-Available focus areas: history, physicalExam, differential, workup, management, patientContext, ebm, communication
-
-Return ONLY valid JSON (no markdown fences):
+      const sys = `Extract teaching info from a clinical note. Return ONLY compact JSON, no markdown:
 {
-  "chiefConcern": "brief chief concern or reason for visit",
-  "workingDiagnosis": "primary/most teachable diagnosis, or 'multiple active problems' if truly multi-focal",
-  "activeProblems": [
-    {"problem": "problem name", "icdContext": "ICD if in note", "teachingValue": "brief note on why teachable", "keyIssue": "the core clinical question or dilemma"}
-  ],
-  "otherDiagnoses": ["list of other active problems as strings"],
-  "keyTopics": ["specific clinical topics worth teaching - be specific"],
-  "suggestedFocus": ["3-5 focus area keys from the list above"],
-  "reasoning": "2-3 sentence explanation",
-  "complexity": "common" or "complex",
-  "redFlags": ["concerning features, can't-miss diagnoses, iatrogenic risks"],
-  "patientQuotes": ["direct quotes verbatim from the note"],
-  "labTrends": [
-    {"parameter": "lab name", "trend": "brief description", "teachingPoint": "what this teaches"}
-  ]
-}`;
-      const extractedForAnalysis = extractEssentialNote(clinicalNote);
+  "chiefConcern": "brief",
+  "workingDiagnosis": "primary dx",
+  "activeProblems": [{"problem": "name", "keyIssue": "core dilemma", "teachingValue": "brief"}],
+  "keyTopics": ["3-5 specific teaching topics"],
+  "suggestedFocus": ["3-4 from: history, physicalExam, differential, workup, management, patientContext, ebm, communication"],
+  "reasoning": "1 sentence",
+  "complexity": "common or complex",
+  "redFlags": ["can't-miss items"],
+  "patientQuotes": ["verbatim quotes if any"],
+  "labTrends": [{"parameter": "name", "trend": "brief", "teachingPoint": "brief"}]
+}
+Be concise. ${lensGuidance[teachingLens]}`;
+      const extractedForAnalysis = extractEssentialNote(clinicalNote).slice(0, 6000);
       console.log(`[analyzeNote] Note: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
-      const user = `Clinical note (de-identified):\n\n${extractedForAnalysis}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
-      const response = await callAi(sys, user, 4000);
+      const user = `Note:\n${extractedForAnalysis}\n\nStudent: month ${phase.monthsIn} of LIC.`;
+      const response = await callAi(sys, user, 2000);
       const parsed = extractJson(response);
 
       setNoteAnalysis(parsed);
@@ -558,7 +547,7 @@ Include ONLY these subsections: ${includedSections}. Include exactly 2 shelf que
       const user = `Problem: ${problem}\n\nClinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}${evidenceContext}\n\nReference specific case details in your teaching content.`;
 
       try {
-        const response = await callAi(sys, user, 3000);
+        const response = await callAi(sys, user, 2500);
         const parsed = extractJson(response);
         teachingCases.push(parsed);
       } catch (e) {
@@ -566,10 +555,9 @@ Include ONLY these subsections: ${includedSections}. Include exactly 2 shelf que
         // Continue with remaining problems instead of failing entirely
       }
 
-      // Wait between cases to respect Groq's tokens-per-minute limit
       if (i < problemsToTeach.length - 1) {
-        setAiStatus(prev => ({ ...prev, error: `Waiting to respect rate limits (${i+1}/${problemsToTeach.length} cases done)...` }));
-        await wait(20000);
+        setAiStatus(prev => ({ ...prev, error: `Working on case ${i+2}/${problemsToTeach.length}...` }));
+        await wait(3000);
       }
     }
 
@@ -577,7 +565,7 @@ Include ONLY these subsections: ${includedSections}. Include exactly 2 shelf que
     let crossCuttingThemes = [];
     let questionsForReflection = [];
     if (teachingCases.length > 1) {
-      await wait(20000);
+      await wait(3000);
       setAiStatus(prev => ({ ...prev, error: "Generating cross-cutting themes..." }));
       try {
         const themesSys = `Return ONLY valid JSON (no markdown fences):
@@ -653,7 +641,7 @@ I want to focus today's teaching on: ${focusText}.
       }
 
       // Extra wait before source synthesis
-      await wait(20000);
+      await wait(3000);
 
       // Call 2: Source synthesis (only if 2+ sources)
       const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
@@ -665,7 +653,7 @@ I want to focus today's teaching on: ${focusText}.
         } catch (e) {
           errors.push(`Source synthesis: ${e.message}`);
         }
-        await wait(15000);
+        await wait(3000);
       } else if (filledSources.length === 1) {
         synthesized = { synthesized: false, singleSource: { source: sourceLabels[filledSources[0]], content: sourceResponses[filledSources[0]] } };
         setSynthesizedEvidence(synthesized);
