@@ -472,20 +472,24 @@ I want to focus today's teaching on: ${focusText}.
     let pubmed = null;
 
     if (aiEnabled && activeFocusList.length > 0) {
-      try {
-        const [tc, syn, pm] = await Promise.all([
-          generateAiTeachingContent(),
-          synthesizeSources(),
-          fetchPubmedForCase().catch(e => { console.error("PubMed error:", e); return null; }),
-        ]);
-        aiContent = tc;
-        synthesized = syn;
-        pubmed = pm;
-        setAiTeachingContent(aiContent);
-        setSynthesizedEvidence(synthesized);
-        setPubmedResults(pubmed);
-      } catch (e) {
-        setAiStatus({ analyzing: false, generating: false, error: `Generation failed: ${e.message}` });
+      const results = await Promise.allSettled([
+        generateAiTeachingContent(),
+        synthesizeSources(),
+        fetchPubmedForCase(),
+      ]);
+      const errors = [];
+      if (results[0].status === "fulfilled") aiContent = results[0].value;
+      else errors.push(`Teaching content: ${results[0].reason?.message || results[0].reason}`);
+      if (results[1].status === "fulfilled") synthesized = results[1].value;
+      else errors.push(`Source synthesis: ${results[1].reason?.message || results[1].reason}`);
+      if (results[2].status === "fulfilled") pubmed = results[2].value;
+      else errors.push(`PubMed: ${results[2].reason?.message || results[2].reason}`);
+      setAiTeachingContent(aiContent);
+      setSynthesizedEvidence(synthesized);
+      setPubmedResults(pubmed);
+      if (errors.length > 0) {
+        console.error("Generation errors:", errors);
+        setAiStatus({ analyzing: false, generating: false, error: errors.join(" · ") });
       }
     } else {
       const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
@@ -1201,8 +1205,14 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
       </div>
 
       {/* Teaching Cases - individually toggleable */}
-      {s.teachingCases.length > 0 && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        {s.teachingCases.length === 0 ? (
+          <div className="bg-slate-100 px-4 py-3 flex items-center justify-between">
+            <div className="font-semibold text-sm text-slate-500">Teaching Cases</div>
+            <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">No AI content — check errors above or re-run</span>
+          </div>
+        ) : (
+          <>
           <div className="bg-slate-800 text-white px-4 py-2">
             <div className="font-semibold text-sm">Teaching Cases ({s.teachingCases.filter(tc => tc.enabled).length} of {s.teachingCases.length} enabled)</div>
           </div>
@@ -1249,8 +1259,9 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
               )}
             </div>
           ))}
-        </div>
-      )}
+          </>
+        )}
+      </div>
 
       {/* Lab Trends */}
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
@@ -1258,18 +1269,22 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
       </div>
 
       {/* Cross-Cutting Themes */}
-      {s.crossCuttingThemes.content.length > 0 && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        {s.crossCuttingThemes.content.length > 0 ? (
           <SectionHeader label="Cross-Cutting Themes" enabled={s.crossCuttingThemes.enabled} onToggle={() => togglePreviewSection("crossCuttingThemes")} count={s.crossCuttingThemes.content.length} />
-        </div>
-      )}
+        ) : (
+          <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Cross-Cutting Themes</div><span className="text-xs text-slate-500 italic">Not generated</span></div>
+        )}
+      </div>
 
       {/* Synthesized Evidence */}
-      {s.synthesizedEvidence.content && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        {s.synthesizedEvidence.content ? (
           <SectionHeader label="Evidence Summary (from external sources)" enabled={s.synthesizedEvidence.enabled} onToggle={() => togglePreviewSection("synthesizedEvidence")} />
-        </div>
-      )}
+        ) : (
+          <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Evidence Summary</div><span className="text-xs text-slate-500 italic">No external sources added</span></div>
+        )}
+      </div>
 
       {/* PubMed Recommended Reading */}
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
@@ -1460,7 +1475,79 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
               </section>
             );
           })}
+            {/* Lab & Vital Trends */}
+          {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Lab & Vital Trends for Interpretation</h2>
+              <table className="w-full text-sm border border-slate-300">
+                <thead>
+                  <tr className="bg-slate-800 text-white">
+                    <th className="px-3 py-2 text-left font-semibold w-1/4">Parameter</th>
+                    <th className="px-3 py-2 text-left font-semibold w-1/3">Trend</th>
+                    <th className="px-3 py-2 text-left font-semibold">Teaching Point</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {s.labTrends.content.map((t, i) => (
+                    <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                      <td className="px-3 py-2 font-semibold text-slate-900 border-t border-slate-200">{t.parameter}</td>
+                      <td className="px-3 py-2 text-slate-700 border-t border-slate-200">{t.trend}</td>
+                      <td className="px-3 py-2 text-slate-700 border-t border-slate-200 italic">{t.teachingPoint || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
 
+          {/* Cross-Cutting Themes */}
+          {s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0 && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Cross-Cutting Themes</h2>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                {s.crossCuttingThemes.content.map((t, i) => (
+                  <div key={i} className="border border-slate-300 p-3 rounded bg-slate-50">
+                    <div className="text-xs uppercase font-bold text-slate-500 mb-1">Theme {i+1}</div>
+                    <div className="text-sm text-slate-800">{t}</div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {/* Synthesized Evidence */}
+          {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Summary</h2>
+              {s.synthesizedEvidence.content.synthesized ? (
+                <div className="space-y-3">
+                  {s.synthesizedEvidence.content.unifiedSummary && (
+                    <div className="border-l-4 border-indigo-500 bg-indigo-50 p-3">
+                      <div className="text-xs uppercase font-bold text-indigo-900 mb-1">Consensus</div>
+                      <div className="text-sm text-slate-800">{s.synthesizedEvidence.content.unifiedSummary}</div>
+                    </div>
+                  )}
+                  {s.synthesizedEvidence.content.consolidatedPoints?.length > 0 && (
+                    <table className="w-full text-sm border border-slate-200">
+                      <thead><tr className="bg-slate-100"><th className="px-3 py-1.5 text-left w-1/4">Topic</th><th className="px-3 py-1.5 text-left">Content</th><th className="px-3 py-1.5 text-left w-1/5">Sources</th></tr></thead>
+                      <tbody>{s.synthesizedEvidence.content.consolidatedPoints.map((p, i) => (
+                        <tr key={i} className="border-t border-slate-200">
+                          <td className="px-3 py-2 font-semibold align-top">{p.topic}</td>
+                          <td className="px-3 py-2 text-slate-700">{p.detail}</td>
+                          <td className="px-3 py-2 text-xs text-slate-600 align-top">{Array.isArray(p.sources) ? p.sources.join(", ") : p.sources}</td>
+                        </tr>
+                      ))}</tbody>
+                    </table>
+                  )}
+                </div>
+              ) : s.synthesizedEvidence.content.singleSource ? (
+                <div className="border border-slate-300 rounded p-3 bg-slate-50 text-sm whitespace-pre-wrap">
+                  <div className="text-xs font-bold text-slate-600 uppercase mb-1">From {s.synthesizedEvidence.content.singleSource.source}</div>
+                  {s.synthesizedEvidence.content.singleSource.content}
+                </div>
+              ) : null}
+            </section>
+          )}
           {/* PubMed Recommended Reading */}
           {s.pubmed?.enabled && s.pubmed.content?.some(r => r.papers?.length > 0) && (
             <section>
@@ -1488,6 +1575,41 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
               <div className="text-xs text-slate-500 italic mt-3">Results retrieved live from PubMed (NCBI E-utilities). Sorted by relevance, filtered to last 10 years.</div>
             </section>
           )}
+          {/* Long-Term Goals + Next Session Prep in two columns */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (
+              <section>
+                <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Ongoing Learning Goals</h2>
+                <ul className="space-y-2">
+                  {s.longTermGoals.content.map(g => (
+                    <li key={g.id} className="text-sm text-slate-800 flex gap-2">
+                      <span className="text-indigo-700 font-bold flex-shrink-0">›</span>
+                      <div><div>{g.text}</div><div className="text-xs text-slate-500">Added {g.added}</div></div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {s.nextSessionPrep?.enabled && (
+              <section>
+                <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Prep for Next Session</h2>
+                {s.nextSessionPrep.reflectionQuestions?.length > 0 && (
+                  <div className="mb-3">
+                    <div className="text-xs uppercase font-bold text-slate-600 mb-1">Reflect on</div>
+                    <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
+                      {s.nextSessionPrep.reflectionQuestions.map((q, i) => <li key={i}>{q}</li>)}
+                    </ul>
+                  </div>
+                )}
+                <div className="text-xs uppercase font-bold text-slate-600 mb-1">Come prepared to</div>
+                <ul className="space-y-1 text-sm text-slate-800 ml-4 list-disc">
+                  <li>Discuss the questions above.</li>
+                  <li>Bring 1 question that came up while working through this material.</li>
+                  <li>Identify 1 area where you felt unsure.</li>
+                </ul>
+              </section>
+            )}
+          </div>
 
           <div className="border-t-2 border-slate-800 pt-3 mt-6 text-xs text-slate-500 text-center space-y-1">
             <div>Generated by LIC Teaching Document Generator · Aligned with the CU School of Medicine MEPO framework.</div>
