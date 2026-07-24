@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { FileText, Printer, Copy, Check, Plus, X, BookOpen, Target, Stethoscope, Brain, ClipboardList, Users, TrendingUp, Save, Trash2, Sparkles, ChevronDown, ChevronRight, Calendar, User, AlertCircle, Zap, Loader2, Wand2 } from "lucide-react";
 
 // ===== Hardcoded config =====
@@ -111,6 +111,13 @@ export default function App() {
   const focusIcons = { history: Stethoscope, physicalExam: Users, differential: Brain, workup: ClipboardList, management: Target, patientContext: Users, ebm: BookOpen, communication: Users };
   const focusLabels = { history: "History Taking", physicalExam: "Physical Exam", differential: "Differential Diagnosis", workup: "Diagnostic Workup", management: "Management Plan", patientContext: "Patient Context / SDoH", ebm: "Evidence-Based Medicine", communication: "Communication" };
   const sourceLabels = { openevidence: "OpenEvidence", uptodate: "UpToDate", dynamed: "DynaMed", doxgpt: "DoxGPT (Doximity GPT)", pubmed: "PubMed" };
+  const sourceUrls = {
+    openevidence: "https://www.openevidence.com/",
+    uptodate: "https://www.uptodate.com/contents/search",
+    dynamed: "https://www.dynamed.com/",
+    doxgpt: "https://www.doximity.com/gpt",
+    pubmed: "https://pubmed.ncbi.nlm.nih.gov/",
+  };
 
   const activeSources = Object.keys(sources).filter(k => sources[k]);
   const activeFocusList = Object.keys(focusAreas).filter(k => focusAreas[k]);
@@ -419,12 +426,17 @@ Include ONLY these subsections in each teaching case: ${includedSections}
 
 Number of shelf questions per problem: 3.`;
 
-    const problemsContext = problemsToTeach.map((p, i) => `${i+1}. ${p}`).join("\n");
+const problemsContext = problemsToTeach.map((p, i) => `${i+1}. ${p}`).join("\n");
     const quotesContext = patientQuotes.length > 0 ? `\n\nAvailable quotes:\n${patientQuotes.map(q => `- "${q}"`).join("\n")}` : "";
     const trendsContext = labTrends.length > 0 ? `\n\nLab/vital trends:\n${labTrends.map(t => `- ${t.parameter}: ${t.trend}`).join("\n")}` : "";
 
-    const user = `Clinical note:\n${clinicalNote}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}\n\nEvery item must reference specific details from THIS case.`;
+    // Build evidence context from pasted external source responses
+    const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+    const evidenceContext = filledSources.length > 0
+      ? `\n\n=== CURATED EVIDENCE (from clinician-selected sources) ===\nThe attending has curated the following evidence from trusted medical references. Use this content to STRENGTHEN your learning points, citations, treatment recommendations, and clinical pearls. When you cite something from these sources, attribute it inline like "(per OpenEvidence)" or "(per UpToDate)". Do NOT invent facts beyond what appears in the clinical note or this curated evidence.\n\n${filledSources.map(s => `--- ${sourceLabels[s]} ---\n${sourceResponses[s]}`).join("\n\n")}`
+      : "";
 
+    const user = `Clinical note:\n${clinicalNote}\n\nChief concern: ${chiefConcern}\n\nGenerate teaching case for EACH:\n${problemsContext}${quotesContext}${trendsContext}${evidenceContext}\n\nEvery item must reference specific details from THIS case. When curated evidence is provided above, weave it directly into the relevant learning points, treatment recommendations, and citations.`;
     const response = await callAi(sys, user, 5000);
     return extractJson(response);
   };
@@ -549,7 +561,11 @@ I want to focus today's teaching on: ${focusText}.
           enabled: (aiContent?.crossCuttingThemes || []).length > 0,
           content: aiContent?.crossCuttingThemes || [],
         },
-        synthesizedEvidence: { enabled: !!synthesized, content: synthesized },
+        synthesizedEvidence: {
+          enabled: !!synthesized && !(activeFocusList.length > 0 && aiContent),
+          content: synthesized,
+          note: !!synthesized && !!aiContent ? "Evidence has been integrated into teaching cases above. Enable this section to also show as a standalone summary." : null,
+        },
         pubmed: {
           enabled: !!(pubmed && pubmed.some(p => p.papers?.length > 0)),
           content: pubmed || [],
@@ -1066,13 +1082,16 @@ I want to focus today's teaching on: ${focusText}.
               <div className="space-y-4">
                 {activeSources.map(src => (
                   <div key={src} className="border border-slate-200 rounded-lg overflow-hidden">
-                    <button onClick={() => toggleSection(src)} className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition">
-                      <div className="flex items-center gap-2 font-medium text-slate-900">
+                    <div className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition">
+                      <button onClick={() => toggleSection(src)} className="flex items-center gap-2 font-medium text-slate-900 flex-1 text-left">
                         {expandedSections[src] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         {sourceLabels[src]}
                         {sourceResponses[src]?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Response added</span>}
-                      </div>
-                    </button>
+                      </button>
+                      <a href={sourceUrls[src]} target="_blank" rel="noreferrer" className="ml-2 text-xs px-2 py-1 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                        Open {sourceLabels[src].split(" ")[0]} ↗
+                      </a>
+                    </div>
                     {expandedSections[src] && (
                       <div className="p-4 space-y-4 bg-white">
                         <div>
@@ -1175,6 +1194,10 @@ I want to focus today's teaching on: ${focusText}.
                 session={session}
                 onPrint={printDoc}
                 onEdit={() => { setPreviewMode(true); }}
+                onUpdate={(updater) => {
+                  if (generatedDoc) setGeneratedDoc(prev => updater(JSON.parse(JSON.stringify(prev))));
+                  else setPreviewData(prev => updater(JSON.parse(JSON.stringify(prev))));
+                }}
               />
             )}
           </>
@@ -1183,6 +1206,79 @@ I want to focus today's teaching on: ${focusText}.
     </div>
   );
 }
+
+// ============ INLINE EDITABLE TEXT COMPONENT ============
+function Editable({ value, onSave, multiline = false, className = "", as: Tag = "span" }) {
+  const [editing, setEditing] = React.useState(false);
+  const [showToolbar, setShowToolbar] = React.useState(false);
+  const ref = React.useRef(null);
+
+  const startEdit = () => {
+    setEditing(true);
+    setShowToolbar(true);
+    setTimeout(() => {
+      if (ref.current) {
+        ref.current.focus();
+        // Move caret to end
+        const range = document.createRange();
+        const sel = window.getSelection();
+        range.selectNodeContents(ref.current);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    }, 10);
+  };
+
+  const finish = () => {
+    if (ref.current) onSave(ref.current.innerHTML);
+    setEditing(false);
+    setShowToolbar(false);
+  };
+
+  const cancel = () => {
+    if (ref.current) ref.current.innerHTML = value || "";
+    setEditing(false);
+    setShowToolbar(false);
+  };
+
+  const applyFormat = (cmd) => {
+    document.execCommand(cmd, false, null);
+    if (ref.current) ref.current.focus();
+  };
+
+  const handleKey = (e) => {
+    if (e.key === "Escape") { e.preventDefault(); cancel(); }
+    if (!multiline && e.key === "Enter") { e.preventDefault(); finish(); }
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); finish(); }
+  };
+
+  return (
+    <span className="relative inline-block" style={{width: multiline ? "100%" : "auto"}}>
+      {showToolbar && editing && (
+        <div className="absolute -top-9 left-0 z-20 bg-slate-800 text-white rounded shadow-lg flex items-center gap-0.5 px-1 py-0.5 no-print">
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("bold"); }} className="px-2 py-1 hover:bg-slate-700 rounded text-xs font-bold">B</button>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("italic"); }} className="px-2 py-1 hover:bg-slate-700 rounded text-xs italic">I</button>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("underline"); }} className="px-2 py-1 hover:bg-slate-700 rounded text-xs underline">U</button>
+          <div className="w-px h-4 bg-slate-600 mx-1"></div>
+          <button type="button" onMouseDown={e => { e.preventDefault(); finish(); }} className="px-2 py-1 hover:bg-emerald-700 rounded text-xs">Done</button>
+          <button type="button" onMouseDown={e => { e.preventDefault(); cancel(); }} className="px-2 py-1 hover:bg-red-700 rounded text-xs">Cancel</button>
+        </div>
+      )}
+      <Tag
+        ref={ref}
+        contentEditable={editing}
+        suppressContentEditableWarning
+        onClick={() => !editing && startEdit()}
+        onBlur={editing ? finish : undefined}
+        onKeyDown={handleKey}
+        className={`${className} ${editing ? "bg-yellow-50 ring-2 ring-yellow-400 rounded px-1 outline-none" : "hover:bg-yellow-50 hover:outline-dashed hover:outline-1 hover:outline-yellow-400 cursor-text rounded px-0.5"} transition`}
+        dangerouslySetInnerHTML={{ __html: value || "" }}
+      />
+    </span>
+  );
+}
+
 // ============ PREVIEW EDITOR COMPONENT ============
 function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, aiStatus, focusLabels }) {
   const s = previewData.sections;
@@ -1307,7 +1403,10 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
       {/* Synthesized Evidence */}
       <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
         {s.synthesizedEvidence.content ? (
-          <SectionHeader label="Evidence Summary (from external sources)" enabled={s.synthesizedEvidence.enabled} onToggle={() => togglePreviewSection("synthesizedEvidence")} />
+          <>
+            <SectionHeader label="Evidence Summary (from external sources)" enabled={s.synthesizedEvidence.enabled} onToggle={() => togglePreviewSection("synthesizedEvidence")} />
+            {s.synthesizedEvidence.note && <div className="px-4 py-2 text-xs text-slate-600 italic bg-emerald-50 border-t border-emerald-100">{s.synthesizedEvidence.note}</div>}
+          </>
         ) : (
           <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Evidence Summary</div><span className="text-xs text-slate-500 italic">No external sources added</span></div>
         )}
@@ -1375,17 +1474,54 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 }
 
 // ============ FINAL DOCUMENT COMPONENT ============
-function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
+function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   if (!doc) return null;
   const s = doc.sections || {};
   const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
   const printDoc = () => window.print();
 
+  // Helper: update a field via path like "chiefConcern" or "sections.sessionGoal.content"
+  const setField = (path, value) => {
+    if (!onUpdate) return;
+    onUpdate(next => {
+      const parts = path.split(".");
+      let obj = next;
+      for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+      obj[parts[parts.length - 1]] = value;
+      return next;
+    });
+  };
+
+  // Helper: update within a specific teaching case
+  const setCaseField = (caseIdx, field, value) => {
+    if (!onUpdate) return;
+    onUpdate(next => {
+      next.sections.teachingCases[caseIdx].data[field] = value;
+      return next;
+    });
+  };
+  const setCaseNestedField = (caseIdx, field, subfield, value) => {
+    if (!onUpdate) return;
+    onUpdate(next => {
+      if (!next.sections.teachingCases[caseIdx].data[field]) next.sections.teachingCases[caseIdx].data[field] = {};
+      next.sections.teachingCases[caseIdx].data[field][subfield] = value;
+      return next;
+    });
+  };
+  const setCaseArrayItem = (caseIdx, field, itemIdx, subfield, value) => {
+    if (!onUpdate) return;
+    onUpdate(next => {
+      next.sections.teachingCases[caseIdx].data[field][itemIdx][subfield] = value;
+      return next;
+    });
+  };
+
   return (
     <>
-      <div className="no-print flex gap-2 mb-4">
+      <div className="no-print flex gap-2 mb-4 items-center">
         <button onClick={printDoc} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"><Printer className="w-4 h-4" />Print / Save as PDF</button>
         <button onClick={onEdit} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back to Preview</button>
+        <div className="text-xs text-slate-500 italic ml-2">Click any text to edit. Bold/italic/underline available in the popup toolbar.</div>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 print-doc" style={{fontFamily: "Georgia, 'Times New Roman', serif"}}>
@@ -1414,8 +1550,8 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
               <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Case at a Glance</h2>
               <table className="w-full text-sm border border-slate-300">
                 <tbody>
-                  {doc.chiefConcern && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 w-40 align-top">Chief concern</td><td className="px-3 py-2 text-slate-800">{doc.chiefConcern}</td></tr>}
-                  {doc.workingDx && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Primary working diagnosis</td><td className="px-3 py-2 text-slate-800">{doc.workingDx}</td></tr>}
+                  {doc.chiefConcern && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 w-40 align-top">Chief concern</td><td className="px-3 py-2 text-slate-800"><Editable value={doc.chiefConcern} onSave={v => setField("chiefConcern", v.replace(/<[^>]+>/g, ""))} /></td></tr>}
+                  {doc.workingDx && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Primary working diagnosis</td><td className="px-3 py-2 text-slate-800"><Editable value={doc.workingDx} onSave={v => setField("workingDx", v.replace(/<[^>]+>/g, ""))} /></td></tr>}
                   <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Complexity</td><td className="px-3 py-2 text-slate-800">{doc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td></tr>
                   {doc.selectedProblems?.length > 0 && <tr><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Problems in focus</td><td className="px-3 py-2 text-slate-800"><ul className="list-disc ml-4">{doc.selectedProblems.map((p, i) => <li key={i}>{p}</li>)}</ul></td></tr>}
                 </tbody>
@@ -1428,7 +1564,7 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
             <section>
               <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3">
                 <div className="text-xs uppercase tracking-widest text-indigo-700 font-bold mb-1">Session Goal</div>
-                <div className="text-slate-800 font-medium">{s.sessionGoal.content}</div>
+                <div className="text-slate-800 font-medium"><Editable value={s.sessionGoal.content} onSave={v => setField("sections.sessionGoal.content", v)} multiline /></div>
               </div>
             </section>
           )}
@@ -1456,7 +1592,11 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
                   {c.primaryDiagnosis?.name && (
                     <div>
                       <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1">Primary Diagnosis</div>
-                      <div className="text-sm text-slate-800"><span className="font-bold">{c.primaryDiagnosis.name}.</span> {c.primaryDiagnosis.briefDefinition}</div>
+                      <div className="text-sm text-slate-800">
+                        <span className="font-bold"><Editable value={c.primaryDiagnosis.name} onSave={v => setCaseNestedField(idx, "primaryDiagnosis", "name", v.replace(/<[^>]+>/g, ""))} /></span>
+                        <span>. </span>
+                        <Editable value={c.primaryDiagnosis.briefDefinition || ""} onSave={v => setCaseNestedField(idx, "primaryDiagnosis", "briefDefinition", v)} multiline />
+                      </div>
                     </div>
                   )}
                   {c.keyLearningPoints?.length > 0 && (
@@ -1465,7 +1605,12 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
                       <ol className="space-y-2">{c.keyLearningPoints.map((lp, i) => (
                         <li key={i} className="text-sm text-slate-800 flex gap-2">
                           <span className="font-bold text-slate-500 flex-shrink-0 min-w-[1.5rem]">{i+1}.</span>
-                          <div><span className="font-semibold text-slate-900">{lp.point}.</span> <span className="text-slate-700">{lp.explanation}</span>{lp.citation && <span className="text-xs text-slate-500 italic ml-1">({lp.citation})</span>}</div>
+                          <div>
+                            <span className="font-semibold text-slate-900"><Editable value={lp.point} onSave={v => setCaseArrayItem(idx, "keyLearningPoints", i, "point", v.replace(/<[^>]+>/g, ""))} /></span>
+                            <span>. </span>
+                            <span className="text-slate-700"><Editable value={lp.explanation} onSave={v => setCaseArrayItem(idx, "keyLearningPoints", i, "explanation", v)} multiline /></span>
+                            {lp.citation && <span className="text-xs text-slate-500 italic ml-1">(<Editable value={lp.citation} onSave={v => setCaseArrayItem(idx, "keyLearningPoints", i, "citation", v.replace(/<[^>]+>/g, ""))} />)</span>}
+                          </div>
                         </li>
                       ))}</ol>
                     </div>
@@ -1476,7 +1621,12 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
                       <div className="space-y-4">{c.shelfQuestions.map((q, i) => (
                         <div key={i} className="border border-slate-300 rounded overflow-hidden">
                           <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
-                          <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
+                          <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200"><Editable value={q.vignette} onSave={v => {
+                            onUpdate(next => {
+                              next.sections.teachingCases[idx].data.shelfQuestions[i].vignette = v;
+                              return next;
+                            });
+                          }} multiline /></div>
                           <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
                             <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
                               {q.options && Object.entries(q.options).map(([letter, opt]) => (
@@ -1486,7 +1636,12 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
                           </div>
                           <div className="px-3 py-2 bg-emerald-50 text-sm">
                             <div className="text-xs font-bold text-emerald-800 uppercase mb-1">Answer: {q.correctAnswer}</div>
-                            <div className="text-slate-800">{q.explanation}</div>
+                            <div className="text-slate-800"><Editable value={q.explanation} onSave={v => {
+                              onUpdate(next => {
+                                next.sections.teachingCases[idx].data.shelfQuestions[i].explanation = v;
+                                return next;
+                              });
+                            }} multiline /></div>
                           </div>
                         </div>
                       ))}</div>
@@ -1495,7 +1650,7 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
                   {c.clinicalPearl && (
                     <div className="border-l-4 border-purple-600 bg-purple-50 px-3 py-2">
                       <div className="text-xs font-bold text-purple-900 mb-1 uppercase">Clinical Pearl</div>
-                      <div className="text-sm text-slate-800">{c.clinicalPearl}</div>
+                      <div className="text-sm text-slate-800"><Editable value={c.clinicalPearl} onSave={v => setCaseField(idx, "clinicalPearl", v)} multiline /></div>
                     </div>
                   )}
                 </div>
