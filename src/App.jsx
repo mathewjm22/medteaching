@@ -578,31 +578,7 @@ I want to focus today's teaching on: ${focusText}.
     });
   };
 
-    const doc = {
-      generated: new Date().toLocaleString(),
-      student: session.studentName || "Student",
-      phase, chiefConcern, workingDx,
-      complexity: session.complexity, sessionGoal, extractedTopics,
-      focusAreas: activeFocusList,
-      teachingLens,
-      activeProblems, selectedProblems, patientQuotes, labTrends,
-      crossCuttingThemes: aiContent?.crossCuttingThemes || [],
-      questionsForReflection: aiContent?.questionsForReflection || [],
-      teachingCases: aiContent?.teachingCases || [],
-      fallbackCases: !aiContent && selectedProblems.length > 0
-        ? selectedProblems.map(p => ({ problem: p, isFallback: true }))
-        : (!aiContent && workingDx ? [{ problem: workingDx, isFallback: true }] : []),
-      synthesizedEvidence: synthesized,
-      rawSourceContent: activeSources
-        .filter(s => sourceResponses[s]?.trim())
-        .map(s => ({ source: sourceLabels[s], content: sourceResponses[s] })),
-      longTermGoals,
-      noteAnalysis,
-    };
-    setGeneratedDoc(doc);
-    setActiveTab("output");
-    setAiStatus({ analyzing: false, generating: false, error: aiStatus.error });
-  };
+    
 
   const saveState = async () => {
     try {
