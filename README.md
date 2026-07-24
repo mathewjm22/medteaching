@@ -1,32 +1,55 @@
-# React + Vite
+# LIC Teaching Document Generator
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A web app for internal medicine teaching attendings to generate phase-aware, case-specific teaching documents for medical students in longitudinal integrated clerkships (LICs). Built on the CU School of Medicine MEPO framework.
 
-Currently, two official plugins are available:
+## Features
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Paste a de-identified clinical note and get a structured, printable teaching document
+- Auto-analyzes the note to extract active problems, patient quotes, and lab trends
+- Generates one full teaching case per selected problem (differential, learning points, shelf questions, treatment approach, citations)
+- Phase-aware content that calibrates to where the student is in their LIC year
+- Four teaching lenses: General IM, Geriatrics, Primary Care, Complex Multimorbidity
+- Optional external evidence integration (OpenEvidence, UpToDate, DynaMed, DoxGPT, PubMed) via copyable prompts
+- Persistent long-term learning goals across sessions
 
-## Environment Variables
+## Quick start (local dev)
 
-This application uses the Google Drive API and YouTube API to fetch content. You must provide the following environment variables.
-
-Create a `.env` file in the root directory:
-
-```env
-VITE_GOOGLE_API_KEY=your_google_api_key_here
-VITE_GOOGLE_DRIVE_ROOT_ID=1X8YH60SKS9aVmq7qHjDkSCrcW-sdq1Je
-VITE_GOOGLE_CLIENT_ID=your_google_client_id_here
+```bash
+npm install
+npm run dev
 ```
 
-`VITE_GOOGLE_API_KEY` is required for querying the Drive folders/files and YouTube details.
-`VITE_GOOGLE_DRIVE_ROOT_ID` is the ID of the parent folder in Google Drive.
+Open the printed URL. On the Setup tab, enable AI and either:
+- Paste a Groq API key directly (for local testing), OR
+- Enter your Cloudflare Worker proxy URL (recommended for deployment)
 
+## Deployment
 
-## React Compiler
+### Frontend (GitHub Pages)
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+1. Push this repo to GitHub
+2. In repo Settings → Pages, set Source to "GitHub Actions"
+3. In `vite.config.js`, set `base` to `"/your-repo-name/"`
+4. Push to `main` — the workflow deploys automatically
 
-## Expanding the ESLint configuration
+### Backend proxy (Cloudflare Worker)
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+The `worker/` folder contains the Groq proxy. See `worker/README.md` for setup, or:
+
+```bash
+cd worker
+npm install -g wrangler
+wrangler login
+wrangler secret put GROQ_API_KEY   # paste your Groq key
+wrangler deploy
+```
+
+Then edit `worker.js` to set `ALLOWED_ORIGINS` to your GitHub Pages URL.
+
+## Privacy
+
+De-identify clinical notes before pasting. When AI is enabled, note text is sent to Groq's servers. This app is not HIPAA-covered — verify your local compliance requirements.
+
+## License
+
+For educational use only.
