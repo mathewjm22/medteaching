@@ -58,9 +58,16 @@ export default function App() {
   const [sessionGoal, setSessionGoal] = useState("");
 
   // Generated content
+// Generated content
   const [aiTeachingContent, setAiTeachingContent] = useState(null);
   const [generatedDoc, setGeneratedDoc] = useState(null);
   const [synthesizedEvidence, setSynthesizedEvidence] = useState(null);
+  const [pubmedResults, setPubmedResults] = useState(null);
+  const [fetchingPubmed, setFetchingPubmed] = useState(false);
+
+  // Preview/edit mode - each section has {enabled, content}
+  const [previewMode, setPreviewMode] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
 
   // Load persisted state
   useEffect(() => {
@@ -136,6 +143,66 @@ export default function App() {
     const m = s.match(/\{[\s\S]*\}/);
     if (m) s = m[0];
     return JSON.parse(s);
+  };
+
+  // ===== Generate PubMed search queries via AI, then fetch papers =====
+  const fetchPubmedForCase = async () => {
+    if (!aiEnabled) return null;
+    if (!workingDx && selectedProblems.length === 0) return null;
+
+    const problemsList = selectedProblems.length > 0 ? selectedProblems : [workingDx];
+
+    // Step 1: Ask AI to generate optimized MeSH queries
+    const sys = `You generate optimized PubMed search queries using MeSH terms and boolean logic.
+Return ONLY valid JSON (no markdown fences):
+{
+  "queries": [
+    {"problem": "problem name", "query": "MeSH-optimized PubMed query string"}
+  ]
+}
+For each problem, generate ONE focused query prioritizing recent guidelines, landmark trials, and systematic reviews. Use MeSH terms in brackets like [Mesh], article type filters like AND (guideline[pt] OR systematic review[pt] OR randomized controlled trial[pt]), and quotes around exact phrases.`;
+
+    const user = `Generate PubMed queries for these clinical problems (student is at ${phase.name} level):\n${problemsList.map((p, i) => `${i+1}. ${p}`).join("\n")}\n\nContext: ${chiefConcern || "internal medicine encounter"}`;
+
+    let queries = [];
+    try {
+      const resp = await callAi(sys, user, 800);
+      const parsed = extractJson(resp);
+      queries = parsed.queries || [];
+    } catch (e) {
+      throw new Error(`Query generation failed: ${e.message}`);
+    }
+
+    // Step 2: Call PubMed for each query in parallel
+    const pubmedUrl = WORKER_URL.replace(/\/$/, "") + "/pubmed";
+    const results = await Promise.all(queries.map(async (q) => {
+      try {
+        const res = await fetch(pubmedUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ query: q.query, maxResults: 5, dateRange: "10" }),
+        });
+        if (!res.ok) return { problem: q.problem, query: q.query, papers: [], error: `HTTP ${res.status}` };
+        const data = await res.json();
+        return { problem: q.problem, query: q.query, papers: data.papers || [], totalCount: data.totalCount };
+      } catch (e) {
+        return { problem: q.problem, query: q.query, papers: [], error: e.message };
+      }
+    }));
+
+    return results;
+  };
+
+  const runPubmedSearch = async () => {
+    setFetchingPubmed(true);
+    setAiStatus({ ...aiStatus, error: null });
+    try {
+      const results = await fetchPubmedForCase();
+      setPubmedResults(results);
+    } catch (e) {
+      setAiStatus({ ...aiStatus, error: `PubMed search failed: ${e.message}` });
+    }
+    setFetchingPubmed(false);
   };
 
   // ===== Analyze note with AI =====
@@ -398,33 +465,123 @@ I want to focus today's teaching on: ${focusText}.
   };
 
   // ===== Generate final document =====
+// ===== Generate preview (was: generate document) =====
   const generateDocument = async () => {
     setAiStatus({ ...aiStatus, generating: true, error: null });
     let aiContent = null;
     let synthesized = null;
+    let pubmed = null;
 
     if (aiEnabled && activeFocusList.length > 0) {
       try {
-        // Run teaching content and source synthesis in parallel
-        const [tc, syn] = await Promise.all([
+        // Run teaching content, source synthesis, and pubmed fetch in parallel
+        const [tc, syn, pm] = await Promise.all([
           generateAiTeachingContent(),
           synthesizeSources(),
+          fetchPubmedForCase().catch(e => { console.error("PubMed error:", e); return null; }),
         ]);
         aiContent = tc;
         synthesized = syn;
+        pubmed = pm;
         setAiTeachingContent(aiContent);
         setSynthesizedEvidence(synthesized);
+        setPubmedResults(pubmed);
       } catch (e) {
-        setAiStatus({ analyzing: false, generating: false, error: `AI generation failed: ${e.message}` });
+        setAiStatus({ analyzing: false, generating: false, error: `Generation failed: ${e.message}` });
       }
     } else {
-      // If AI is off, still handle single-source case for evidence display
       const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
       if (filledSources.length === 1) {
         synthesized = { synthesized: false, singleSource: { source: sourceLabels[filledSources[0]], content: sourceResponses[filledSources[0]] } };
-        setSynthesizedEvidence(synthesized);
       }
     }
+
+    // Build the preview data structure — each section has an `enabled` toggle
+    // and editable content. Default all enabled.
+    const preview = {
+      generated: new Date().toLocaleString(),
+      student: session.studentName || "Student",
+      phase, chiefConcern, workingDx,
+      complexity: session.complexity, sessionGoal, extractedTopics,
+      focusAreas: activeFocusList,
+      teachingLens,
+      activeProblems, selectedProblems, patientQuotes, labTrends,
+      longTermGoals,
+      noteAnalysis,
+      sections: {
+        caseAtGlance: { enabled: true, editable: false },
+        sessionGoal: { enabled: !!sessionGoal, content: sessionGoal },
+        phaseFraming: { enabled: true, editable: false },
+        teachingCases: (aiContent?.teachingCases || []).map((tc, idx) => ({
+          enabled: true,
+          data: tc,
+          id: `tc-${idx}`,
+        })),
+        labTrends: { enabled: labTrends.length > 0, content: labTrends },
+        crossCuttingThemes: {
+          enabled: (aiContent?.crossCuttingThemes || []).length > 0,
+          content: aiContent?.crossCuttingThemes || [],
+        },
+        synthesizedEvidence: { enabled: !!synthesized, content: synthesized },
+        pubmed: {
+          enabled: !!(pubmed && pubmed.some(p => p.papers?.length > 0)),
+          content: pubmed || [],
+        },
+        longTermGoals: { enabled: longTermGoals.length > 0, content: longTermGoals },
+        nextSessionPrep: {
+          enabled: true,
+          reflectionQuestions: aiContent?.questionsForReflection || [],
+        },
+      },
+    };
+
+    setPreviewData(preview);
+    setPreviewMode(true);
+    setActiveTab("output");
+    setAiStatus({ analyzing: false, generating: false, error: aiStatus.error });
+  };
+
+  // Commit the edited preview into the final document
+  const commitPreviewToDocument = () => {
+    if (!previewData) return;
+    setGeneratedDoc(previewData);
+    setPreviewMode(false);
+  };
+
+  const togglePreviewSection = (path) => {
+    setPreviewData(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      const parts = path.split(".");
+      let obj = next.sections;
+      for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+      obj[parts[parts.length - 1]].enabled = !obj[parts[parts.length - 1]].enabled;
+      return next;
+    });
+  };
+  const toggleTeachingCase = (idx) => {
+    setPreviewData(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      next.sections.teachingCases[idx].enabled = !next.sections.teachingCases[idx].enabled;
+      return next;
+    });
+  };
+  const updatePreviewField = (path, value) => {
+    setPreviewData(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      const parts = path.split(".");
+      let obj = next;
+      for (let i = 0; i < parts.length - 1; i++) obj = obj[parts[i]];
+      obj[parts[parts.length - 1]] = value;
+      return next;
+    });
+  };
+  const updateTeachingCaseField = (caseIdx, field, value) => {
+    setPreviewData(prev => {
+      const next = JSON.parse(JSON.stringify(prev));
+      next.sections.teachingCases[caseIdx].data[field] = value;
+      return next;
+    });
+  };
 
     const doc = {
       generated: new Date().toLocaleString(),
@@ -487,7 +644,7 @@ I want to focus today's teaching on: ${focusText}.
     { id: "focus", label: "3. Teaching Focus", icon: Target },
     { id: "sources", label: "4. Sources", icon: BookOpen },
     { id: "goals", label: "5. Goals", icon: TrendingUp },
-    { id: "output", label: "6. Document", icon: Sparkles },
+    { id: "output", label: "6. Review & Generate", icon: Sparkles },
   ];
 
   return (
@@ -983,550 +1140,390 @@ I want to focus today's teaching on: ${focusText}.
           </div>
         )}
 
-        {/* OUTPUT TAB */}
+        {/* OUTPUT TAB - Preview/Edit Mode + Final Document */}
         {activeTab === "output" && (
           <>
-            {!generatedDoc ? (
+            {!previewData && !generatedDoc ? (
               <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
                 <FileText className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                 <div className="text-slate-500 mb-4">No document generated yet.</div>
-                <button onClick={generateDocument} disabled={activeFocusList.length === 0} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">Generate Document</button>
+                <button onClick={generateDocument} disabled={activeFocusList.length === 0} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">Generate Preview</button>
               </div>
+            ) : previewMode && previewData ? (
+              // ============ PREVIEW/EDIT MODE ============
+              <PreviewEditor
+                previewData={previewData}
+                setPreviewData={setPreviewData}
+                togglePreviewSection={togglePreviewSection}
+                toggleTeachingCase={toggleTeachingCase}
+                updatePreviewField={updatePreviewField}
+                updateTeachingCaseField={updateTeachingCaseField}
+                commitPreviewToDocument={commitPreviewToDocument}
+                onBack={() => setActiveTab("goals")}
+                onRegenerate={generateDocument}
+                fetchingPubmed={fetchingPubmed}
+                aiStatus={aiStatus}
+                focusLabels={focusLabels}
+              />
             ) : (
-              <>
-                <div className="no-print flex gap-2 mb-4">
-                  <button onClick={printDoc} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"><Printer className="w-4 h-4" />Print / Save as PDF</button>
-                  <button onClick={() => setActiveTab("goals")} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Edit</button>
-                  <button onClick={generateDocument} disabled={aiStatus.generating} className="px-4 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 text-sm flex items-center gap-1">
-                    {aiStatus.generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}Regenerate
-                  </button>
-                </div>
-
-                <div className="bg-white rounded-xl border border-slate-200 print-doc" style={{fontFamily: "Georgia, 'Times New Roman', serif"}}>
-                  <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white px-8 py-6 print-header">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="text-xs uppercase tracking-widest text-slate-300 mb-1">Teaching Session</div>
-                        <h1 className="text-2xl font-bold">Clinical Case Learning Document</h1>
-                        <div className="text-sm text-slate-200 mt-2">
-                          Prepared for <span className="font-semibold text-white">{generatedDoc.student}</span> · {session.sessionDate}
-                        </div>
-                      </div>
-                      <div className="text-right text-xs text-slate-300">
-                        <div>Generated {generatedDoc.generated}</div>
-                        <div className="mt-1 inline-block px-2 py-1 bg-white/10 rounded font-sans">
-                          Month {generatedDoc.phase.monthsIn} · {generatedDoc.phase.name}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="px-8 py-6 space-y-6">
-                    {(generatedDoc.chiefConcern || generatedDoc.workingDx || generatedDoc.selectedProblems?.length > 0) && (
-                      <section>
-                        <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Case at a Glance</h2>
-                        <table className="w-full text-sm border border-slate-300">
-                          <tbody>
-                            {generatedDoc.chiefConcern && (
-                              <tr className="border-b border-slate-200">
-                                <td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 w-40 align-top">Chief concern</td>
-                                <td className="px-3 py-2 text-slate-800">{generatedDoc.chiefConcern}</td>
-                              </tr>
-                            )}
-                            {generatedDoc.workingDx && (
-                              <tr className="border-b border-slate-200">
-                                <td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Primary working diagnosis</td>
-                                <td className="px-3 py-2 text-slate-800">{generatedDoc.workingDx}</td>
-                              </tr>
-                            )}
-                            <tr className="border-b border-slate-200">
-                              <td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Complexity</td>
-                              <td className="px-3 py-2 text-slate-800">{generatedDoc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td>
-                            </tr>
-                            {generatedDoc.teachingLens && generatedDoc.teachingLens !== "general_im" && (
-                              <tr className="border-b border-slate-200">
-                                <td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Teaching lens</td>
-                                <td className="px-3 py-2 text-slate-800">{{geriatrics: "Geriatrics / Deprescribing", primary_care: "Primary Care / Preventive", complex_multimorbidity: "Complex Multimorbidity"}[generatedDoc.teachingLens]}</td>
-                              </tr>
-                            )}
-                            {generatedDoc.selectedProblems?.length > 0 && (
-                              <tr className="border-b border-slate-200">
-                                <td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Problems in focus</td>
-                                <td className="px-3 py-2 text-slate-800">
-                                  <ul className="list-disc ml-4 space-y-0.5">
-                                    {generatedDoc.selectedProblems.map((p, i) => <li key={i}>{p}</li>)}
-                                  </ul>
-                                </td>
-                              </tr>
-                            )}
-                            {generatedDoc.extractedTopics?.length > 0 && (
-                              <tr>
-                                <td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Key teaching topics</td>
-                                <td className="px-3 py-2 text-slate-800">{generatedDoc.extractedTopics.join(" · ")}</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </section>
-                    )}
-
-                    {generatedDoc.sessionGoal && (
-                      <section>
-                        <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3">
-                          <div className="text-xs uppercase tracking-widest text-indigo-700 font-bold mb-1">Session Goal</div>
-                          <div className="text-slate-800 font-medium">{generatedDoc.sessionGoal}</div>
-                        </div>
-                      </section>
-                    )}
-
-                    <section>
-                      <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Phase-Aligned Framing</h2>
-                      <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
-                        <div className="border border-slate-300 p-3 rounded">
-                          <div className="text-xs uppercase text-slate-500 font-semibold mb-1">Current Phase</div>
-                          <div className="font-semibold text-slate-900">{generatedDoc.phase.name}</div>
-                        </div>
-                        <div className="border border-slate-300 p-3 rounded">
-                          <div className="text-xs uppercase text-slate-500 font-semibold mb-1">Month in LIC</div>
-                          <div className="font-semibold text-slate-900">Month {generatedDoc.phase.monthsIn}</div>
-                        </div>
-                        <div className="border border-slate-300 p-3 rounded">
-                          <div className="text-xs uppercase text-slate-500 font-semibold mb-1">Expected Pace</div>
-                          <div className="text-slate-800 text-xs">{generatedDoc.phase.pace}</div>
-                        </div>
-                      </div>
-                      <div className="mt-3 text-sm text-slate-700 leading-relaxed">
-                        <strong>Developmental focus:</strong> {generatedDoc.phase.focus}. The exercises below are calibrated to this stage per the CU School of Medicine MEPO framework.
-                      </div>
-                    </section>
-
-                    {/* Teaching Cases */}
-                    {generatedDoc.teachingCases?.length > 0 ? (
-                      generatedDoc.teachingCases.map((tc, caseIdx) => (
-                        <section key={caseIdx} className="section-block">
-                          <div className="bg-slate-800 text-white px-4 py-3 rounded-t">
-                            <div className="text-xs uppercase tracking-widest text-slate-300">Teaching Case {caseIdx + 1} of {generatedDoc.teachingCases.length}</div>
-                            <h2 className="text-lg font-bold mt-0.5">{tc.problem}</h2>
-                          </div>
-
-                          <div className="border border-t-0 border-slate-300 rounded-b p-4 space-y-4">
-                            {tc.primaryDiagnosis?.name && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1">Primary Diagnosis</div>
-                                <div className="text-sm text-slate-800">
-                                  <span className="font-bold">{tc.primaryDiagnosis.name}.</span>
-                                  {tc.primaryDiagnosis.briefDefinition && <span> {tc.primaryDiagnosis.briefDefinition}</span>}
-                                </div>
-                              </div>
-                            )}
-
-                            {generatedDoc.focusAreas.includes("differential") && tc.differentialDiagnosis?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Differential Diagnosis & Clinical Reasoning</div>
-                                <table className="w-full text-sm border border-slate-200">
-                                  <thead>
-                                    <tr className="bg-slate-100">
-                                      <th className="px-3 py-1.5 text-left font-semibold text-slate-700 w-1/3">Alternative Diagnosis</th>
-                                      <th className="px-3 py-1.5 text-left font-semibold text-slate-700">Clinical Reasoning</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {tc.differentialDiagnosis.map((dd, i) => (
-                                      <tr key={i} className="border-t border-slate-200">
-                                        <td className="px-3 py-2 font-semibold text-slate-900 align-top">{dd.diagnosis}</td>
-                                        <td className="px-3 py-2 text-slate-700">{dd.reasoning}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-
-                            {tc.keyLearningPoints?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">
-                                  Key Learning Points
-                                  <span className="ml-2 text-slate-500 normal-case tracking-normal font-normal italic">Calibrated to {generatedDoc.phase.name}</span>
-                                </div>
-                                <ol className="space-y-2">
-                                  {tc.keyLearningPoints.map((lp, i) => (
-                                    <li key={i} className="text-sm text-slate-800 flex gap-2">
-                                      <span className="font-bold text-slate-500 flex-shrink-0 min-w-[1.5rem]">{i+1}.</span>
-                                      <div>
-                                        <span className="font-semibold text-slate-900">{lp.point}.</span>
-                                        <span className="text-slate-700"> {lp.explanation}</span>
-                                        {lp.citation && <span className="text-xs text-slate-500 italic ml-1">({lp.citation})</span>}
-                                      </div>
-                                    </li>
-                                  ))}
-                                </ol>
-                              </div>
-                            )}
-
-                            {(generatedDoc.focusAreas.includes("history") && tc.focusedHistoryQuestions?.length > 0) ||
-                             (generatedDoc.focusAreas.includes("physicalExam") && tc.physicalExam?.maneuver) ? (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                {generatedDoc.focusAreas.includes("history") && tc.focusedHistoryQuestions?.length > 0 && (
-                                  <div>
-                                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Focused History Questions</div>
-                                    <ul className="space-y-2">
-                                      {tc.focusedHistoryQuestions.map((hq, i) => (
-                                        <li key={i} className="text-sm text-slate-800">
-                                          <div className="font-semibold">{hq.question}</div>
-                                          <div className="text-xs text-slate-600 italic mt-0.5">Rationale: {hq.rationale}</div>
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                )}
-                                {generatedDoc.focusAreas.includes("physicalExam") && tc.physicalExam?.maneuver && (
-                                  <div>
-                                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Physical Examination</div>
-                                    <div className="text-sm text-slate-800">
-                                      <div className="font-semibold mb-1">{tc.physicalExam.maneuver}</div>
-                                      {tc.physicalExam.steps?.length > 0 && (
-                                        <ol className="ml-4 list-decimal space-y-1 mb-2">
-                                          {tc.physicalExam.steps.map((s, i) => <li key={i}>{s}</li>)}
-                                        </ol>
-                                      )}
-                                      {tc.physicalExam.interpretation && (
-                                        <div className="text-xs text-slate-600 italic">Interpretation: {tc.physicalExam.interpretation}</div>
-                                      )}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            ) : null}
-
-                            {generatedDoc.focusAreas.includes("workup") && tc.keyLabsAndImaging?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Key Labs & Imaging</div>
-                                <table className="w-full text-xs border border-slate-200">
-                                  <thead>
-                                    <tr className="bg-slate-100">
-                                      <th className="px-2 py-1.5 text-left font-semibold text-slate-700 w-1/4">Study</th>
-                                      <th className="px-2 py-1.5 text-left font-semibold text-slate-700 w-1/4">Purpose</th>
-                                      <th className="px-2 py-1.5 text-left font-semibold text-slate-700 w-1/4">Interpretation</th>
-                                      <th className="px-2 py-1.5 text-left font-semibold text-slate-700">Role in Management</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {tc.keyLabsAndImaging.map((lab, i) => (
-                                      <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
-                                        <td className="px-2 py-1.5 font-semibold text-slate-900 border-t border-slate-200 align-top">{lab.study}</td>
-                                        <td className="px-2 py-1.5 text-slate-700 border-t border-slate-200 align-top">{lab.purpose}</td>
-                                        <td className="px-2 py-1.5 text-slate-700 border-t border-slate-200 align-top">{lab.interpretation}</td>
-                                        <td className="px-2 py-1.5 text-slate-700 border-t border-slate-200 align-top">{lab.role}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-
-                            {generatedDoc.focusAreas.includes("management") && tc.treatmentApproach && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Treatment Approach</div>
-                                {tc.treatmentApproach.firstLine?.length > 0 && (
-                                  <div className="mb-3">
-                                    <div className="text-xs font-semibold text-slate-600 mb-1">First-Line Management</div>
-                                    <table className="w-full text-sm border border-slate-200">
-                                      <thead>
-                                        <tr className="bg-slate-100">
-                                          <th className="px-2 py-1.5 text-left font-semibold text-slate-700 w-1/3">Treatment</th>
-                                          <th className="px-2 py-1.5 text-left font-semibold text-slate-700 w-1/3">Dosing</th>
-                                          <th className="px-2 py-1.5 text-left font-semibold text-slate-700">Evidence</th>
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {tc.treatmentApproach.firstLine.map((t, i) => (
-                                          <tr key={i} className="border-t border-slate-200">
-                                            <td className="px-2 py-2 font-semibold text-slate-900 align-top">{t.treatment}</td>
-                                            <td className="px-2 py-2 text-slate-700 align-top">{t.dosing}</td>
-                                            <td className="px-2 py-2 text-slate-600 italic align-top">{t.evidence}</td>
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                )}
-                                {tc.treatmentApproach.additional?.length > 0 && (
-                                  <div>
-                                    <div className="text-xs font-semibold text-slate-600 mb-1">Additional Considerations</div>
-                                    <ul className="text-sm text-slate-800 space-y-1 ml-4 list-disc">
-                                      {tc.treatmentApproach.additional.map((a, i) => <li key={i}>{a}</li>)}
-                                    </ul>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-
-                            {generatedDoc.focusAreas.includes("patientContext") && tc.patientContextConsiderations && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Patient Context Considerations</div>
-                                <div className="text-sm text-slate-800">{tc.patientContextConsiderations}</div>
-                              </div>
-                            )}
-
-                            {generatedDoc.focusAreas.includes("communication") && tc.communicationTeaching?.scenario && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Communication Teaching</div>
-                                <div className="text-sm text-slate-800">
-                                  <div className="mb-2"><span className="font-semibold">Scenario:</span> {tc.communicationTeaching.scenario}</div>
-                                  {tc.communicationTeaching.script && (
-                                    <div className="p-2 bg-slate-50 border-l-4 border-slate-400 italic">
-                                      "{tc.communicationTeaching.script}"
-                                    </div>
-                                  )}
-                                </div>
-                              </div>
-                            )}
-
-                            {tc.shelfQuestions?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">
-                                  Shelf-Style Questions
-                                  <span className="ml-2 text-slate-500 normal-case tracking-normal font-normal italic">{generatedDoc.phase.name} difficulty</span>
-                                </div>
-                                <div className="space-y-4">
-                                  {tc.shelfQuestions.map((q, i) => (
-                                    <div key={i} className="border border-slate-300 rounded overflow-hidden">
-                                      <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase tracking-wide">Question {i+1}</div>
-                                      <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
-                                      <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
-                                          {q.options && Object.entries(q.options).map(([letter, opt]) => (
-                                            <div key={letter} className={q.correctAnswer === letter ? "font-semibold" : ""}>
-                                              <span className="font-bold mr-1">{letter})</span>{opt}
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </div>
-                                      <div className="px-3 py-2 bg-emerald-50 text-sm">
-                                        <div className="text-xs font-bold text-emerald-800 uppercase tracking-wide mb-1">Answer: {q.correctAnswer}</div>
-                                        <div className="text-slate-800">{q.explanation}</div>
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-
-                            {generatedDoc.focusAreas.includes("ebm") && tc.recommendedReading?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Recommended Reading</div>
-                                <ol className="space-y-1.5 ml-4 list-decimal text-sm">
-                                  {tc.recommendedReading.map((r, i) => (
-                                    <li key={i} className="text-slate-800">
-                                      <span className="font-semibold">{r.reference}</span>
-                                      {r.relevance && <div className="text-xs text-slate-600 italic">{r.relevance}</div>}
-                                    </li>
-                                  ))}
-                                </ol>
-                              </div>
-                            )}
-
-                            {(tc.clinicalPearl || tc.quoteToDiscuss) && (
-                              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                                {tc.clinicalPearl && (
-                                  <div className="border-l-4 border-purple-600 bg-purple-50 px-3 py-2">
-                                    <div className="text-xs font-bold text-purple-900 mb-1 uppercase tracking-wide">Clinical Pearl</div>
-                                    <div className="text-sm text-slate-800">{tc.clinicalPearl}</div>
-                                  </div>
-                                )}
-                                {tc.quoteToDiscuss && (
-                                  <div className="border-l-4 border-amber-500 bg-amber-50 px-3 py-2">
-                                    <div className="text-xs font-bold text-amber-900 mb-1 uppercase tracking-wide">Quote to Discuss</div>
-                                    <div className="italic text-sm text-slate-800">"{tc.quoteToDiscuss}"</div>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        </section>
-                      ))
-                    ) : (
-                      generatedDoc.fallbackCases?.length > 0 && (
-                        <section>
-                          <div className="border border-amber-300 bg-amber-50 rounded p-4 text-sm text-amber-900">
-                            <strong>AI content not generated.</strong> Enable AI on the Setup tab and re-generate.
-                          </div>
-                        </section>
-                      )
-                    )}
-
-                    {generatedDoc.labTrends?.length > 0 && (
-                      <section>
-                        <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Lab & Vital Trends for Interpretation</h2>
-                        <table className="w-full text-sm border border-slate-300">
-                          <thead>
-                            <tr className="bg-slate-800 text-white">
-                              <th className="px-3 py-2 text-left font-semibold w-1/4">Parameter</th>
-                              <th className="px-3 py-2 text-left font-semibold w-1/3">Trend</th>
-                              <th className="px-3 py-2 text-left font-semibold">Teaching Point</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {generatedDoc.labTrends.map((t, i) => (
-                              <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
-                                <td className="px-3 py-2 font-semibold text-slate-900 border-t border-slate-200">{t.parameter}</td>
-                                <td className="px-3 py-2 text-slate-700 border-t border-slate-200">{t.trend}</td>
-                                <td className="px-3 py-2 text-slate-700 border-t border-slate-200 italic">{t.teachingPoint || "—"}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </section>
-                    )}
-
-                    {generatedDoc.crossCuttingThemes?.length > 0 && (
-                      <section>
-                        <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Cross-Cutting Themes</h2>
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                          {generatedDoc.crossCuttingThemes.map((t, i) => (
-                            <div key={i} className="border border-slate-300 p-3 rounded bg-slate-50">
-                              <div className="text-xs uppercase font-bold text-slate-500 mb-1">Theme {i+1}</div>
-                              <div className="text-sm text-slate-800">{t}</div>
-                            </div>
-                          ))}
-                        </div>
-                      </section>
-                    )}
-
-                    {/* Synthesized Evidence - either merged or single-source */}
-                    {generatedDoc.synthesizedEvidence && (
-                      <section>
-                        <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">
-                          Evidence Summary
-                          {generatedDoc.synthesizedEvidence.synthesized && (
-                            <span className="ml-2 text-slate-500 normal-case tracking-normal font-normal italic text-xs">Synthesized from {generatedDoc.synthesizedEvidence.sourcesUsed?.join(", ")}</span>
-                          )}
-                        </h2>
-
-                        {generatedDoc.synthesizedEvidence.synthesized ? (
-                          <div className="space-y-4">
-                            {generatedDoc.synthesizedEvidence.unifiedSummary && (
-                              <div className="border-l-4 border-indigo-500 bg-indigo-50 p-3">
-                                <div className="text-xs uppercase font-bold text-indigo-900 mb-1">Consensus Summary</div>
-                                <div className="text-sm text-slate-800">{generatedDoc.synthesizedEvidence.unifiedSummary}</div>
-                              </div>
-                            )}
-
-                            {generatedDoc.synthesizedEvidence.consolidatedPoints?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase font-bold text-slate-700 mb-2">Consolidated Points</div>
-                                <table className="w-full text-sm border border-slate-200">
-                                  <thead>
-                                    <tr className="bg-slate-100">
-                                      <th className="px-3 py-1.5 text-left font-semibold text-slate-700 w-1/4">Topic</th>
-                                      <th className="px-3 py-1.5 text-left font-semibold text-slate-700">Content</th>
-                                      <th className="px-3 py-1.5 text-left font-semibold text-slate-700 w-1/5">Sources</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody>
-                                    {generatedDoc.synthesizedEvidence.consolidatedPoints.map((p, i) => (
-                                      <tr key={i} className="border-t border-slate-200">
-                                        <td className="px-3 py-2 font-semibold text-slate-900 align-top">{p.topic}</td>
-                                        <td className="px-3 py-2 text-slate-700">
-                                          {p.detail}
-                                          {p.conflictNote && <div className="mt-1 text-xs text-amber-700 italic">Conflict: {p.conflictNote}</div>}
-                                        </td>
-                                        <td className="px-3 py-2 text-xs text-slate-600 align-top">{Array.isArray(p.sources) ? p.sources.join(", ") : p.sources}</td>
-                                      </tr>
-                                    ))}
-                                  </tbody>
-                                </table>
-                              </div>
-                            )}
-
-                            {generatedDoc.synthesizedEvidence.uniqueInsights?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase font-bold text-slate-700 mb-2">Unique Insights by Source</div>
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                                  {generatedDoc.synthesizedEvidence.uniqueInsights.map((u, i) => (
-                                    <div key={i} className="border border-slate-200 p-3 rounded bg-white text-sm">
-                                      <div className="text-xs font-semibold text-slate-500 uppercase mb-1">{u.source}</div>
-                                      <div className="text-slate-800">{u.insight}</div>
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            )}
-
-                            {generatedDoc.synthesizedEvidence.conflicts?.length > 0 && (
-                              <div>
-                                <div className="text-xs uppercase font-bold text-amber-800 mb-2">Notable Disagreements</div>
-                                {generatedDoc.synthesizedEvidence.conflicts.map((c, i) => (
-                                  <div key={i} className="border-l-4 border-amber-500 bg-amber-50 p-3 mb-2">
-                                    <div className="text-sm font-semibold text-slate-900 mb-1">{c.topic}</div>
-                                    <ul className="text-sm text-slate-800 space-y-0.5">
-                                      {c.positions?.map((pos, j) => (
-                                        <li key={j}><span className="font-semibold">{pos.source}:</span> {pos.position}</li>
-                                      ))}
-                                    </ul>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                          </div>
-                        ) : generatedDoc.synthesizedEvidence.singleSource ? (
-                          <div className="border border-slate-300 rounded overflow-hidden">
-                            <div className="bg-slate-100 px-3 py-1.5 text-xs uppercase tracking-wide font-bold text-slate-700 border-b border-slate-300">From {generatedDoc.synthesizedEvidence.singleSource.source}</div>
-                            <div className="px-3 py-2 text-sm text-slate-800 whitespace-pre-wrap bg-white">{generatedDoc.synthesizedEvidence.singleSource.content}</div>
-                          </div>
-                        ) : null}
-                      </section>
-                    )}
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                      {generatedDoc.longTermGoals.length > 0 && (
-                        <section>
-                          <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Ongoing Learning Goals</h2>
-                          <ul className="space-y-2">
-                            {generatedDoc.longTermGoals.map(g => (
-                              <li key={g.id} className="text-sm text-slate-800 flex gap-2">
-                                <span className="text-indigo-700 font-bold flex-shrink-0">›</span>
-                                <div>
-                                  <div>{g.text}</div>
-                                  <div className="text-xs text-slate-500">Added {g.added}</div>
-                                </div>
-                              </li>
-                            ))}
-                          </ul>
-                        </section>
-                      )}
-
-                      <section>
-                        <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Prep for Next Session</h2>
-                        {generatedDoc.questionsForReflection?.length > 0 && (
-                          <div className="mb-3">
-                            <div className="text-xs uppercase font-bold text-slate-600 mb-1">Reflect on</div>
-                            <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
-                              {generatedDoc.questionsForReflection.map((q, i) => <li key={i}>{q}</li>)}
-                            </ul>
-                          </div>
-                        )}
-                        <div className="text-xs uppercase font-bold text-slate-600 mb-1">Come prepared to</div>
-                        <ul className="space-y-1 text-sm text-slate-800 ml-4 list-disc">
-                          <li>Discuss the questions above.</li>
-                          <li>Bring 1 question that came up while working through this material.</li>
-                          <li>Identify 1 area where you felt unsure.</li>
-                          {generatedDoc.phase.monthsIn >= 4 && <li>Review your patient log — any cases you want to revisit?</li>}
-                        </ul>
-                      </section>
-                    </div>
-
-                    <div className="border-t-2 border-slate-800 pt-3 mt-6 text-xs text-slate-500 space-y-1">
-                      <div className="text-center">Generated by LIC Teaching Document Generator · Aligned with the CU School of Medicine MEPO framework and Foothills clerkship benchmarks.</div>
-                      <div className="text-center italic">For educational purposes only. Cited trials and guidelines are named for reference; verify specific details, dosing, and current recommendations before clinical application.</div>
-                    </div>
-                  </div>
-                </div>
-              </>
+              // ============ FINAL DOCUMENT ============
+              <FinalDocument
+                doc={generatedDoc || previewData}
+                phase={phase}
+                session={session}
+                onPrint={printDoc}
+                onEdit={() => { setPreviewMode(true); }}
+              />
             )}
           </>
         )}
       </main>
     </div>
+  );
+}
+// ============ PREVIEW EDITOR COMPONENT ============
+function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, aiStatus, focusLabels }) {
+  const s = previewData.sections;
+
+  const SectionHeader = ({ label, enabled, onToggle, count }) => (
+    <div className="flex items-center justify-between bg-slate-100 px-4 py-2 border-b border-slate-200">
+      <div className="flex items-center gap-2">
+        <label className="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" checked={enabled} onChange={onToggle} className="sr-only peer" />
+          <div className="w-9 h-5 bg-slate-300 peer-focus:ring-2 peer-focus:ring-indigo-300 rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600"></div>
+        </label>
+        <span className="font-semibold text-slate-900 text-sm">{label}</span>
+        {count !== undefined && <span className="text-xs text-slate-500">({count})</span>}
+      </div>
+      <span className={`text-xs uppercase font-semibold ${enabled ? "text-emerald-700" : "text-slate-400"}`}>{enabled ? "Included" : "Hidden"}</span>
+    </div>
+  );
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+        <div className="flex items-start justify-between flex-wrap gap-2">
+          <div>
+            <h2 className="text-lg font-bold text-slate-900">Preview & Edit</h2>
+            <p className="text-sm text-slate-700 mt-1">Toggle sections on/off, edit content, then generate the final document.</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onBack} className="px-3 py-2 text-slate-600 hover:bg-white rounded-lg text-sm">← Back to Goals</button>
+            <button onClick={onRegenerate} className="px-3 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 text-sm flex items-center gap-1">
+              <Wand2 className="w-4 h-4" />Re-run AI
+            </button>
+            <button onClick={commitPreviewToDocument} className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium flex items-center gap-2">
+              <Sparkles className="w-4 h-4" />Generate Final Document
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Session Goal */}
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <SectionHeader label="Session Goal" enabled={s.sessionGoal.enabled} onToggle={() => togglePreviewSection("sessionGoal")} />
+        {s.sessionGoal.enabled && (
+          <div className="p-3">
+            <input type="text" value={s.sessionGoal.content} onChange={e => updatePreviewField("sections.sessionGoal.content", e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded text-sm" />
+          </div>
+        )}
+      </div>
+
+      {/* Teaching Cases - individually toggleable */}
+      {s.teachingCases.length > 0 && (
+        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <div className="bg-slate-800 text-white px-4 py-2">
+            <div className="font-semibold text-sm">Teaching Cases ({s.teachingCases.filter(tc => tc.enabled).length} of {s.teachingCases.length} enabled)</div>
+          </div>
+          {s.teachingCases.map((tc, idx) => (
+            <div key={idx} className="border-t border-slate-200">
+              <SectionHeader label={`Case ${idx+1}: ${tc.data.problem}`} enabled={tc.enabled} onToggle={() => toggleTeachingCase(idx)} />
+              {tc.enabled && (
+                <div className="p-4 space-y-3 bg-slate-50">
+                  {tc.data.primaryDiagnosis?.name && (
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600 uppercase">Primary Diagnosis</label>
+                      <input type="text" value={tc.data.primaryDiagnosis.name} onChange={e => updateTeachingCaseField(idx, "primaryDiagnosis", {...tc.data.primaryDiagnosis, name: e.target.value})} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" />
+                      <textarea value={tc.data.primaryDiagnosis.briefDefinition || ""} onChange={e => updateTeachingCaseField(idx, "primaryDiagnosis", {...tc.data.primaryDiagnosis, briefDefinition: e.target.value})} rows={2} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" placeholder="Brief definition" />
+                    </div>
+                  )}
+                  {tc.data.clinicalPearl && (
+                    <div>
+                      <label className="text-xs font-semibold text-slate-600 uppercase">Clinical Pearl</label>
+                      <textarea value={tc.data.clinicalPearl} onChange={e => updateTeachingCaseField(idx, "clinicalPearl", e.target.value)} rows={2} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" />
+                    </div>
+                  )}
+                  {tc.data.shelfQuestions?.length > 0 && (
+                    <details className="text-sm">
+                      <summary className="cursor-pointer font-semibold text-slate-700">Shelf Questions ({tc.data.shelfQuestions.length})</summary>
+                      <div className="mt-2 space-y-2">
+                        {tc.data.shelfQuestions.map((q, qi) => (
+                          <div key={qi} className="border border-slate-200 rounded p-2 bg-white">
+                            <textarea value={q.vignette} onChange={e => {
+                              const newQ = [...tc.data.shelfQuestions];
+                              newQ[qi] = {...q, vignette: e.target.value};
+                              updateTeachingCaseField(idx, "shelfQuestions", newQ);
+                            }} rows={3} className="w-full px-2 py-1 border border-slate-300 rounded text-xs" />
+                            <div className="text-xs text-slate-500 mt-1">Answer: {q.correctAnswer}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  )}
+                  <details className="text-sm text-slate-600">
+                    <summary className="cursor-pointer">View all content for this case</summary>
+                    <pre className="text-xs bg-white p-2 mt-1 rounded overflow-x-auto max-h-64">{JSON.stringify(tc.data, null, 2)}</pre>
+                  </details>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Lab Trends */}
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <SectionHeader label="Lab & Vital Trends" enabled={s.labTrends.enabled} onToggle={() => togglePreviewSection("labTrends")} count={s.labTrends.content?.length} />
+      </div>
+
+      {/* Cross-Cutting Themes */}
+      {s.crossCuttingThemes.content.length > 0 && (
+        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <SectionHeader label="Cross-Cutting Themes" enabled={s.crossCuttingThemes.enabled} onToggle={() => togglePreviewSection("crossCuttingThemes")} count={s.crossCuttingThemes.content.length} />
+        </div>
+      )}
+
+      {/* Synthesized Evidence */}
+      {s.synthesizedEvidence.content && (
+        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <SectionHeader label="Evidence Summary (from external sources)" enabled={s.synthesizedEvidence.enabled} onToggle={() => togglePreviewSection("synthesizedEvidence")} />
+        </div>
+      )}
+
+      {/* PubMed Recommended Reading */}
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <SectionHeader label="PubMed Recommended Reading (auto-fetched)" enabled={s.pubmed.enabled} onToggle={() => togglePreviewSection("pubmed")} count={s.pubmed.content?.reduce((sum, r) => sum + (r.papers?.length || 0), 0)} />
+        {s.pubmed.enabled && s.pubmed.content && s.pubmed.content.length > 0 && (
+          <div className="p-3 space-y-3">
+            {s.pubmed.content.map((result, ri) => (
+              <div key={ri} className="border border-slate-200 rounded p-2 bg-slate-50">
+                <div className="text-xs font-semibold text-slate-700 mb-1">{result.problem}</div>
+                <div className="text-xs text-slate-500 mb-2 font-mono">Query: {result.query}</div>
+                {result.papers?.length > 0 ? (
+                  <ul className="text-xs space-y-1">
+                    {result.papers.map((p, pi) => (
+                      <li key={pi} className="flex gap-2">
+                        <input type="checkbox" defaultChecked={true} onChange={e => {
+                          const newContent = [...s.pubmed.content];
+                          if (!newContent[ri].excluded) newContent[ri].excluded = new Set();
+                          if (e.target.checked) newContent[ri].excluded.delete(p.pmid);
+                          else newContent[ri].excluded.add(p.pmid);
+                          updatePreviewField("sections.pubmed.content", newContent);
+                        }} className="mt-0.5" />
+                        <div className="flex-1">
+                          <div className="font-semibold text-slate-800">{p.title}</div>
+                          <div className="text-slate-600">{p.authors} · {p.journal} · {p.year} · PMID {p.pmid}</div>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="text-xs text-slate-500 italic">No papers found{result.error ? `: ${result.error}` : "."}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+        {s.pubmed.content?.length === 0 && (
+          <div className="p-3 text-xs text-slate-500 italic">PubMed search returned no results.</div>
+        )}
+      </div>
+
+      {/* Long-term goals */}
+      {s.longTermGoals.content.length > 0 && (
+        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+          <SectionHeader label="Ongoing Learning Goals" enabled={s.longTermGoals.enabled} onToggle={() => togglePreviewSection("longTermGoals")} count={s.longTermGoals.content.length} />
+        </div>
+      )}
+
+      {/* Next Session Prep */}
+      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+        <SectionHeader label="Prep for Next Session" enabled={s.nextSessionPrep.enabled} onToggle={() => togglePreviewSection("nextSessionPrep")} />
+      </div>
+
+      <div className="sticky bottom-4 bg-white border-2 border-indigo-600 rounded-lg p-4 shadow-lg flex items-center justify-between">
+        <div className="text-sm text-slate-700">Ready when you are. {Object.values(s).filter(sec => Array.isArray(sec) ? sec.some(x => x.enabled) : sec.enabled).length} sections enabled.</div>
+        <button onClick={commitPreviewToDocument} className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-semibold flex items-center gap-2">
+          <Sparkles className="w-4 h-4" />Generate Final Document
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ============ FINAL DOCUMENT COMPONENT ============
+function FinalDocument({ doc, phase, session, onPrint, onEdit }) {
+  if (!doc) return null;
+  const s = doc.sections || {};
+  const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+  const printDoc = () => window.print();
+
+  return (
+    <>
+      <div className="no-print flex gap-2 mb-4">
+        <button onClick={printDoc} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"><Printer className="w-4 h-4" />Print / Save as PDF</button>
+        <button onClick={onEdit} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back to Preview</button>
+      </div>
+
+      <div className="bg-white rounded-xl border border-slate-200 print-doc" style={{fontFamily: "Georgia, 'Times New Roman', serif"}}>
+        <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white px-8 py-6 print-header">
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-widest text-slate-300 mb-1">Teaching Session</div>
+              <h1 className="text-2xl font-bold">Clinical Case Learning Document</h1>
+              <div className="text-sm text-slate-200 mt-2">
+                Prepared for <span className="font-semibold text-white">{doc.student}</span> · {session.sessionDate}
+              </div>
+            </div>
+            <div className="text-right text-xs text-slate-300">
+              <div>Generated {doc.generated}</div>
+              <div className="mt-1 inline-block px-2 py-1 bg-white/10 rounded font-sans">
+                Month {doc.phase.monthsIn} · {doc.phase.name}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="px-8 py-6 space-y-6">
+          {/* Case at a Glance */}
+          {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Case at a Glance</h2>
+              <table className="w-full text-sm border border-slate-300">
+                <tbody>
+                  {doc.chiefConcern && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 w-40 align-top">Chief concern</td><td className="px-3 py-2 text-slate-800">{doc.chiefConcern}</td></tr>}
+                  {doc.workingDx && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Primary working diagnosis</td><td className="px-3 py-2 text-slate-800">{doc.workingDx}</td></tr>}
+                  <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Complexity</td><td className="px-3 py-2 text-slate-800">{doc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td></tr>
+                  {doc.selectedProblems?.length > 0 && <tr><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Problems in focus</td><td className="px-3 py-2 text-slate-800"><ul className="list-disc ml-4">{doc.selectedProblems.map((p, i) => <li key={i}>{p}</li>)}</ul></td></tr>}
+                </tbody>
+              </table>
+            </section>
+          )}
+
+          {/* Session Goal */}
+          {s.sessionGoal?.enabled && s.sessionGoal.content && (
+            <section>
+              <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3">
+                <div className="text-xs uppercase tracking-widest text-indigo-700 font-bold mb-1">Session Goal</div>
+                <div className="text-slate-800 font-medium">{s.sessionGoal.content}</div>
+              </div>
+            </section>
+          )}
+
+          {/* Phase Framing */}
+          {s.phaseFraming?.enabled && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Phase-Aligned Framing</h2>
+              <div className="text-sm text-slate-700 leading-relaxed">
+                <strong>Developmental focus:</strong> {doc.phase.focus}
+              </div>
+            </section>
+          )}
+
+          {/* Teaching Cases - only enabled ones */}
+          {enabledCases.map((tc, idx) => {
+            const c = tc.data;
+            return (
+              <section key={idx} className="section-block">
+                <div className="bg-slate-800 text-white px-4 py-3 rounded-t">
+                  <div className="text-xs uppercase tracking-widest text-slate-300">Teaching Case {idx + 1} of {enabledCases.length}</div>
+                  <h2 className="text-lg font-bold mt-0.5">{c.problem}</h2>
+                </div>
+                <div className="border border-t-0 border-slate-300 rounded-b p-4 space-y-4">
+                  {c.primaryDiagnosis?.name && (
+                    <div>
+                      <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1">Primary Diagnosis</div>
+                      <div className="text-sm text-slate-800"><span className="font-bold">{c.primaryDiagnosis.name}.</span> {c.primaryDiagnosis.briefDefinition}</div>
+                    </div>
+                  )}
+                  {c.keyLearningPoints?.length > 0 && (
+                    <div>
+                      <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Key Learning Points</div>
+                      <ol className="space-y-2">{c.keyLearningPoints.map((lp, i) => (
+                        <li key={i} className="text-sm text-slate-800 flex gap-2">
+                          <span className="font-bold text-slate-500 flex-shrink-0 min-w-[1.5rem]">{i+1}.</span>
+                          <div><span className="font-semibold text-slate-900">{lp.point}.</span> <span className="text-slate-700">{lp.explanation}</span>{lp.citation && <span className="text-xs text-slate-500 italic ml-1">({lp.citation})</span>}</div>
+                        </li>
+                      ))}</ol>
+                    </div>
+                  )}
+                  {c.shelfQuestions?.length > 0 && (
+                    <div>
+                      <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Shelf-Style Questions</div>
+                      <div className="space-y-4">{c.shelfQuestions.map((q, i) => (
+                        <div key={i} className="border border-slate-300 rounded overflow-hidden">
+                          <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
+                          <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
+                          <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
+                              {q.options && Object.entries(q.options).map(([letter, opt]) => (
+                                <div key={letter} className={q.correctAnswer === letter ? "font-semibold" : ""}><span className="font-bold mr-1">{letter})</span>{opt}</div>
+                              ))}
+                            </div>
+                          </div>
+                          <div className="px-3 py-2 bg-emerald-50 text-sm">
+                            <div className="text-xs font-bold text-emerald-800 uppercase mb-1">Answer: {q.correctAnswer}</div>
+                            <div className="text-slate-800">{q.explanation}</div>
+                          </div>
+                        </div>
+                      ))}</div>
+                    </div>
+                  )}
+                  {c.clinicalPearl && (
+                    <div className="border-l-4 border-purple-600 bg-purple-50 px-3 py-2">
+                      <div className="text-xs font-bold text-purple-900 mb-1 uppercase">Clinical Pearl</div>
+                      <div className="text-sm text-slate-800">{c.clinicalPearl}</div>
+                    </div>
+                  )}
+                </div>
+              </section>
+            );
+          })}
+
+          {/* PubMed Recommended Reading */}
+          {s.pubmed?.enabled && s.pubmed.content?.some(r => r.papers?.length > 0) && (
+            <section>
+              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Recommended Reading — PubMed</h2>
+              <div className="space-y-4">
+                {s.pubmed.content.filter(r => r.papers?.length > 0).map((result, ri) => {
+                  const included = result.papers.filter(p => !result.excluded?.has?.(p.pmid));
+                  if (included.length === 0) return null;
+                  return (
+                    <div key={ri}>
+                      <div className="text-sm font-semibold text-slate-700 mb-2 border-b border-slate-300 pb-1">Related to: {result.problem}</div>
+                      <ol className="space-y-2 ml-4 list-decimal text-sm">
+                        {included.map((p, pi) => (
+                          <li key={pi} className="text-slate-800">
+                            <div className="font-semibold">{p.title}</div>
+                            <div className="text-xs text-slate-600">{p.authors} · <em>{p.journal}</em> · {p.year} · PMID: {p.pmid}</div>
+                            {p.abstract && <div className="text-xs text-slate-700 mt-1 italic">{p.abstract.slice(0, 300)}{p.abstract.length > 300 ? "..." : ""}</div>}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="text-xs text-slate-500 italic mt-3">Results retrieved live from PubMed (NCBI E-utilities). Sorted by relevance, filtered to last 10 years.</div>
+            </section>
+          )}
+
+          <div className="border-t-2 border-slate-800 pt-3 mt-6 text-xs text-slate-500 text-center space-y-1">
+            <div>Generated by LIC Teaching Document Generator · Aligned with the CU School of Medicine MEPO framework.</div>
+            <div className="italic">For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
