@@ -369,24 +369,36 @@ const analyzeNote = async () => {
         complex_multimorbidity: "This is a complex multi-morbid patient. Emphasize: problem prioritization, medication reconciliation, care coordination, competing treatment goals."
       };
 
-      const sys = `Extract teaching info from a clinical note. Return ONLY compact JSON, no markdown:
+      const sys = `You are a medical education assistant analyzing a clinical note for a medical student in a longitudinal integrated clerkship.
+
+${lensGuidance[teachingLens]}
+
+The note may have structured sections (Assessment, Plan, PMH, Meds, Labs, etc.), multiple active problems, direct patient/caregiver quotes, and trended lab/vital data. Extract all of this.
+
+Available focus areas: history, physicalExam, differential, workup, management, patientContext, ebm, communication
+
+Return ONLY valid JSON (no markdown fences):
 {
-  "chiefConcern": "brief",
-  "workingDiagnosis": "primary dx",
-  "activeProblems": [{"problem": "name", "keyIssue": "core dilemma", "teachingValue": "brief"}],
-  "keyTopics": ["3-5 specific teaching topics"],
-  "suggestedFocus": ["3-4 from: history, physicalExam, differential, workup, management, patientContext, ebm, communication"],
-  "reasoning": "1 sentence",
-  "complexity": "common or complex",
-  "redFlags": ["can't-miss items"],
-  "patientQuotes": ["verbatim quotes if any"],
-  "labTrends": [{"parameter": "name", "trend": "brief", "teachingPoint": "brief"}]
-}
-Be concise. ${lensGuidance[teachingLens]}`;
-      const extractedForAnalysis = extractEssentialNote(clinicalNote).slice(0, 6000);
+  "chiefConcern": "brief chief concern or reason for visit",
+  "workingDiagnosis": "primary/most teachable diagnosis, or 'multiple active problems' if truly multi-focal",
+  "activeProblems": [
+    {"problem": "problem name", "icdContext": "ICD if in note", "teachingValue": "brief note on why teachable", "keyIssue": "the core clinical question or dilemma"}
+  ],
+  "otherDiagnoses": ["list of other active problems as strings"],
+  "keyTopics": ["specific clinical topics worth teaching - be specific"],
+  "suggestedFocus": ["3-5 focus area keys from the list above"],
+  "reasoning": "2-3 sentence explanation",
+  "complexity": "common" or "complex",
+  "redFlags": ["concerning features, can't-miss diagnoses, iatrogenic risks"],
+  "patientQuotes": ["direct quotes verbatim from the note"],
+  "labTrends": [
+    {"parameter": "lab name", "trend": "brief description", "teachingPoint": "what this teaches"}
+  ]
+}`;
+      const extractedForAnalysis = extractEssentialNote(clinicalNote);
       console.log(`[analyzeNote] Note: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
-      const user = `Note:\n${extractedForAnalysis}\n\nStudent: month ${phase.monthsIn} of LIC.`;
-      const response = await callAi(sys, user, 2000);
+      const user = `Clinical note (de-identified):\n\n${extractedForAnalysis}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
+      const response = await callAi(sys, user, 4000);
       const parsed = extractJson(response);
 
       setNoteAnalysis(parsed);
@@ -497,13 +509,13 @@ Return ONLY valid JSON (no markdown fences):
     console.log(`[extractEssentialNote] Original: ${clinicalNote.length} chars → Extracted: ${extracted.length} chars (${Math.round(100 * extracted.length / clinicalNote.length)}%)`);
 
     // Belt-and-suspenders: still hard-cap in case extraction leaves too much
-    const MAX_NOTE = 6000;
+    const MAX_NOTE = 12000;
     const notePayload = extracted.length > MAX_NOTE
       ? extracted.slice(0, MAX_NOTE) + "\n[truncated]"
       : extracted;
 
 const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
-    const MAX_EVIDENCE_TOTAL = 4000;  // ~1000 tokens total across all sources
+    const MAX_EVIDENCE_TOTAL = 8000;
     const evidencePerSource = filledSources.length > 0 ? Math.floor(MAX_EVIDENCE_TOTAL / filledSources.length) : 0;
     const evidenceContext = filledSources.length > 0
       ? "\n\nCurated evidence from clinician-selected sources (attribute inline like '(per OpenEvidence)'; do NOT invent facts beyond this evidence and the note):\n" + filledSources.map(s => {
@@ -530,7 +542,7 @@ Return ONLY valid JSON (no markdown fences, no commentary):
   "primaryDiagnosis": {"name": "...", "briefDefinition": "..."},
   "differentialDiagnosis": [{"diagnosis": "...", "reasoning": "..."}],
   "keyLearningPoints": [{"point": "...", "explanation": "...", "citation": "..."}],
-  "shelfQuestions": [{"vignette": "...", "options": {"A":"","B":"","C":"","D":""}, "correctAnswer": "A", "explanation": "..."}],
+  "shelfQuestions": [{"vignette": "detailed clinical vignette 3-5 sentences", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed explanation of why correct answer is right and why each distractor is wrong"}],
   "focusedHistoryQuestions": [{"question": "...", "rationale": "..."}],
   "physicalExam": {"maneuver": "...", "steps": ["..."], "interpretation": "..."},
   "keyLabsAndImaging": [{"study": "...", "purpose": "...", "interpretation": "...", "role": "..."}],
@@ -542,12 +554,12 @@ Return ONLY valid JSON (no markdown fences, no commentary):
   "quoteToDiscuss": ""
 }
 
-Include ONLY these subsections: ${includedSections}. Include exactly 2 shelf questions. Keep explanations concise (2 sentences max per learning point).`;
+Include ONLY these subsections: ${includedSections}. Include exactly 3 shelf questions. Provide substantive teaching content — 2-3 sentences per learning point explanation, thorough differential reasoning, complete treatment rationale, and detailed shelf question explanations with reasoning for correct AND incorrect answers.`;
 
       const user = `Problem: ${problem}\n\nClinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}${evidenceContext}\n\nReference specific case details in your teaching content.`;
 
       try {
-        const response = await callAi(sys, user, 2500);
+        const response = await callAi(sys, user, 6000);
         const parsed = extractJson(response);
         teachingCases.push(parsed);
       } catch (e) {
@@ -557,7 +569,7 @@ Include ONLY these subsections: ${includedSections}. Include exactly 2 shelf que
 
       if (i < problemsToTeach.length - 1) {
         setAiStatus(prev => ({ ...prev, error: `Working on case ${i+2}/${problemsToTeach.length}...` }));
-        await wait(3000);
+        await wait(500);
       }
     }
 
