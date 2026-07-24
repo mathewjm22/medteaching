@@ -7,5 +7,5 @@ import react from '@vitejs/plugin-react';
 // If you deploy to a custom domain or user/organization root page, use "/".
 export default defineConfig({
   plugins: [react()],
-  base: '/lic-teaching-generator/',
+  base: '/medteaching/',
 });
