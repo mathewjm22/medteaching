@@ -13,7 +13,7 @@ export default function App() {
 
   // AI is enabled by default; user only toggles on/off
   const [aiEnabled, setAiEnabled] = useState(true);
-  const [aiStatus, setAiStatus] = useState({ analyzing: false, generating: false, error: null });
+  const [aiStatus, setAiStatus] = useState({ analyzing: false, generating: false, error: null, progress: null });
 
   // Session metadata
   const [session, setSession] = useState({
@@ -152,7 +152,7 @@ const [customTopics, setCustomTopics] = useState([]);
         const waitMatch = err.match(/try again in ([\d.]+)s/i);
         const waitSec = waitMatch ? Math.ceil(parseFloat(waitMatch[1])) + 3 : (retryCount + 1) * 30;
         console.warn(`[callAi] Rate limit. Waiting ${waitSec}s, retry ${retryCount + 1}/${MAX_RETRIES}`);
-        setAiStatus(prev => ({ ...prev, error: `Rate limited — waiting ${waitSec}s then retrying (${retryCount + 1}/${MAX_RETRIES})...` }));
+        setAiStatus(prev => ({ ...prev, progress: `Rate limited — waiting ${waitSec}s then retrying (${retryCount + 1}/${MAX_RETRIES})` }));
         await new Promise(r => setTimeout(r, waitSec * 1000));
         return callAi(systemPrompt, userPrompt, maxTokens, retryCount + 1);
       }
@@ -394,7 +394,7 @@ const analyzeNote = async () => {
       setAiStatus({ ...aiStatus, error: "Enable AI on the Setup tab first." });
       return;
     }
-    setAiStatus({ analyzing: true, generating: false, error: null });
+    setAiStatus({ analyzing: true, generating: false, error: null, progress: null });
     try {
       const lensGuidance = {
         general_im: "This is a general internal medicine encounter.",
@@ -454,9 +454,9 @@ Return ONLY valid JSON (no markdown fences):
         parsed.suggestedFocus.forEach(k => { if (k in newFocus) newFocus[k] = true; });
         setFocusAreas(newFocus);
       }
-      setAiStatus({ analyzing: false, generating: false, error: null });
+      setAiStatus({ analyzing: false, generating: false, error: null, progress: null });
     } catch (e) {
-      setAiStatus({ analyzing: false, generating: false, error: e.message });
+      setAiStatus({ analyzing: false, generating: false, error: e.message, progress: null });
     }
   };
 
@@ -699,7 +699,7 @@ Synthesize into structured claims with per-source attribution as specified. When
     // Generate one teaching case per API call, with waits between
     for (let i = 0; i < problemsToTeach.length; i++) {
       const problem = problemsToTeach[i];
-      setAiStatus(prev => ({ ...prev, error: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}...` }));
+      setAiStatus(prev => ({ ...prev, progress: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}` }));
 
       const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today. Student level: ${phase.name}. Difficulty: ${difficulty}.${lensGuidance[teachingLens]}
 
@@ -766,7 +766,7 @@ Write your teaching case as if you and the student just walked out of this patie
       }
 
       if (i < problemsToTeach.length - 1) {
-        setAiStatus(prev => ({ ...prev, error: `Working on case ${i+2}/${problemsToTeach.length}...` }));
+        setAiStatus(prev => ({ ...prev, progress: `Working on case ${i+2} of ${problemsToTeach.length}` }));
         await wait(500);
       }
     }
@@ -776,7 +776,7 @@ Write your teaching case as if you and the student just walked out of this patie
     let questionsForReflection = [];
     if (teachingCases.length > 1) {
       await wait(3000);
-      setAiStatus(prev => ({ ...prev, error: "Generating cross-cutting themes..." }));
+      setAiStatus(prev => ({ ...prev, progress: "Generating cross-cutting themes" }));
       try {
         const themesSys = `You are the attending debriefing a case with your medical student. Identify the CONCEPTUAL threads that connect this patient's multiple problems — not restating what the problems are, but revealing the underlying clinical reasoning threads that a student should see.
 
@@ -867,7 +867,7 @@ I want to focus today's teaching on: ${focusText}.
 
       // Call 2: Source synthesis (runs whenever any source has content)
       if (filledSources.length >= 1) {
-        setAiStatus({ analyzing: false, generating: true, error: "Synthesizing sources..." });
+        setAiStatus({ analyzing: false, generating: true, error: null, progress: "Synthesizing evidence from all sources" });
         try {
           synthesized = await synthesizeSources();
           setSynthesizedEvidence(synthesized);
@@ -881,7 +881,7 @@ I want to focus today's teaching on: ${focusText}.
         console.error("Generation errors:", errors);
         setAiStatus({ analyzing: false, generating: false, error: errors.join(" · ") });
       } else {
-        setAiStatus({ analyzing: false, generating: false, error: null });
+        setAiStatus({ analyzing: false, generating: false, error: null, progress: null });
       }
     } else {
       // AI disabled or no focus areas selected — still handle sources
@@ -1093,6 +1093,12 @@ I want to focus today's teaching on: ${focusText}.
           </div>
         </div>
 
+        {aiStatus.progress && (
+          <div className="no-print mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-800 flex items-center gap-2">
+            <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin text-indigo-600" />
+            <div className="flex-1">{aiStatus.progress}</div>
+          </div>
+        )}
         {aiStatus.error && (
           <div className="no-print mb-4 p-3 bg-red-50 border border-red-200 rounded-lg text-sm text-red-800 flex items-start gap-2">
             <AlertCircle className="w-4 h-4 mt-0.5 flex-shrink-0" />
