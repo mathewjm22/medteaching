@@ -50,10 +50,14 @@ const [customTopics, setCustomTopics] = useState([]);
     openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false,
   });
   const [sourceResponses, setSourceResponses] = useState({
-    openevidence: "", uptodate: "", dynamed: "", doxgpt: "",
-    // pubmedai stores an object keyed by diagnosis: {"Diagnosis 1": "response text", ...}
+    openevidence: { html: "", images: [] },
+    uptodate: { html: "", images: [] },
+    dynamed: { html: "", images: [] },
+    doxgpt: { html: "", images: [] },
+    // pubmedai stores an object keyed by diagnosis: {"Diagnosis 1": {html, images}, ...}
     pubmedai: {},
   });
+  const [sessionImageBytes, setSessionImageBytes] = useState(0);
 
   // Goals
   const [longTermGoals, setLongTermGoals] = useState([]);
@@ -438,9 +442,9 @@ Return ONLY valid JSON (no markdown fences):
   const synthesizeSources = async () => {
     const filledSources = activeSources.filter(s => {
       if (s === "pubmedai") {
-        return Object.values(sourceResponses.pubmedai || {}).some(v => v?.trim());
+        return Object.values(sourceResponses.pubmedai || {}).some(v => v?.html?.trim());
       }
-      return sourceResponses[s]?.trim();
+      return sourceResponses[s]?.html?.trim();
     });
     if (filledSources.length === 0) return null;
     if (!aiEnabled) {
@@ -469,15 +473,29 @@ Return ONLY valid JSON (no markdown fences):
   ]
 }`;
 
+    // Strip HTML tags and replace images with placeholders for AI consumption
+    const htmlToAiText = (html) => {
+      const div = document.createElement("div");
+      div.innerHTML = html || "";
+      let figIdx = 0;
+      div.querySelectorAll("img").forEach(img => {
+        figIdx++;
+        const alt = img.alt || "figure";
+        const placeholder = document.createTextNode(` [Figure ${figIdx}: ${alt}] `);
+        img.replaceWith(placeholder);
+      });
+      return div.textContent.replace(/\s+/g, " ").trim();
+    };
+
     const sourceText = filledSources.map(s => {
       if (s === "pubmedai") {
         const perTopic = Object.entries(sourceResponses.pubmedai || {})
-          .filter(([_, v]) => v?.trim())
-          .map(([topic, content]) => `--- PubMed AI on "${topic}" ---\n${content}`)
+          .filter(([_, v]) => v?.html?.trim())
+          .map(([topic, content]) => `--- PubMed AI on "${topic}" ---\n${htmlToAiText(content.html)}`)
           .join("\n\n");
         return `=== FROM PUBMED AI (per topic) ===\n${perTopic}`;
       }
-      return `=== FROM ${sourceLabels[s].toUpperCase()} ===\n${sourceResponses[s]}`;
+      return `=== FROM ${sourceLabels[s].toUpperCase()} ===\n${htmlToAiText(sourceResponses[s].html)}`;
     }).join("\n\n");
     const user = `Chief concern: ${chiefConcern}\nProblems being taught: ${selectedProblems.join("; ") || workingDx}\n\nSource content to integrate into a cohesive teaching narrative:\n\n${sourceText}\n\nRewrite this in your attending voice. Do NOT quote source text verbatim. Organize by clinical themes, not by source.`;
 
@@ -534,12 +552,24 @@ Return ONLY valid JSON (no markdown fences):
       ? extracted.slice(0, MAX_NOTE) + "\n[truncated]"
       : extracted;
 
-const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+// Strip HTML/images to plain text with figure placeholders for AI
+    const htmlToAiText = (html) => {
+      const div = document.createElement("div");
+      div.innerHTML = html || "";
+      let figIdx = 0;
+      div.querySelectorAll("img").forEach(img => {
+        figIdx++;
+        img.replaceWith(document.createTextNode(` [Figure ${figIdx}: ${img.alt || "figure"}] `));
+      });
+      return div.textContent.replace(/\s+/g, " ").trim();
+    };
+
+    const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim());
     const MAX_EVIDENCE_TOTAL = 8000;
     const evidencePerSource = filledSources.length > 0 ? Math.floor(MAX_EVIDENCE_TOTAL / filledSources.length) : 0;
     const evidenceContext = filledSources.length > 0
       ? "\n\nCurated evidence from clinician-selected sources (attribute inline like '(per OpenEvidence)'; do NOT invent facts beyond this evidence and the note):\n" + filledSources.map(s => {
-          const t = sourceResponses[s];
+          const t = htmlToAiText(sourceResponses[s].html);
           return `[${sourceLabels[s]}]: ${t.length > evidencePerSource ? t.slice(0, evidencePerSource) + "[truncated]" : t}`;
         }).join("\n\n")
       : "";
@@ -722,7 +752,11 @@ I want to focus today's teaching on: ${focusText}.
         }
         await wait(3000);
       } else if (filledSources.length === 1) {
-        synthesized = { synthesized: false, singleSource: { source: sourceLabels[filledSources[0]], content: sourceResponses[filledSources[0]] } };
+        const s = filledSources[0];
+        const content = s === "pubmedai"
+          ? Object.entries(sourceResponses.pubmedai || {}).filter(([_, v]) => v?.html?.trim()).map(([topic, v]) => `<h4>${topic}</h4>${v.html}`).join("")
+          : sourceResponses[s].html;
+        synthesized = { synthesized: false, singleSource: { source: sourceLabels[s], contentHtml: content } };
         setSynthesizedEvidence(synthesized);
       }
 
@@ -733,11 +767,27 @@ I want to focus today's teaching on: ${focusText}.
         setAiStatus({ analyzing: false, generating: false, error: null });
       }
     } else {
-      const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+      const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim());
       if (filledSources.length === 1) {
-        synthesized = { synthesized: false, singleSource: { source: sourceLabels[filledSources[0]], content: sourceResponses[filledSources[0]] } };
+        const s = filledSources[0];
+        const content = s === "pubmedai"
+          ? Object.entries(sourceResponses.pubmedai || {}).filter(([_, v]) => v?.html?.trim()).map(([topic, v]) => `<h4>${topic}</h4>${v.html}`).join("")
+          : sourceResponses[s].html;
+        synthesized = { synthesized: false, singleSource: { source: sourceLabels[s], contentHtml: content } };
       }
     }
+
+    // Collect all pasted images across sources for the final document
+    const allSourceImages = [];
+    activeSources.forEach(s => {
+      if (s === "pubmedai") {
+        Object.entries(sourceResponses.pubmedai || {}).forEach(([topic, v]) => {
+          (v?.images || []).forEach(img => allSourceImages.push({ ...img, source: `PubMed AI: ${topic}` }));
+        });
+      } else {
+        (sourceResponses[s]?.images || []).forEach(img => allSourceImages.push({ ...img, source: sourceLabels[s] }));
+      }
+    });
 
     const preview = {
       generated: new Date().toLocaleString(),
@@ -749,6 +799,7 @@ I want to focus today's teaching on: ${focusText}.
       activeProblems, selectedProblems, patientQuotes, labTrends,
       longTermGoals,
       noteAnalysis,
+      allSourceImages,
       sections: {
         caseAtGlance: { enabled: true, editable: false },
         sessionGoal: { enabled: !!sessionGoal, content: sessionGoal },
@@ -1296,10 +1347,18 @@ I want to focus today's teaching on: ${focusText}.
         {activeTab === "sources" && (
           <div className="space-y-6">
             <div className="bg-white rounded-xl border border-slate-200 p-6">
+              {sessionImageBytes > 0 && (
+                <div className="mb-3 flex items-center gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-1.5">
+                  <span>Session images: {(sessionImageBytes / 1024 / 1024).toFixed(2)} MB / 8 MB</span>
+                  <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden max-w-xs">
+                    <div className="h-full bg-indigo-500" style={{ width: `${Math.min(100, (sessionImageBytes / IMG_SESSION_TOTAL_BYTES) * 100)}%` }}></div>
+                  </div>
+                </div>
+              )}
               <div className="mb-4">
                 <h2 className="text-lg font-semibold text-slate-900 mb-1">External Evidence Sources</h2>
                 <p className="text-sm text-slate-500">Prompts are customized with your selected teaching focus. Copy → paste into source → paste response back below.</p>
-                {activeSources.filter(s => sourceResponses[s]?.trim()).length > 1 && aiEnabled && (
+                {activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim()).length + (Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length > 0 ? 1 : 0) > 1 && aiEnabled && (
                   <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded text-xs text-purple-900 flex items-center gap-2">
                     <Sparkles className="w-3 h-3" />
                     Multiple sources detected — AI will synthesize them into a unified evidence summary, consolidating overlaps and flagging conflicts.
@@ -1333,10 +1392,10 @@ I want to focus today's teaching on: ${focusText}.
                         {expandedSections[src] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         {sourceLabels[src]}
                         {src === "pubmedai" ? (
-                          Object.values(sourceResponses.pubmedai || {}).filter(v => v?.trim()).length > 0 &&
-                          <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">{Object.values(sourceResponses.pubmedai || {}).filter(v => v?.trim()).length} responses added</span>
+                          Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length > 0 &&
+                          <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">{Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length} responses added</span>
                         ) : (
-                          sourceResponses[src]?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Response added</span>
+                          sourceResponses[src]?.html?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Response added</span>
                         )}
                       </button>
                       <a href={sourceUrls[src]} target="_blank" rel="noreferrer" className="ml-2 text-xs px-2 py-1 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1" onClick={e => e.stopPropagation()}>
@@ -1370,16 +1429,17 @@ I want to focus today's teaching on: ${focusText}.
                                 </button>
                               </div>
                               <div className="p-2 bg-slate-50 rounded border border-slate-200 text-xs font-mono text-slate-700 whitespace-pre-wrap mb-2">{promptText}</div>
-                              <label className="block text-xs font-medium text-slate-600 mb-1">Paste PubMed AI response for this topic</label>
-                              <textarea
-                                value={sourceResponses.pubmedai?.[topic] || ""}
-                                onChange={e => setSourceResponses({
+                              <label className="block text-xs font-medium text-slate-600 mb-1">Paste PubMed AI response for this topic <span className="font-normal text-slate-500">(rich text + images supported)</span></label>
+                              <RichPaste
+                                value={sourceResponses.pubmedai?.[topic] || { html: "", images: [] }}
+                                onChange={v => setSourceResponses({
                                   ...sourceResponses,
-                                  pubmedai: { ...(sourceResponses.pubmedai || {}), [topic]: e.target.value }
+                                  pubmedai: { ...(sourceResponses.pubmedai || {}), [topic]: v }
                                 })}
+                                placeholder="Paste PubMed AI response..."
                                 rows={5}
-                                placeholder="Paste response from PubMed AI..."
-                                className="w-full px-2 py-1 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                                sessionImageBytes={sessionImageBytes}
+                                onImageBytesChange={delta => setSessionImageBytes(b => b + delta)}
                               />
                             </div>
                           );
@@ -1398,8 +1458,15 @@ I want to focus today's teaching on: ${focusText}.
                           <div className="p-3 bg-slate-50 rounded border border-slate-200 text-xs font-mono text-slate-700 whitespace-pre-wrap max-h-60 overflow-y-auto">{generateSourcePrompt(src)}</div>
                         </div>
                         <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Paste response from {sourceLabels[src]}</label>
-                          <textarea value={sourceResponses[src]} onChange={e => setSourceResponses({...sourceResponses, [src]: e.target.value})} rows={6} placeholder="Response will be synthesized with other sources in the final document..." className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm" />
+                          <label className="block text-sm font-medium text-slate-700 mb-1">Paste response from {sourceLabels[src]} <span className="text-xs font-normal text-slate-500">(rich text + images supported)</span></label>
+                          <RichPaste
+                            value={sourceResponses[src]}
+                            onChange={v => setSourceResponses({...sourceResponses, [src]: v})}
+                            placeholder="Paste the response here — text, formatting, tables, and images will all carry through..."
+                            rows={6}
+                            sessionImageBytes={sessionImageBytes}
+                            onImageBytesChange={delta => setSessionImageBytes(b => b + delta)}
+                          />
                         </div>
                       </div>
                     )}
@@ -1497,6 +1564,270 @@ I want to focus today's teaching on: ${focusText}.
           </>
         )}
       </main>
+    </div>
+  );
+}
+
+// ============ IMAGE UTILITIES ============
+const IMG_MAX_BYTES = 1_000_000; // 1MB per image
+const IMG_SESSION_TOTAL_BYTES = 8_000_000; // 8MB total
+const IMG_COMPRESS_THRESHOLD = 500_000; // compress if over 500KB
+const IMG_MAX_DIMENSION = 1200;
+
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = reject;
+  reader.readAsDataURL(blob);
+});
+
+const dataUrlByteSize = (dataUrl) => {
+  // Approx: base64 is 4/3 of bytes; strip header
+  const b64 = dataUrl.split(",")[1] || "";
+  return Math.floor(b64.length * 0.75);
+};
+
+const compressDataUrl = (dataUrl) => new Promise((resolve) => {
+  const img = new Image();
+  img.onload = () => {
+    let { width, height } = img;
+    if (width > IMG_MAX_DIMENSION || height > IMG_MAX_DIMENSION) {
+      const scale = IMG_MAX_DIMENSION / Math.max(width, height);
+      width = Math.round(width * scale);
+      height = Math.round(height * scale);
+    }
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    // White background in case of transparency (JPEG can't do alpha)
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    resolve(canvas.toDataURL("image/jpeg", 0.8));
+  };
+  img.onerror = () => resolve(dataUrl); // fall back to original
+  img.src = dataUrl;
+});
+
+const fetchAsDataUrl = async (url) => {
+  // Try direct fetch first
+  try {
+    const res = await fetch(url, { mode: "cors" });
+    if (res.ok) {
+      const blob = await res.blob();
+      if (!blob.type.startsWith("image/")) throw new Error("Not an image");
+      return await blobToDataUrl(blob);
+    }
+  } catch (e) {
+    // fall through to proxy
+  }
+  // Proxy fallback via Worker
+  const proxyUrl = WORKER_URL.replace(/\/$/, "") + "/proxy-image?url=" + encodeURIComponent(url);
+  const res = await fetch(proxyUrl);
+  if (!res.ok) throw new Error(`Proxy failed: ${res.status}`);
+  const blob = await res.blob();
+  return await blobToDataUrl(blob);
+};
+
+const processImageSrc = async (src, currentTotalBytes) => {
+  // Returns { dataUrl, bytes, warning }
+  let dataUrl = src;
+  if (!src.startsWith("data:")) {
+    // External URL — fetch and inline
+    dataUrl = await fetchAsDataUrl(src);
+  }
+  let bytes = dataUrlByteSize(dataUrl);
+  if (bytes > IMG_COMPRESS_THRESHOLD) {
+    dataUrl = await compressDataUrl(dataUrl);
+    bytes = dataUrlByteSize(dataUrl);
+  }
+  if (bytes > IMG_MAX_BYTES) {
+    return { dataUrl: null, bytes: 0, warning: `Image too large after compression (${Math.round(bytes / 1024)}KB, max ${IMG_MAX_BYTES / 1024}KB)` };
+  }
+  if (currentTotalBytes + bytes > IMG_SESSION_TOTAL_BYTES) {
+    return { dataUrl: null, bytes: 0, warning: `Session image limit reached (${Math.round(IMG_SESSION_TOTAL_BYTES / 1024 / 1024)}MB total)` };
+  }
+  return { dataUrl, bytes, warning: null };
+};
+
+// ============ RICH PASTE COMPONENT ============
+function RichPaste({ value, onChange, placeholder, rows = 6, sessionImageBytes, onImageBytesChange }) {
+  const ref = React.useRef(null);
+  const [processing, setProcessing] = React.useState(0);
+  const [warning, setWarning] = React.useState(null);
+  const skipNextSync = React.useRef(false);
+
+  // Initialize content on mount and when value changes externally
+  React.useEffect(() => {
+    if (skipNextSync.current) {
+      skipNextSync.current = false;
+      return;
+    }
+    if (ref.current && ref.current.innerHTML !== (value?.html || "")) {
+      ref.current.innerHTML = value?.html || "";
+    }
+  }, [value?.html]);
+
+  const emitChange = () => {
+    if (!ref.current) return;
+    const html = ref.current.innerHTML;
+    const imgs = Array.from(ref.current.querySelectorAll("img"));
+    const images = imgs.map((img, i) => ({
+      id: img.dataset.imgId || `img-${Date.now()}-${i}`,
+      dataUrl: img.src,
+      alt: img.alt || "",
+    }));
+    skipNextSync.current = true;
+    onChange({ html, images });
+  };
+
+  const handlePaste = async (e) => {
+    e.preventDefault();
+    const clipboard = e.clipboardData;
+    if (!clipboard) return;
+
+    // Collect image files from clipboard (screenshots)
+    const files = Array.from(clipboard.files || []).filter(f => f.type.startsWith("image/"));
+
+    // Collect HTML content
+    const html = clipboard.getData("text/html");
+    const text = clipboard.getData("text/plain");
+
+    setWarning(null);
+    let addedBytes = 0;
+
+    if (html) {
+      // Sanitize and process external images
+      const tempDiv = document.createElement("div");
+      tempDiv.innerHTML = html;
+      // Remove scripts, styles, and dangerous elements
+      tempDiv.querySelectorAll("script, style, link, meta, iframe, object, embed").forEach(el => el.remove());
+      // Strip event handlers and inline styles that could break layout
+      tempDiv.querySelectorAll("*").forEach(el => {
+        [...el.attributes].forEach(attr => {
+          if (attr.name.startsWith("on") || attr.name === "srcset") {
+            el.removeAttribute(attr.name);
+          }
+        });
+      });
+
+      const imgs = Array.from(tempDiv.querySelectorAll("img"));
+      if (imgs.length > 0) {
+        setProcessing(imgs.length);
+        for (const img of imgs) {
+          const src = img.getAttribute("src");
+          if (!src) { img.remove(); continue; }
+          try {
+            const result = await processImageSrc(src, sessionImageBytes + addedBytes);
+            if (result.dataUrl) {
+              img.src = result.dataUrl;
+              img.style.maxWidth = "100%";
+              img.style.height = "auto";
+              img.dataset.imgId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+              addedBytes += result.bytes;
+            } else {
+              img.remove();
+              setWarning(result.warning);
+            }
+          } catch (err) {
+            console.warn("Image processing failed:", err);
+            img.remove();
+            setWarning(`Some images couldn't be loaded (${err.message})`);
+          }
+          setProcessing(n => n - 1);
+        }
+      }
+
+      // Insert sanitized HTML at cursor
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && ref.current?.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0);
+        range.deleteContents();
+        const frag = document.createDocumentFragment();
+        while (tempDiv.firstChild) frag.appendChild(tempDiv.firstChild);
+        range.insertNode(frag);
+        range.collapse(false);
+      } else if (ref.current) {
+        ref.current.innerHTML += tempDiv.innerHTML;
+      }
+    } else if (text) {
+      // Plain text fallback
+      const sel = window.getSelection();
+      if (sel && sel.rangeCount > 0 && ref.current?.contains(sel.anchorNode)) {
+        const range = sel.getRangeAt(0);
+        range.deleteContents();
+        range.insertNode(document.createTextNode(text));
+        range.collapse(false);
+      } else if (ref.current) {
+        ref.current.textContent += text;
+      }
+    }
+
+    // Handle image files (screenshots) separately
+    for (const file of files) {
+      try {
+        const dataUrl = await blobToDataUrl(file);
+        const result = await processImageSrc(dataUrl, sessionImageBytes + addedBytes);
+        if (result.dataUrl && ref.current) {
+          const img = document.createElement("img");
+          img.src = result.dataUrl;
+          img.style.maxWidth = "100%";
+          img.style.height = "auto";
+          img.dataset.imgId = `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+          ref.current.appendChild(img);
+          addedBytes += result.bytes;
+        } else if (!result.dataUrl) {
+          setWarning(result.warning);
+        }
+      } catch (err) {
+        console.warn("File image failed:", err);
+      }
+    }
+
+    if (addedBytes > 0 && onImageBytesChange) onImageBytesChange(addedBytes);
+    emitChange();
+  };
+
+  const imageCount = value?.images?.length || 0;
+
+  return (
+    <div>
+      <div
+        ref={ref}
+        contentEditable
+        suppressContentEditableWarning
+        onPaste={handlePaste}
+        onInput={emitChange}
+        onBlur={emitChange}
+        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm overflow-auto"
+        style={{ minHeight: `${rows * 1.5}em`, maxHeight: "500px" }}
+        data-placeholder={placeholder}
+      />
+      <style>{`
+        [contenteditable][data-placeholder]:empty::before {
+          content: attr(data-placeholder);
+          color: #94a3b8;
+          pointer-events: none;
+        }
+        [contenteditable] img {
+          border-radius: 4px;
+          margin: 4px 0;
+          box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+      `}</style>
+      <div className="flex items-center justify-between mt-1 text-xs text-slate-500">
+        <div className="flex items-center gap-3">
+          {imageCount > 0 && <span>🖼 {imageCount} image{imageCount !== 1 ? "s" : ""}</span>}
+          {processing > 0 && <span className="text-indigo-600 flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" />Processing {processing} image{processing !== 1 ? "s" : ""}...</span>}
+        </div>
+        {warning && (
+          <div className="text-amber-700 flex items-center gap-1">
+            <AlertCircle className="w-3 h-3" />{warning}
+            <button onClick={() => setWarning(null)} className="ml-1 hover:text-amber-900">×</button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
