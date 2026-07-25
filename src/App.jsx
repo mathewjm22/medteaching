@@ -555,44 +555,49 @@ Return ONLY valid JSON (no markdown fences):
       return `=== SOURCE: ${p.label} (${p.detailLevel} detail, ${p.wordCount} words) ===\n${t}${figList}`;
     }).join("\n\n");
 
-    const sys = `You are a teaching attending in internal medicine integrating evidence from ${sourcePackages.length} clinical sources for your medical student. Your goal is a STRUCTURED synthesis where every claim is traceable back to specific sources.
+    const sys = `You are a teaching attending in internal medicine integrating evidence from ${sourcePackages.length} AI research tools for your medical student. Your goal is a STRUCTURED synthesis where every claim carries a REAL clinical citation (trial name, society guideline, USPSTF grade, Cochrane review, FDA label) — not the name of the AI tool that surfaced it.
 
-CRITICAL RULES:
-1. Organize by clinical topic (5-8 topics maximum). Deduplicate — do NOT create two topics that overlap heavily.
-2. Under each topic, break the content into individual CLAIMS. A claim is one clinical statement (a recommendation, a dosing fact, a mechanism, a trial finding).
-3. For each claim, tag which sources support it and mark strength:
-   - "consensus" if 3+ sources agree
-   - "majority" if exactly 2 sources agree
-   - "single-source" if only 1 source addresses it
-   - "conflict" if sources contradict
-4. When sources conflict, capture BOTH positions with their sources in perSourceDetail.
-5. Every claim needs a perSourceDetail array — for each supporting source, write 1-2 sentences describing what THAT source specifically said (this becomes an expandable "source detail" section for the student).
-6. If a claim relates to a figure available in the source material, include the figure ID(s) in figureRefs.
-7. Order topics logically for a clinician: diagnosis/workup → treatment first-line → adjunctive → monitoring → special populations. Skip categories that don't apply.
+CRITICAL: The tool names below (OpenEvidence, UpToDate, DynaMed, DoxGPT, PubMed AI) are AI research aggregators. They are NOT clinical evidence. Attributing a clinical claim to "OpenEvidence" is like attributing a fact to "Google" — it tells the student nothing about the underlying evidence. Your job is to extract the REAL references from the source content (trials, guidelines, society statements) and cite THOSE.
+
+WHAT GOES WHERE:
+- \`citations\`: an array of REAL clinical references (e.g. ["ATA 2014", "SPRINT trial", "USPSTF Grade B", "ACOG PB 128", "Cochrane 2021"]). Every claim needs at least one citation here. If the source content doesn't name a specific reference, use your medical training to identify the canonical reference (e.g., "hypothyroidism and menorrhagia link" → "ATA 2014" or "ACOG PB 128"). NEVER put "OpenEvidence" here.
+- \`provenance\`: the AI tool names — internal only, used for transparency but hidden from student by default. This is where "OpenEvidence", "DoxGPT" etc. go.
+- \`perSourceDetail\`: what each AI tool specifically said, for the "provenance" expandable view.
+- \`statement\`: written in attending voice with the real citation inline in parentheses.
+
+RULES:
+1. Organize by clinical topic (5-8 topics maximum). Deduplicate — no near-duplicate topics.
+2. Under each topic, break into individual CLAIMS. One claim = one clinical statement.
+3. Tag strength based on AI-tool agreement: "consensus" if 3+ tools agree, "majority" if 2 agree, "single-source" if 1, "conflict" if tools contradict.
+4. NEVER fabricate journal names, DOIs, page numbers, or author names. "SPRINT trial" is fine; "N Engl J Med 2015;373:2103" is not (unless it appears verbatim in the source content).
+5. When AI tools disagree, populate BOTH sides in perSourceDetail.
+6. If a claim relates to a figure from source material, include the figure ID(s) in figureRefs.
+7. Order topics: diagnosis/workup → treatment first-line → adjunctive → monitoring → special populations.
+8. The crossReferenceMatrix maps topics to the REAL guidelines/trials that address them — NOT to AI tool names.
 
 Return ONLY valid JSON (no markdown fences):
 {
   "topics": [
     {
-      "topic": "clinical topic name (e.g., 'First-line pharmacotherapy')",
+      "topic": "clinical topic name",
       "orderingCategory": "diagnosis|workup|treatment|monitoring|special|other",
       "claims": [
         {
-          "statement": "1-2 sentence clinical claim in attending voice",
+          "statement": "1-2 sentence clinical claim in attending voice, with REAL citation in parentheses inline",
           "strength": "consensus|majority|single-source|conflict",
-          "sources": ["source names that support this claim"],
+          "citations": ["REAL trial or guideline name — never a tool name"],
+          "provenance": ["AI tool names for internal tracking"],
           "figureRefs": ["fig-id-here if referenced"],
           "perSourceDetail": [
-            {"source": "OpenEvidence", "detail": "what specifically OpenEvidence said about this — 1-2 sentences"},
-            {"source": "UpToDate", "detail": "what UpToDate specifically said"}
+            {"source": "OpenEvidence", "detail": "what specifically this tool said about this — 1-2 sentences"}
           ]
         }
       ]
     }
   ],
-  "keyTakeaways": ["3-5 bullet takeaways synthesized across all sources"],
+  "keyTakeaways": ["3-5 bullet takeaways with real citations inline"],
   "crossReferenceMatrix": [
-    {"topic": "topic name", "addressedBy": ["source names that covered this topic"], "notCoveredBy": ["source names that did NOT address it"]}
+    {"topic": "topic name", "primaryReferences": ["real guideline/trial names that establish this topic"], "provenanceTools": ["AI tools that covered it — internal"]}
   ]
 }`;
 
@@ -735,30 +740,44 @@ VOICE AND TONE (CRITICAL):
 - Reference the patient's own words, concerns, life context, and social situation when relevant
 - When possible, tie teaching to what YOU as the attending noticed, decided, or would want the student to walk away thinking about
 
-CITATION RULES:
-- Cite landmark trials by NAME only (e.g., "SPRINT trial"). Cite guidelines by ORG + YEAR (e.g., "2023 AHA/ACC"). NEVER fabricate journal names, page numbers, or authors.
-- WHEN the STRUCTURED EVIDENCE section is provided below, every clinical claim in your teaching case that draws from it MUST be attributed to the specific source(s) named there — write inline as "(per OpenEvidence)" or "(OpenEvidence and UpToDate agree)" or "(only in DoxGPT)". Do NOT paraphrase claims without attribution.
-- When a claim in the structured evidence has a figure reference like [refs: fig-openevidence-1], you MAY reference it in your teaching text by writing "(see Figure from OpenEvidence)" in the appropriate learning point or key labs section. Only reference figures listed in FIGURES AVAILABLE — never invent figure IDs.
-- If the structured evidence contains a "conflict" claim, address it explicitly in your teaching — this is a teaching opportunity about clinical equipoise.
+CITATION RULES — READ CAREFULLY:
 
-EXAMPLES OF GOOD vs. BAD VOICE:
-- BAD (textbook): "TSH >10 indicates severe hypothyroidism requiring treatment."
-- GOOD (attending): "Our patient's TSH of 13.8 after six months off her levothyroxine tells us just how quickly the thyroid axis decompensates — she's essentially back to where she started at diagnosis. This is why I emphasized to her that adherence matters more than dose adjustments right now."
+The INLINE citation (what the student reads) must be a REAL clinical reference: a landmark trial NAME, a society guideline (ORG + YEAR), a Cochrane review, a USPSTF grade, or an FDA label. Examples of good inline citations: "(SPRINT trial)", "(2023 AHA/ACC guidelines)", "(ATA 2022)", "(USPSTF Grade B)", "(Cochrane 2021)", "(ACOG Practice Bulletin 128)".
 
-- BAD (textbook): "Menorrhagia can be caused by hypothyroidism via estrogen excess."
-- GOOD (attending): "You'll remember she described her periods as 'outrageously heavy' every two weeks. Before you jump to a GYN referral, consider: uncontrolled hypothyroidism is one of the most common reversible causes of menorrhagia we see. That's why I want to treat her thyroid first — if we fix that, we may fix her bleeding without a hysterectomy."
+DO NOT write "(per OpenEvidence)", "(per UpToDate)", "(per DoxGPT)", "(per DynaMed)", or "(per PubMed AI)" as your inline citation. These are AI research tools, not clinical evidence. Attributing a claim to "OpenEvidence" is like attributing a fact to "Google" — it tells the student nothing about the actual evidence base.
+
+The names of source tools (OpenEvidence, UpToDate, DynaMed, DoxGPT, PubMed AI) are for INTERNAL provenance tracking only — populate them in the "provenance" array so we can trace where the AI-tool synthesis came from. They must NOT appear in your prose text or in the "citation" field.
+
+Every clinical claim you make MUST have a real citation. If the structured evidence below gives you a claim but doesn't name the underlying guideline/trial, DO ONE of the following:
+1. If you know the definitive reference for that claim from your medical training (e.g., "levothyroxine timing 60 min before food" → ATA 2014 guidelines), cite that.
+2. If you truly do not know a real reference, mark the citation as "(clinical consensus)" or "(standard of care)" — but only sparingly.
+3. NEVER fabricate specific journal names, page numbers, DOIs, or author names. It's fine to cite "SPRINT trial" but do NOT invent "N Engl J Med 2015;373:2103".
+
+When a claim in the structured evidence has a figure reference like [refs: fig-openevidence-1], you may reference it in your teaching text by writing "(see Figure)" or "(see figure below)" — do NOT name the AI tool the figure came from. Only reference figures listed in FIGURES AVAILABLE.
+
+If the structured evidence contains a "conflict" claim, address it explicitly in your teaching as a clinical equipoise teaching opportunity — cite BOTH real references that disagree.
+
+EXAMPLES OF GOOD vs. BAD VOICE AND CITATIONS:
+- BAD (textbook + tool citation): "TSH >10 indicates severe hypothyroidism requiring treatment (per OpenEvidence)."
+- GOOD (attending + real citation): "Our patient's TSH of 13.8 after six months off her levothyroxine tells us just how quickly the thyroid axis decompensates — she's essentially back to where she started at diagnosis. This is why I emphasized to her that adherence matters more than dose adjustments right now (ATA 2014 guidelines)."
+
+- BAD: "Menorrhagia can be caused by hypothyroidism (OpenEvidence and DoxGPT)."
+- GOOD: "You'll remember she described her periods as 'outrageously heavy' every two weeks. Before you jump to a GYN referral, consider: uncontrolled hypothyroidism is one of the most common reversible causes of menorrhagia we see. That's why I want to treat her thyroid first — if we fix that, we may fix her bleeding without a hysterectomy (ACOG Practice Bulletin 128; ATA 2014)."
+
+- BAD: "The patient should be counseled on adherence (per OpenEvidence)."
+- GOOD: "System-level barriers like a name mismatch on refill records — exactly what happened to our patient — are increasingly recognized as a driver of apparent 'non-adherence.' Asking 'have you been able to get your medications?' rather than 'are you taking them?' surfaces these barriers (VA/DoD Clinical Practice Guidelines 2022)."
 
 Return ONLY valid JSON (no markdown fences, no commentary):
 {
   "problem": "${problem}",
   "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for THIS patient"},
   "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "why you considered it for OUR patient — reference her actual features, meds, or context"}],
-  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student", "citation": "landmark trial name or org/year", "citedSources": ["source names from the structured evidence, if this point drew from them"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
+  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student. The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only — never displayed as citation"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
   "shelfQuestions": [{"vignette": "detailed clinical vignette 3-5 sentences (can invent a new patient for the shelf-style question)", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to OUR patient's presentation", "steps": ["step 1", "step 2"], "interpretation": "what a positive/negative finding would tell you about THIS patient specifically"},
   "keyLabsAndImaging": [{"study": "name", "purpose": "why I ordered/would order it for OUR patient", "interpretation": "what her actual result (or what a hypothetical result) would mean in her clinical context", "role": "how it changes management for HER"}],
-  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "trial or guideline name — but explain WHY this fits our patient", "citedSources": ["source names supporting this recommendation"]}], "additional": ["patient-specific considerations, not generic bullet points"]},
+  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "real trial/guideline citation (e.g. 'ATA 2022', 'SPRINT trial') — NEVER a tool name — plus 1 sentence explaining WHY this fits our patient", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["patient-specific considerations, not generic bullet points"]},
   "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation — reference her actual story (job, family, MST, name issue, whatever's relevant)",
   "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "why I want you to read this after seeing OUR patient today"}],
   "communicationTeaching": {"scenario": "a specific conversation that came up (or could have come up) in OUR visit today", "script": "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"},
@@ -2670,8 +2689,8 @@ function DocumentContent({ doc, phase, session }) {
 // ============ EVIDENCE DEEP-DIVE (structured claims rendering) ============
 function EvidenceDeepDive({ content, allSourceImages = [] }) {
   const [expandedClaims, setExpandedClaims] = React.useState({});
+  const [showProvenance, setShowProvenance] = React.useState(false);
 
-  // Build a lookup map: figure ID -> {dataUrl, alt, source}
   const figureMap = React.useMemo(() => {
     const map = {};
     (content.allFigures || []).forEach(f => { map[f.id] = f; });
@@ -2685,12 +2704,10 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
     conflict: { label: "Conflict", color: "bg-amber-100 text-amber-900 border-amber-300", dot: "bg-amber-500" },
   };
 
-  // Single-source non-synthesized fallback
   if (!content.synthesized && content.singleSource) {
     return (
       <section>
         <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Deep-Dive</h2>
-        <div className="text-xs italic text-slate-500 mb-2">Displayed as-provided from {content.singleSource.source}.</div>
         <div className="text-sm text-slate-800 leading-relaxed prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: content.singleSource.contentHtml || "" }} />
       </section>
     );
@@ -2700,7 +2717,6 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
 
   const toggleClaim = (key) => setExpandedClaims(prev => ({ ...prev, [key]: !prev[key] }));
 
-  // Order topics: diagnosis → workup → treatment → monitoring → special → other
   const categoryOrder = { diagnosis: 1, workup: 2, treatment: 3, monitoring: 4, special: 5, other: 6 };
   const orderedTopics = [...content.topics].sort((a, b) =>
     (categoryOrder[a.orderingCategory] || 99) - (categoryOrder[b.orderingCategory] || 99)
@@ -2708,29 +2724,22 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
 
   return (
     <section>
-      <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Deep-Dive</h2>
+      <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-slate-800">
+        <h2 className="text-base font-bold text-slate-900 uppercase tracking-wide">Evidence Deep-Dive</h2>
+        <button
+          onClick={() => setShowProvenance(!showProvenance)}
+          className="no-print text-xs text-slate-500 hover:text-slate-700 underline"
+          title="Show which AI research tool surfaced each claim"
+        >
+          {showProvenance ? "Hide" : "Show"} AI-tool provenance
+        </button>
+      </div>
 
-      {/* Source contribution header */}
-      {content.sourceContribution?.length > 0 && (
-        <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded">
-          <div className="text-xs uppercase font-semibold text-slate-600 mb-2">Synthesized from</div>
-          <div className="flex flex-wrap gap-2">
-            {content.sourceContribution.map((s, i) => (
-              <div key={i} className="text-xs bg-white border border-slate-300 rounded px-2 py-1">
-                <span className="font-semibold text-slate-800">{s.source}</span>
-                <span className="text-slate-500 ml-1">— {s.detailLevel} detail ({s.wordCount} words{s.figureCount > 0 ? `, ${s.figureCount} fig${s.figureCount !== 1 ? "s" : ""}` : ""})</span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Topics with claims */}
       <div className="space-y-5">
         {orderedTopics.map((topic, ti) => (
-          <div key={ti} className="border border-slate-200 rounded overflow-hidden">
+          <div key={ti} className="border border-slate-200 rounded overflow-hidden keep-together">
             <div className="bg-slate-100 px-3 py-2 border-b border-slate-200">
-              <h3 className="text-sm font-bold text-slate-900">{topic.topic}</h3>
+              <h3 className="text-sm font-bold text-slate-900 subsection-header">{topic.topic}</h3>
             </div>
             <div className="p-3 space-y-3">
               {topic.claims?.map((claim, ci) => {
@@ -2738,44 +2747,39 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
                 const claimKey = `${ti}-${ci}`;
                 const hasDetail = claim.perSourceDetail?.length > 0;
                 const refFigures = (claim.figureRefs || []).map(id => figureMap[id]).filter(Boolean);
+                const realCitations = claim.citations || [];
+                const provenanceTools = claim.provenance || claim.sources || [];
                 return (
-                  <div key={ci} className="text-sm">
+                  <div key={ci} className="text-sm keep-together">
                     <div className="flex items-start gap-2">
                       <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-2 ${cfg.dot}`}></div>
                       <div className="flex-1">
                         <div className="text-slate-800 leading-relaxed">
                           {claim.statement}
-                          {claim.sources?.length > 0 && (
+                          {realCitations.length > 0 && (
                             <span className="text-xs text-slate-500 ml-1 italic">
-                              ({claim.sources.join(", ")})
+                              ({realCitations.join("; ")})
                             </span>
                           )}
                         </div>
-                        <div className="flex items-center gap-2 mt-1 no-print">
+                        <div className="flex items-center gap-2 mt-1 flex-wrap no-print">
                           <span className={`text-xs px-1.5 py-0.5 rounded border font-medium ${cfg.color}`}>{cfg.label}</span>
-                          {hasDetail && (
+                          {showProvenance && provenanceTools.length > 0 && (
+                            <span className="text-xs text-slate-500">
+                              via {provenanceTools.join(", ")}
+                            </span>
+                          )}
+                          {hasDetail && showProvenance && (
                             <button
                               onClick={() => toggleClaim(claimKey)}
                               className="text-xs text-indigo-600 hover:text-indigo-800 underline"
                             >
-                              {expandedClaims[claimKey] ? "Hide" : "Show"} per-source detail
+                              {expandedClaims[claimKey] ? "Hide" : "Show"} per-tool detail
                             </button>
                           )}
                         </div>
-                        {/* Print-only source detail — always visible on print */}
-                        {hasDetail && (
-                          <div className="print-only mt-2 pl-3 border-l-2 border-slate-300 space-y-1" style={{ display: "none" }}>
-                            {claim.perSourceDetail.map((psd, pi) => (
-                              <div key={pi} className="text-xs">
-                                <span className="font-semibold text-slate-700">{psd.source}:</span>
-                                <span className="text-slate-600 ml-1">{psd.detail}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {/* Screen expandable */}
-                        {expandedClaims[claimKey] && hasDetail && (
-                          <div className="mt-2 pl-3 border-l-2 border-indigo-300 space-y-1.5 bg-indigo-50/50 py-2 pr-2 rounded-r">
+                        {showProvenance && expandedClaims[claimKey] && hasDetail && (
+                          <div className="mt-2 pl-3 border-l-2 border-indigo-300 space-y-1.5 bg-indigo-50/50 py-2 pr-2 rounded-r no-print">
                             {claim.perSourceDetail.map((psd, pi) => (
                               <div key={pi} className="text-xs">
                                 <span className="font-semibold text-indigo-900">{psd.source}:</span>
@@ -2784,14 +2788,13 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
                             ))}
                           </div>
                         )}
-                        {/* Inline figures referenced by this claim */}
                         {refFigures.length > 0 && (
                           <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
                             {refFigures.map((fig, fi) => (
                               <figure key={fi} className="border border-slate-200 rounded overflow-hidden bg-white">
                                 <img src={fig.dataUrl} alt={fig.alt} className="w-full h-auto" style={{ maxHeight: "300px", objectFit: "contain" }} />
                                 <figcaption className="text-xs text-slate-600 px-2 py-1 bg-slate-50 border-t border-slate-200">
-                                  <span className="font-semibold">{fig.source}:</span> {fig.alt}
+                                  {fig.alt}
                                 </figcaption>
                               </figure>
                             ))}
@@ -2807,38 +2810,49 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
         ))}
       </div>
 
-      {/* Key takeaways */}
       {content.keyTakeaways?.length > 0 && (
-        <div className="mt-4 border-l-4 border-indigo-500 bg-indigo-50 p-3">
-          <div className="text-xs uppercase font-bold text-indigo-900 mb-2">Key Takeaways Across Sources</div>
+        <div className="mt-4 border-l-4 border-indigo-500 bg-indigo-50 p-3 callout-box">
+          <div className="text-xs uppercase font-bold text-indigo-900 mb-2">Key Takeaways</div>
           <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
             {content.keyTakeaways.map((t, i) => <li key={i}>{t}</li>)}
           </ul>
         </div>
       )}
 
-      {/* Cross-reference matrix */}
       {content.crossReferenceMatrix?.length > 0 && (
-        <div className="mt-4">
-          <div className="text-xs uppercase font-bold text-slate-700 mb-2">Which Sources Addressed What</div>
+        <div className="mt-4 keep-together">
+          <div className="text-xs uppercase font-bold text-slate-700 mb-2">Topic → Primary References</div>
           <table className="w-full text-xs border border-slate-300">
             <thead>
               <tr className="bg-slate-100">
                 <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Topic</th>
-                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Addressed by</th>
-                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Not covered by</th>
+                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Primary references</th>
+                {showProvenance && <th className="px-2 py-1.5 text-left font-semibold text-slate-500 border-b border-slate-300 no-print">AI tools</th>}
               </tr>
             </thead>
             <tbody>
               {content.crossReferenceMatrix.map((row, i) => (
                 <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
                   <td className="px-2 py-1.5 font-medium text-slate-900 border-t border-slate-200 align-top">{row.topic}</td>
-                  <td className="px-2 py-1.5 text-slate-700 border-t border-slate-200 align-top">{(row.addressedBy || []).join(", ") || "—"}</td>
-                  <td className="px-2 py-1.5 text-slate-500 italic border-t border-slate-200 align-top">{(row.notCoveredBy || []).join(", ") || "—"}</td>
+                  <td className="px-2 py-1.5 text-slate-700 border-t border-slate-200 align-top">{(row.primaryReferences || row.addressedBy || []).join("; ") || "—"}</td>
+                  {showProvenance && <td className="px-2 py-1.5 text-slate-500 italic border-t border-slate-200 align-top no-print">{(row.provenanceTools || []).join(", ") || "—"}</td>}
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Source contribution footer — small, subtle, hidden in print unless toggled */}
+      {showProvenance && content.sourceContribution?.length > 0 && (
+        <div className="mt-4 p-2 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600 no-print">
+          <span className="font-semibold">Synthesized from AI tools: </span>
+          {content.sourceContribution.map((s, i) => (
+            <span key={i}>
+              {i > 0 && ", "}
+              {s.source} ({s.detailLevel} detail{s.figureCount > 0 ? `, ${s.figureCount} fig` : ""})
+            </span>
+          ))}
         </div>
       )}
     </section>
