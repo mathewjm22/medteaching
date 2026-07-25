@@ -1061,17 +1061,68 @@ I want to focus today's teaching on: ${focusText}.
     <div className="min-h-screen bg-slate-50">
       <style>{`
         @media print {
+          /* Hide UI chrome */
           .no-print { display: none !important; }
           .print-only { display: block !important; }
+
+          /* Clean document background */
           body { background: white; }
           .print-doc { box-shadow: none !important; border: none !important; }
           .print-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .section-block { page-break-inside: avoid; }
-          table { page-break-inside: avoid; }
-          h2 { page-break-after: avoid; }
-          figure { page-break-inside: avoid; }
+
+          /* Global paragraph orphan/widow protection */
+          p, li, div { orphans: 3; widows: 3; }
+
+          /* Headers must never be orphaned at page bottom */
+          h1, h2, h3, h4, h5, h6 { page-break-after: avoid; break-after: avoid; }
+          h2 + *, h3 + *, h4 + * { page-break-before: avoid; break-before: avoid; }
+
+          /* Do NOT force whole teaching cases to stay together —
+             they are too large and cause huge whitespace gaps.
+             Instead, keep smaller units atomic. */
+          .section-block { page-break-inside: auto; break-inside: auto; }
+
+          /* Atomic units: don't split these */
+          .keep-together { page-break-inside: avoid; break-inside: avoid; }
+          li { page-break-inside: avoid; break-inside: avoid; }
+          tr { page-break-inside: avoid; break-inside: avoid; }
+          thead { display: table-header-group; }
+          tfoot { display: table-footer-group; }
+          figure { page-break-inside: avoid; break-inside: avoid; }
+
+          /* Tables: keep headers with body but allow long tables to split */
+          table { page-break-inside: auto; break-inside: auto; }
+
+          /* Callout boxes (pearls, quotes) should not split */
+          .callout-box { page-break-inside: avoid; break-inside: avoid; }
+
+          /* Teaching case header should stay with its content */
+          .case-header { page-break-after: avoid; break-after: avoid; }
+
+          /* Reduce spacing between sections in print to fit more per page */
+          section { margin-top: 0.3in; }
+          section:first-child { margin-top: 0; }
+
+          /* Trim large empty spaces from bottom of pages */
+          .avoid-orphan-section { page-break-before: auto; }
+
+          /* Section headers stay with at least a few lines of content */
+          h2 { page-break-inside: avoid; break-inside: avoid; }
+
+          /* Nested subsection headers should stick to what follows */
+          .subsection-header {
+            page-break-after: avoid;
+            break-after: avoid;
+            page-break-inside: avoid;
+            break-inside: avoid;
+          }
         }
-        @page { margin: 0.5in; }
+        @page {
+          margin: 0.5in;
+        }
+        @page :first {
+          margin-top: 0.5in;
+        }
       `}</style>
 
       <header className="no-print bg-white border-b border-slate-200 sticky top-0 z-10">
@@ -2352,7 +2403,7 @@ function DocumentContent({ doc, phase, session }) {
 
       <div className="px-8 py-6 space-y-6">
         {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
-          <section>
+          <section className="keep-together">
             <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Case at a Glance</h2>
             <table className="w-full text-sm border border-slate-300">
               <tbody>
@@ -2367,7 +2418,7 @@ function DocumentContent({ doc, phase, session }) {
 
         {s.sessionGoal?.enabled && s.sessionGoal.content && (
           <section>
-            <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3">
+            <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3 callout-box">
               <div className="text-xs uppercase tracking-widest text-indigo-700 font-bold mb-1">Session Goal</div>
               <div className="text-slate-800 font-medium">{s.sessionGoal.content}</div>
             </div>
@@ -2375,7 +2426,7 @@ function DocumentContent({ doc, phase, session }) {
         )}
 
         {s.phaseFraming?.enabled && (
-          <section>
+          <section className="keep-together">
             <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Phase-Aligned Framing</h2>
             <div className="text-sm text-slate-700 leading-relaxed">
               <strong>Developmental focus:</strong> {doc.phase.focus}
@@ -2386,21 +2437,21 @@ function DocumentContent({ doc, phase, session }) {
         {enabledCases.map((tc, idx) => {
           const c = tc.data;
           return (
-            <section key={idx} className="section-block">
-              <div className="bg-slate-800 text-white px-4 py-3 rounded-t">
+            <section key={idx}>
+              <div className="bg-slate-800 text-white px-4 py-3 rounded-t case-header">
                 <div className="text-xs uppercase tracking-widest text-slate-300">Teaching Case {idx + 1} of {enabledCases.length}</div>
                 <h2 className="text-lg font-bold mt-0.5">{c.problem}</h2>
               </div>
               <div className="border border-t-0 border-slate-300 rounded-b p-4 space-y-4">
                 {c.primaryDiagnosis?.name && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1">Primary Diagnosis</div>
+                  <div className="keep-together">
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1 subsection-header">Primary Diagnosis</div>
                     <div className="text-sm text-slate-800"><span className="font-bold">{c.primaryDiagnosis.name}.</span> {c.primaryDiagnosis.briefDefinition}</div>
                   </div>
                 )}
                 {c.differentialDiagnosis?.length > 0 && (
                   <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Differential Diagnosis</div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Differential Diagnosis</div>
                     <table className="w-full text-sm border border-slate-200">
                       <thead><tr className="bg-slate-100"><th className="px-3 py-1.5 text-left font-semibold text-slate-700 w-1/3">Alternative Diagnosis</th><th className="px-3 py-1.5 text-left font-semibold text-slate-700">Clinical Reasoning</th></tr></thead>
                       <tbody>{c.differentialDiagnosis.map((dd, i) => (
@@ -2411,7 +2462,7 @@ function DocumentContent({ doc, phase, session }) {
                 )}
                 {c.keyLearningPoints?.length > 0 && (
                   <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Key Learning Points</div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Key Learning Points</div>
                     <ol className="space-y-2">{c.keyLearningPoints.map((lp, i) => (
                       <li key={i} className="text-sm text-slate-800 flex gap-2">
                         <span className="font-bold text-slate-500 flex-shrink-0 min-w-[1.5rem]">{i+1}.</span>
@@ -2420,17 +2471,17 @@ function DocumentContent({ doc, phase, session }) {
                     ))}</ol>
                   </div>
                 )}
-                {c.focusedHistoryQuestions?.length > 0 && (
+               {c.focusedHistoryQuestions?.length > 0 && (
                   <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Focused History Questions</div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Focused History Questions</div>
                     <ul className="space-y-2">{c.focusedHistoryQuestions.map((hq, i) => (
                       <li key={i} className="text-sm text-slate-800"><div className="font-semibold">{hq.question}</div><div className="text-xs text-slate-600 italic">Rationale: {hq.rationale}</div></li>
                     ))}</ul>
                   </div>
                 )}
                 {c.physicalExam?.maneuver && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Physical Examination</div>
+                  <div className="keep-together">
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Physical Examination</div>
                     <div className="text-sm text-slate-800">
                       <div className="font-semibold mb-1">{c.physicalExam.maneuver}</div>
                       {c.physicalExam.steps?.length > 0 && <ol className="ml-4 list-decimal space-y-1 mb-2">{c.physicalExam.steps.map((st, i) => <li key={i}>{st}</li>)}</ol>}
@@ -2440,7 +2491,7 @@ function DocumentContent({ doc, phase, session }) {
                 )}
                 {c.keyLabsAndImaging?.length > 0 && (
                   <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Key Labs & Imaging</div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Key Labs & Imaging</div>
                     <table className="w-full text-xs border border-slate-200">
                       <thead><tr className="bg-slate-100"><th className="px-2 py-1.5 text-left">Study</th><th className="px-2 py-1.5 text-left">Purpose</th><th className="px-2 py-1.5 text-left">Interpretation</th><th className="px-2 py-1.5 text-left">Role</th></tr></thead>
                       <tbody>{c.keyLabsAndImaging.map((lab, i) => (
@@ -2456,10 +2507,10 @@ function DocumentContent({ doc, phase, session }) {
                 )}
                 {c.treatmentApproach && (
                   <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Treatment Approach</div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Treatment Approach</div>
                     {c.treatmentApproach.firstLine?.length > 0 && (
-                      <div className="mb-3">
-                        <div className="text-xs font-semibold text-slate-600 mb-1">First-Line Management</div>
+                      <div className="mb-3 keep-together">
+                        <div className="text-xs font-semibold text-slate-600 mb-1 subsection-header">First-Line Management</div>
                         <table className="w-full text-sm border border-slate-200">
                           <thead><tr className="bg-slate-100"><th className="px-2 py-1.5 text-left">Treatment</th><th className="px-2 py-1.5 text-left">Dosing</th><th className="px-2 py-1.5 text-left">Evidence</th></tr></thead>
                           <tbody>{c.treatmentApproach.firstLine.map((t, i) => (
@@ -2468,23 +2519,23 @@ function DocumentContent({ doc, phase, session }) {
                         </table>
                       </div>
                     )}
-                    {c.treatmentApproach.additional?.length > 0 && (
+                   {c.treatmentApproach.additional?.length > 0 && (
                       <div>
-                        <div className="text-xs font-semibold text-slate-600 mb-1">Additional Considerations</div>
+                        <div className="text-xs font-semibold text-slate-600 mb-1 subsection-header">Additional Considerations</div>
                         <ul className="text-sm text-slate-800 space-y-1 ml-4 list-disc">{c.treatmentApproach.additional.map((a, i) => <li key={i}>{a}</li>)}</ul>
                       </div>
                     )}
                   </div>
                 )}
                 {c.patientContextConsiderations && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Patient Context</div>
+                  <div className="keep-together">
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Patient Context</div>
                     <div className="text-sm text-slate-800">{c.patientContextConsiderations}</div>
                   </div>
                 )}
                 {c.communicationTeaching?.scenario && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Communication Teaching</div>
+                  <div className="keep-together">
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Communication Teaching</div>
                     <div className="text-sm text-slate-800">
                       <div className="mb-2"><span className="font-semibold">Scenario:</span> {c.communicationTeaching.scenario}</div>
                       {c.communicationTeaching.script && <div className="p-2 bg-slate-50 border-l-4 border-slate-400 italic">"{c.communicationTeaching.script}"</div>}
@@ -2493,14 +2544,14 @@ function DocumentContent({ doc, phase, session }) {
                 )}
                 {c.recommendedReading?.length > 0 && (
                   <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Recommended Reading</div>
+                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Recommended Reading</div>
                     <ol className="space-y-1.5 ml-4 list-decimal text-sm">{c.recommendedReading.map((r, i) => (
                       <li key={i} className="text-slate-800"><span className="font-semibold">{r.reference}</span>{r.relevance && <div className="text-xs text-slate-600 italic">{r.relevance}</div>}</li>
                     ))}</ol>
                   </div>
                 )}
-                {c.clinicalPearl && (
-                  <div className="border-l-4 border-purple-600 bg-purple-50 px-3 py-2">
+                {c.quoteToDiscuss && (
+                  <div className="border-l-4 border-amber-500 bg-amber-50 px-3 py-2 callout-box">
                     <div className="text-xs font-bold text-purple-900 mb-1 uppercase">Clinical Pearl</div>
                     <div className="text-sm text-slate-800">{c.clinicalPearl}</div>
                   </div>
@@ -2557,8 +2608,8 @@ function DocumentContent({ doc, phase, session }) {
                 <div key={caseIdx} className="mb-6">
                   <h3 className="text-sm font-bold text-slate-800 mb-2 pb-1 border-b border-slate-200">{tc.data.problem}</h3>
                   <div className="space-y-4">
-                    {tc.data.shelfQuestions.map((q, i) => (
-                      <div key={i} className="border border-slate-300 rounded overflow-hidden">
+                   {tc.data.shelfQuestions.map((q, i) => (
+                      <div key={i} className="border border-slate-300 rounded overflow-hidden keep-together">
                         <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
                         <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
                         <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
