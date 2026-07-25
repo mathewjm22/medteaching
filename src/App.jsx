@@ -43,13 +43,16 @@ export default function App() {
     management: false, patientContext: false, ebm: false, communication: false,
   });
   const [aiSuggestedFocus, setAiSuggestedFocus] = useState(null);
-
+const [customTopics, setCustomTopics] = useState([]);
+  const [newCustomTopic, setNewCustomTopic] = useState("");
   // Sources
   const [sources, setSources] = useState({
-    openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmed: false,
+    openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false,
   });
   const [sourceResponses, setSourceResponses] = useState({
-    openevidence: "", uptodate: "", dynamed: "", doxgpt: "", pubmed: "",
+    openevidence: "", uptodate: "", dynamed: "", doxgpt: "",
+    // pubmedai stores an object keyed by diagnosis: {"Diagnosis 1": "response text", ...}
+    pubmedai: {},
   });
 
   // Goals
@@ -110,13 +113,13 @@ export default function App() {
 
   const focusIcons = { history: Stethoscope, physicalExam: Users, differential: Brain, workup: ClipboardList, management: Target, patientContext: Users, ebm: BookOpen, communication: Users };
   const focusLabels = { history: "History Taking", physicalExam: "Physical Exam", differential: "Differential Diagnosis", workup: "Diagnostic Workup", management: "Management Plan", patientContext: "Patient Context / SDoH", ebm: "Evidence-Based Medicine", communication: "Communication" };
-  const sourceLabels = { openevidence: "OpenEvidence", uptodate: "UpToDate", dynamed: "DynaMed", doxgpt: "DoxGPT (Doximity GPT)", pubmed: "PubMed" };
+  const sourceLabels = { openevidence: "OpenEvidence", uptodate: "UpToDate", dynamed: "DynaMed", doxgpt: "DoxGPT (Doximity GPT)", pubmedai: "PubMed AI" };
   const sourceUrls = {
     openevidence: "https://www.openevidence.com/",
     uptodate: "https://www.uptodate.com/contents/search",
     dynamed: "https://www.dynamed.com/",
     doxgpt: "https://www.doximity.com/gpt",
-    pubmed: "https://pubmed.ncbi.nlm.nih.gov/",
+    pubmedai: "https://www.pubmed.ai/home",
   };
 
   const activeSources = Object.keys(sources).filter(k => sources[k]);
@@ -153,7 +156,11 @@ export default function App() {
     }
     const data = await res.json();
     const content = data.choices?.[0]?.message?.content || "";
-    console.log("[callAi] Response length:", content.length, "Finish reason:", data.choices?.[0]?.finish_reason);
+    const finishReason = data.choices?.[0]?.finish_reason;
+    console.log("[callAi] Response length:", content.length, "Finish reason:", finishReason);
+    if (finishReason === "length") {
+      console.error("[callAi] TRUNCATED - increase max_tokens. Preview:", content.slice(-300));
+    }
     return content;
   };
 
@@ -427,43 +434,54 @@ Return ONLY valid JSON (no markdown fences):
   };
 
   // ===== Synthesize multiple external source responses =====
+  // ===== Integrate external source responses into the document's voice =====
   const synthesizeSources = async () => {
-    const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+    const filledSources = activeSources.filter(s => {
+      if (s === "pubmedai") {
+        return Object.values(sourceResponses.pubmedai || {}).some(v => v?.trim());
+      }
+      return sourceResponses[s]?.trim();
+    });
     if (filledSources.length === 0) return null;
-    if (filledSources.length === 1) {
-      // No synthesis needed for a single source; return as-is
-      const src = filledSources[0];
-      return { synthesized: false, byPoint: null, singleSource: { source: sourceLabels[src], content: sourceResponses[src] } };
+    if (!aiEnabled) {
+      // Fallback: just show raw content
+      if (filledSources.length === 1) {
+        const src = filledSources[0];
+        return { synthesized: false, singleSource: { source: sourceLabels[src], content: sourceResponses[src] } };
+      }
+      return null;
     }
-    if (!aiEnabled) return null;
 
-    const sys = `You are synthesizing evidence from multiple medical reference sources into a unified summary.
+    const sys = `You are a teaching attending integrating evidence from ${filledSources.length === 1 ? 'a trusted source' : 'multiple trusted sources'} into a cohesive teaching narrative for your medical student. 
 
-Your job:
-1. Identify overlapping/duplicate information across sources and consolidate it
-2. Preserve source-specific unique insights
-3. Flag any conflicts or disagreements between sources
-4. Organize output by clinical topic, not by source
-5. Attribute each point to its source(s) using source names in parentheses
+Do NOT paste content verbatim. Instead, REWRITE the key findings in your own attending voice — conversational, direct, teaching-focused. Attribute inline naturally (e.g., "According to OpenEvidence, the current recommendation is..." or "UpToDate frames this as...").
+
+Structure your integration around clinical themes that emerged, not around which source said what. When sources agree, present the consensus. When they differ, present both positions and explain what the disagreement is about.
 
 Return ONLY valid JSON (no markdown fences):
 {
-  "unifiedSummary": "2-3 sentence overview of what all sources agree on",
-  "consolidatedPoints": [
-    {"topic": "topic or claim", "detail": "the consolidated content", "sources": ["Source name 1", "Source name 2"], "conflictNote": "if sources disagree, describe the conflict; else empty string"}
+  "integratedNarrative": [
+    {"topic": "clinical topic or question this addresses", "attendingCommentary": "2-4 paragraphs written in your attending voice that weave the source content into teaching prose — reference the sources by name where appropriate but do NOT paste their content verbatim", "sources": ["source names contributing to this section"]}
   ],
-  "uniqueInsights": [
-    {"source": "source name", "insight": "content only this source provided"}
-  ],
+  "keyTakeaways": ["3-5 bullet takeaways for the student, phrased as things to remember"],
   "conflicts": [
-    {"topic": "topic where sources disagree", "positions": [{"source": "name", "position": "what they said"}]}
+    {"topic": "topic where sources disagreed", "explanation": "attending-voice explanation of the disagreement and how you'd approach it clinically"}
   ]
 }`;
 
-    const sourceText = filledSources.map(s => `=== ${sourceLabels[s]} ===\n${sourceResponses[s]}`).join("\n\n");
-    const user = `Synthesize these ${filledSources.length} evidence sources into a unified summary. Consolidate duplicates, preserve unique content, flag conflicts.\n\n${sourceText}`;
+    const sourceText = filledSources.map(s => {
+      if (s === "pubmedai") {
+        const perTopic = Object.entries(sourceResponses.pubmedai || {})
+          .filter(([_, v]) => v?.trim())
+          .map(([topic, content]) => `--- PubMed AI on "${topic}" ---\n${content}`)
+          .join("\n\n");
+        return `=== FROM PUBMED AI (per topic) ===\n${perTopic}`;
+      }
+      return `=== FROM ${sourceLabels[s].toUpperCase()} ===\n${sourceResponses[s]}`;
+    }).join("\n\n");
+    const user = `Chief concern: ${chiefConcern}\nProblems being taught: ${selectedProblems.join("; ") || workingDx}\n\nSource content to integrate into a cohesive teaching narrative:\n\n${sourceText}\n\nRewrite this in your attending voice. Do NOT quote source text verbatim. Organize by clinical themes, not by source.`;
 
-    const response = await callAi(sys, user, 3000);
+    const response = await callAi(sys, user, 4000);
     const parsed = extractJson(response);
     return { synthesized: true, ...parsed, sourcesUsed: filledSources.map(s => sourceLabels[s]) };
   };
@@ -483,9 +501,11 @@ Return ONLY valid JSON (no markdown fences):
       complex_multimorbidity: " Weave in problem prioritization, competing goals, care coordination."
     };
 
-    const problemsToTeach = selectedProblems.length > 0
-      ? selectedProblems
-      : (workingDx ? [workingDx] : ["primary clinical problem"]);
+    const problemsToTeach = [
+      ...(selectedProblems.length > 0 ? selectedProblems : (workingDx ? [workingDx] : [])),
+      ...customTopics,
+    ];
+    if (problemsToTeach.length === 0) problemsToTeach.push("primary clinical problem");
 
     const difficulty = phase.monthsIn <= 3 ? "Foundational (basic pattern recognition, single-step)"
       : phase.monthsIn <= 7 ? "Developing (illness scripts, multi-step reasoning)"
@@ -582,7 +602,7 @@ ${notePayload}${evidenceContext}
 
 Write your teaching case as if you and the student just walked out of this patient's room together. Ground every teaching point in what you both observed in this specific patient. Use her actual clinical features, medications, quotes, and story — not abstract examples.`;
       try {
-        const response = await callAi(sys, user, 6000);
+        const response = await callAi(sys, user, 8000);
         const parsed = extractJson(response);
         teachingCases.push(parsed);
       } catch (e) {
@@ -603,13 +623,22 @@ Write your teaching case as if you and the student just walked out of this patie
       await wait(3000);
       setAiStatus(prev => ({ ...prev, error: "Generating cross-cutting themes..." }));
       try {
-        const themesSys = `Return ONLY valid JSON (no markdown fences):
+        const themesSys = `You are the attending debriefing a case with your medical student. Identify the CONCEPTUAL threads that connect this patient's multiple problems — not restating what the problems are, but revealing the underlying clinical reasoning threads that a student should see.
+
+Good themes are things like: "how untreated hypothyroidism creates a cascade of downstream symptoms that mimic separate diseases" or "when to prioritize adherence over titration in complex regimens" or "the challenge of sequencing referrals when multiple specialists could be involved."
+
+Bad themes are things like: "interrelated physical conditions" or "hormonal dysregulation affecting musculoskeletal health" — these are just categories, not insights.
+
+Return ONLY valid JSON (no markdown fences):
 {
-  "crossCuttingThemes": ["2-3 themes spanning problems"],
-  "questionsForReflection": ["2-3 open-ended reflection questions"]
+  "crossCuttingThemes": ["2-3 specific clinical reasoning insights that thread through this patient's problems — written as full sentences from the attending's perspective"],
+  "questionsForReflection": ["2-3 thought-provoking open-ended questions for the student to sit with after this encounter"]
 }`;
-        const themesUser = `Problems: ${teachingCases.map(tc => tc.problem).join("; ")}\nClinical context: ${chiefConcern || "internal medicine encounter"}`;
-        const themesResp = await callAi(themesSys, themesUser, 800);
+        const problemSummaries = teachingCases.map(tc => 
+          `- ${tc.problem}: ${tc.primaryDiagnosis?.name || ""} — ${tc.clinicalPearl || tc.primaryDiagnosis?.briefDefinition || ""}`
+        ).join("\n");
+        const themesUser = `Patient chief concern: ${chiefConcern || "internal medicine encounter"}\n\nTeaching cases generated for this patient:\n${problemSummaries}\n\nWhat are the deeper clinical reasoning threads that connect these problems in THIS patient?`;
+        const themesResp = await callAi(themesSys, themesUser, 1500);
         const themesParsed = extractJson(themesResp);
         crossCuttingThemes = themesParsed.crossCuttingThemes || [];
         questionsForReflection = themesParsed.questionsForReflection || [];
@@ -649,8 +678,6 @@ I want to focus today's teaching on: ${focusText}.
         return base + `Give DynaMed-style summary:\n1. Level of Evidence for each recommendation\n2. NNT/NNH where applicable\n3. Practice-changing updates in last 2 years\n4. Cost-conscious alternatives\n5. Choosing Wisely recommendations relevant to this case`;
       case "doxgpt":
         return base + `Peer-consult response as an experienced clinician colleague:\n1. Practical real-world guidance\n2. Pearls and pitfalls from experience\n3. How to explain to the patient\n4. Common trainee errors\n5. What you'd worry about missing`;
-      case "pubmed":
-        return base + `PubMed search strategy:\n1. 2-3 optimized queries with MeSH terms per focus area\n2. Filters (article types, publication dates)\n3. 3-5 seminal or recent high-impact papers with PMIDs if known\n4. 2-3 critical appraisal questions for the highest-quality paper\n5. Relevant Cochrane reviews`;
       default:
         return base;
     }
@@ -661,7 +688,6 @@ I want to focus today's teaching on: ${focusText}.
     setAiStatus({ ...aiStatus, generating: true, error: null });
     let aiContent = null;
     let synthesized = null;
-    let pubmed = null;
 
     if (aiEnabled && activeFocusList.length > 0) {
       const errors = [];
@@ -692,15 +718,6 @@ I want to focus today's teaching on: ${focusText}.
       } else if (filledSources.length === 1) {
         synthesized = { synthesized: false, singleSource: { source: sourceLabels[filledSources[0]], content: sourceResponses[filledSources[0]] } };
         setSynthesizedEvidence(synthesized);
-      }
-
-      // Call 3: PubMed (smallest — do last)
-      setAiStatus({ analyzing: false, generating: true, error: "Fetching PubMed papers..." });
-      try {
-        pubmed = await fetchPubmedForCase();
-        setPubmedResults(pubmed);
-      } catch (e) {
-        errors.push(`PubMed: ${e.message}`);
       }
 
       if (errors.length > 0) {
@@ -745,10 +762,7 @@ I want to focus today's teaching on: ${focusText}.
           content: synthesized,
           note: !!synthesized && !!aiContent ? "Evidence has been integrated into teaching cases above. Enable this section to also show as a standalone summary." : null,
         },
-        pubmed: {
-          enabled: !!(pubmed && pubmed.some(p => p.papers?.length > 0)),
-          content: pubmed || [],
-        },
+    
         longTermGoals: { enabled: longTermGoals.length > 0, content: longTermGoals },
         nextSessionPrep: {
           enabled: true,
@@ -1209,7 +1223,54 @@ I want to focus today's teaching on: ${focusText}.
                 })}
               </div>
             </div>
-
+<div className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
+              <div>
+                <h3 className="font-semibold text-slate-900 mb-1">Additional teaching topics</h3>
+                <p className="text-sm text-slate-500">Add extra topics beyond the case diagnoses — e.g., "imaging findings in acute cholecystitis" or "how to counsel about weight-loss medication side effects".</p>
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newCustomTopic}
+                  onChange={e => setNewCustomTopic(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === "Enter" && newCustomTopic.trim()) {
+                      setCustomTopics([...customTopics, newCustomTopic.trim()]);
+                      setNewCustomTopic("");
+                    }
+                  }}
+                  placeholder="e.g., Interpretation of thyroid function tests"
+                  className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                />
+                <button
+                  onClick={() => {
+                    if (newCustomTopic.trim()) {
+                      setCustomTopics([...customTopics, newCustomTopic.trim()]);
+                      setNewCustomTopic("");
+                    }
+                  }}
+                  className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1 text-sm font-medium"
+                >
+                  <Plus className="w-4 h-4" />Add
+                </button>
+              </div>
+              {customTopics.length > 0 && (
+                <div className="space-y-1.5">
+                  {customTopics.map((topic, i) => (
+                    <div key={i} className="flex items-center gap-2 p-2 bg-indigo-50 rounded-lg border border-indigo-200">
+                      <div className="text-sm text-slate-800 flex-1">{topic}</div>
+                      <button
+                        onClick={() => setCustomTopics(customTopics.filter((_, idx) => idx !== i))}
+                        className="text-slate-400 hover:text-red-600 p-1"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                  <div className="text-xs text-slate-500 mt-1">These will each become their own teaching case in the final document.</div>
+                </div>
+              )}
+            </div>
             <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
               <div>
                 <h3 className="font-semibold text-slate-900 mb-1">Session-specific learning goal</h3>
@@ -1265,13 +1326,61 @@ I want to focus today's teaching on: ${focusText}.
                       <button onClick={() => toggleSection(src)} className="flex items-center gap-2 font-medium text-slate-900 flex-1 text-left">
                         {expandedSections[src] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
                         {sourceLabels[src]}
-                        {sourceResponses[src]?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Response added</span>}
+                        {src === "pubmedai" ? (
+                          Object.values(sourceResponses.pubmedai || {}).filter(v => v?.trim()).length > 0 &&
+                          <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">{Object.values(sourceResponses.pubmedai || {}).filter(v => v?.trim()).length} responses added</span>
+                        ) : (
+                          sourceResponses[src]?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Response added</span>
+                        )}
                       </button>
                       <a href={sourceUrls[src]} target="_blank" rel="noreferrer" className="ml-2 text-xs px-2 py-1 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1" onClick={e => e.stopPropagation()}>
                         Open {sourceLabels[src].split(" ")[0]} ↗
                       </a>
                     </div>
-                    {expandedSections[src] && (
+                    {expandedSections[src] && src === "pubmedai" && (
+                      <div className="p-4 space-y-4 bg-white">
+                        <div className="text-xs text-slate-600 bg-blue-50 border border-blue-200 rounded p-2">
+                          PubMed AI handles one topic at a time. Below is a separate prompt for each of your selected problems and custom topics. Copy each, paste into PubMed AI, paste the response back in the matching box.
+                        </div>
+                        {[...(selectedProblems.length > 0 ? selectedProblems : (workingDx ? [workingDx] : [])), ...customTopics].map((topic, i) => {
+                          const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
+                          const focusText = activeFocus.map(f => focusLabels[f]).join(", ");
+                          const promptText = `Detailed review of the following topic for medical student teaching: ${topic}\n\nFocus specifically on: ${focusText || "diagnosis and management"}.\n\nPatient context (for relevance): ${chiefConcern || "internal medicine encounter"}.`;
+                          return (
+                            <div key={i} className="border border-slate-200 rounded p-3">
+                              <div className="text-sm font-semibold text-slate-800 mb-2">Topic {i+1}: {topic}</div>
+                              <div className="flex items-center justify-between mb-1">
+                                <label className="text-xs font-medium text-slate-600">Prompt for PubMed AI</label>
+                                <button
+                                  onClick={() => {
+                                    navigator.clipboard.writeText(promptText).then(() => {
+                                      setCopiedPrompt(`pubmedai-${i}`);
+                                      setTimeout(() => setCopiedPrompt(null), 2000);
+                                    });
+                                  }}
+                                  className="flex items-center gap-1 text-xs px-2 py-1 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded transition"
+                                >
+                                  {copiedPrompt === `pubmedai-${i}` ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy</>}
+                                </button>
+                              </div>
+                              <div className="p-2 bg-slate-50 rounded border border-slate-200 text-xs font-mono text-slate-700 whitespace-pre-wrap mb-2">{promptText}</div>
+                              <label className="block text-xs font-medium text-slate-600 mb-1">Paste PubMed AI response for this topic</label>
+                              <textarea
+                                value={sourceResponses.pubmedai?.[topic] || ""}
+                                onChange={e => setSourceResponses({
+                                  ...sourceResponses,
+                                  pubmedai: { ...(sourceResponses.pubmedai || {}), [topic]: e.target.value }
+                                })}
+                                rows={5}
+                                placeholder="Paste response from PubMed AI..."
+                                className="w-full px-2 py-1 border border-slate-300 rounded focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                              />
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {expandedSections[src] && src !== "pubmedai" && (
                       <div className="p-4 space-y-4 bg-white">
                         <div>
                           <div className="flex items-center justify-between mb-2">
@@ -1591,44 +1700,7 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
         )}
       </div>
 
-      {/* PubMed Recommended Reading */}
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        <SectionHeader label="PubMed Recommended Reading (auto-fetched)" enabled={s.pubmed.enabled} onToggle={() => togglePreviewSection("pubmed")} count={s.pubmed.content?.reduce((sum, r) => sum + (r.papers?.length || 0), 0)} />
-        {s.pubmed.enabled && s.pubmed.content && s.pubmed.content.length > 0 && (
-          <div className="p-3 space-y-3">
-            {s.pubmed.content.map((result, ri) => (
-              <div key={ri} className="border border-slate-200 rounded p-2 bg-slate-50">
-                <div className="text-xs font-semibold text-slate-700 mb-1">{result.problem}</div>
-                <div className="text-xs text-slate-500 mb-2 font-mono">Query: {result.query}</div>
-                {result.papers?.length > 0 ? (
-                  <ul className="text-xs space-y-1">
-                    {result.papers.map((p, pi) => (
-                      <li key={pi} className="flex gap-2">
-                        <input type="checkbox" defaultChecked={true} onChange={e => {
-                          const newContent = [...s.pubmed.content];
-                          if (!newContent[ri].excluded) newContent[ri].excluded = new Set();
-                          if (e.target.checked) newContent[ri].excluded.delete(p.pmid);
-                          else newContent[ri].excluded.add(p.pmid);
-                          updatePreviewField("sections.pubmed.content", newContent);
-                        }} className="mt-0.5" />
-                        <div className="flex-1">
-                          <div className="font-semibold text-slate-800">{p.title}</div>
-                          <div className="text-slate-600">{p.authors} · {p.journal} · {p.year} · PMID {p.pmid}</div>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <div className="text-xs text-slate-500 italic">No papers found{result.error ? `: ${result.error}` : "."}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        {s.pubmed.content?.length === 0 && (
-          <div className="p-3 text-xs text-slate-500 italic">PubMed search returned no results.</div>
-        )}
-      </div>
+      
 
       {/* Long-term goals */}
       {s.longTermGoals.content.length > 0 && (
@@ -1707,12 +1779,46 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
 
       {/* Floating formatting toolbar */}
       {editMode && (
-        <div className="no-print sticky top-32 z-20 mb-2 flex items-center gap-1 bg-slate-800 text-white rounded-lg shadow-lg px-2 py-1 w-fit">
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("bold"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded font-bold text-sm" title="Bold (Ctrl+B)">B</button>
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("italic"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded italic text-sm" title="Italic (Ctrl+I)">I</button>
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("underline"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded underline text-sm" title="Underline (Ctrl+U)">U</button>
+        <div className="no-print sticky top-32 z-20 mb-2 flex items-center gap-1 bg-slate-800 text-white rounded-lg shadow-lg px-2 py-1 w-fit flex-wrap">
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("bold"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded font-bold text-sm" title="Bold">B</button>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("italic"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded italic text-sm" title="Italic">I</button>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("underline"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded underline text-sm" title="Underline">U</button>
           <div className="w-px h-5 bg-slate-600 mx-1"></div>
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("removeFormat"); }} className="px-2 py-1.5 hover:bg-slate-700 rounded text-xs" title="Clear formatting">Clear</button>
+          <span className="text-xs px-1 opacity-70">Highlight:</span>
+          {[
+            { color: "#fef08a", label: "Yellow" },
+            { color: "#bbf7d0", label: "Green" },
+            { color: "#bfdbfe", label: "Blue" },
+            { color: "#fbcfe8", label: "Pink" },
+            { color: "#fed7aa", label: "Orange" },
+          ].map(h => (
+            <button
+              key={h.color}
+              type="button"
+              onMouseDown={e => {
+                e.preventDefault();
+                document.execCommand("hiliteColor", false, h.color);
+                if (editableRef.current) editableRef.current.focus();
+              }}
+              className="w-6 h-6 rounded border border-slate-500 hover:scale-110 transition"
+              style={{ backgroundColor: h.color }}
+              title={`Highlight ${h.label}`}
+            />
+          ))}
+          <button
+            type="button"
+            onMouseDown={e => {
+              e.preventDefault();
+              document.execCommand("hiliteColor", false, "transparent");
+              if (editableRef.current) editableRef.current.focus();
+            }}
+            className="w-6 h-6 rounded border border-slate-500 bg-white text-slate-700 flex items-center justify-center text-xs hover:scale-110 transition"
+            title="Remove highlight"
+          >
+            <X className="w-3 h-3" />
+          </button>
+          <div className="w-px h-5 bg-slate-600 mx-1"></div>
+          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("removeFormat"); }} className="px-2 py-1.5 hover:bg-slate-700 rounded text-xs" title="Clear all formatting">Clear</button>
         </div>
       )}
 
@@ -1898,28 +2004,6 @@ function DocumentContent({ doc, phase, session }) {
                     </div>
                   </div>
                 )}
-                {c.shelfQuestions?.length > 0 && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Shelf-Style Questions</div>
-                    <div className="space-y-4">{c.shelfQuestions.map((q, i) => (
-                      <div key={i} className="border border-slate-300 rounded overflow-hidden">
-                        <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
-                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
-                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
-                            {q.options && Object.entries(q.options).map(([letter, opt]) => (
-                              <div key={letter} className={q.correctAnswer === letter ? "font-semibold" : ""}><span className="font-bold mr-1">{letter})</span>{opt}</div>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="px-3 py-2 bg-emerald-50 text-sm">
-                          <div className="text-xs font-bold text-emerald-800 uppercase mb-1">Answer: {q.correctAnswer}</div>
-                          <div className="text-slate-800">{q.explanation}</div>
-                        </div>
-                      </div>
-                    ))}</div>
-                  </div>
-                )}
                 {c.recommendedReading?.length > 0 && (
                   <div>
                     <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1">Recommended Reading</div>
@@ -1972,52 +2056,82 @@ function DocumentContent({ doc, phase, session }) {
 
         {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
           <section>
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Summary</h2>
-            {s.synthesizedEvidence.content.synthesized ? (
-              <div className="space-y-3">
-                {s.synthesizedEvidence.content.unifiedSummary && <div className="border-l-4 border-indigo-500 bg-indigo-50 p-3"><div className="text-xs uppercase font-bold text-indigo-900 mb-1">Consensus</div><div className="text-sm text-slate-800">{s.synthesizedEvidence.content.unifiedSummary}</div></div>}
-                {s.synthesizedEvidence.content.consolidatedPoints?.length > 0 && (
-                  <table className="w-full text-sm border border-slate-200">
-                    <thead><tr className="bg-slate-100"><th className="px-3 py-1.5 text-left w-1/4">Topic</th><th className="px-3 py-1.5 text-left">Content</th><th className="px-3 py-1.5 text-left w-1/5">Sources</th></tr></thead>
-                    <tbody>{s.synthesizedEvidence.content.consolidatedPoints.map((p, i) => (
-                      <tr key={i} className="border-t"><td className="px-3 py-2 font-semibold align-top">{p.topic}</td><td className="px-3 py-2 text-slate-700">{p.detail}</td><td className="px-3 py-2 text-xs text-slate-600 align-top">{Array.isArray(p.sources) ? p.sources.join(", ") : p.sources}</td></tr>
-                    ))}</tbody>
-                  </table>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Deep-Dive</h2>
+            {s.synthesizedEvidence.content.synthesized && s.synthesizedEvidence.content.integratedNarrative?.length > 0 ? (
+              <div className="space-y-5">
+                {s.synthesizedEvidence.content.integratedNarrative.map((topic, i) => (
+                  <div key={i}>
+                    <h3 className="text-sm font-bold text-slate-900 mb-2">{topic.topic}</h3>
+                    <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{topic.attendingCommentary}</div>
+                    {topic.sources && topic.sources.length > 0 && (
+                      <div className="text-xs text-slate-500 italic mt-1">Sources: {Array.isArray(topic.sources) ? topic.sources.join(", ") : topic.sources}</div>
+                    )}
+                  </div>
+                ))}
+                {s.synthesizedEvidence.content.keyTakeaways?.length > 0 && (
+                  <div className="mt-4 border-l-4 border-indigo-500 bg-indigo-50 p-3">
+                    <div className="text-xs uppercase font-bold text-indigo-900 mb-2">Key Takeaways</div>
+                    <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
+                      {s.synthesizedEvidence.content.keyTakeaways.map((t, i) => <li key={i}>{t}</li>)}
+                    </ul>
+                  </div>
+                )}
+                {s.synthesizedEvidence.content.conflicts?.length > 0 && (
+                  <div className="mt-4">
+                    <div className="text-xs uppercase font-bold text-amber-800 mb-2">Where Sources Disagreed</div>
+                    {s.synthesizedEvidence.content.conflicts.map((c, i) => (
+                      <div key={i} className="border-l-4 border-amber-500 bg-amber-50 p-3 mb-2">
+                        <div className="text-sm font-semibold text-slate-900 mb-1">{c.topic}</div>
+                        <div className="text-sm text-slate-800">{c.explanation}</div>
+                      </div>
+                    ))}
+                  </div>
                 )}
               </div>
             ) : s.synthesizedEvidence.content.singleSource ? (
-              <div className="border border-slate-300 rounded p-3 bg-slate-50 text-sm whitespace-pre-wrap">
-                <div className="text-xs font-bold text-slate-600 uppercase mb-1">From {s.synthesizedEvidence.content.singleSource.source}</div>
+              <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">
+                <div className="text-xs italic text-slate-500 mb-2">Note: This content is displayed as-provided because AI synthesis was unavailable. Enable AI for integrated narrative.</div>
                 {s.synthesizedEvidence.content.singleSource.content}
               </div>
             ) : null}
           </section>
         )}
 
-        {s.pubmed?.enabled && s.pubmed.content?.some(r => r.papers?.length > 0) && (
+        
+{/* All shelf questions consolidated at the end */}
+        {enabledCases.some(tc => tc.data.shelfQuestions?.length > 0) && (
           <section>
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Recommended Reading — PubMed</h2>
-            <div className="space-y-4">
-              {s.pubmed.content.filter(r => r.papers?.length > 0).map((result, ri) => {
-                const included = result.papers.filter(p => !result.excluded?.has?.(p.pmid));
-                if (included.length === 0) return null;
-                return (
-                  <div key={ri}>
-                    <div className="text-sm font-semibold text-slate-700 mb-2 border-b border-slate-300 pb-1">Related to: {result.problem}</div>
-                    <ol className="space-y-2 ml-4 list-decimal text-sm">{included.map((p, pi) => (
-                      <li key={pi} className="text-slate-800">
-                        <div className="font-semibold">{p.title}</div>
-                        <div className="text-xs text-slate-600">{p.authors} · <em>{p.journal}</em> · {p.year} · PMID: {p.pmid}</div>
-                        {p.abstract && <div className="text-xs text-slate-700 mt-1 italic">{p.abstract.slice(0, 300)}{p.abstract.length > 300 ? "..." : ""}</div>}
-                      </li>
-                    ))}</ol>
+            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Practice Questions</h2>
+            <p className="text-sm text-slate-600 italic mb-4">Shelf-style questions covering the problems taught in this case.</p>
+            {enabledCases.map((tc, caseIdx) => {
+              if (!tc.data.shelfQuestions?.length) return null;
+              return (
+                <div key={caseIdx} className="mb-6">
+                  <h3 className="text-sm font-bold text-slate-800 mb-2 pb-1 border-b border-slate-200">{tc.data.problem}</h3>
+                  <div className="space-y-4">
+                    {tc.data.shelfQuestions.map((q, i) => (
+                      <div key={i} className="border border-slate-300 rounded overflow-hidden">
+                        <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
+                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
+                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
+                            {q.options && Object.entries(q.options).map(([letter, opt]) => (
+                              <div key={letter} className={q.correctAnswer === letter ? "font-semibold" : ""}><span className="font-bold mr-1">{letter})</span>{opt}</div>
+                            ))}
+                          </div>
+                        </div>
+                        <div className="px-3 py-2 bg-emerald-50 text-sm">
+                          <div className="text-xs font-bold text-emerald-800 uppercase mb-1">Answer: {q.correctAnswer}</div>
+                          <div className="text-slate-800">{q.explanation}</div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                );
-              })}
-            </div>
+                </div>
+              );
+            })}
           </section>
         )}
-
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (
             <section>
