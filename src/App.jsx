@@ -619,7 +619,7 @@ Synthesize into structured claims with per-source attribution as specified. When
   // ===== Generate case-specific teaching content =====
   // Generates ONE teaching case per API call with waits between,
   // to stay under Groq's tokens-per-minute rate limit.
-  const generateAiTeachingContent = async () => {
+  const generateAiTeachingContent = async (synthesizedEvidenceParam = null) => {
     const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
     if (activeFocus.length === 0) return null;
     if (!aiEnabled) return null;
@@ -672,26 +672,48 @@ Synthesize into structured claims with per-source attribution as specified. When
       .replace(/\u00A0/g, " ");  // non-breaking space
 
 // Strip HTML/images to plain text with figure placeholders for AI
-    const htmlToAiText = (html) => {
-      const div = document.createElement("div");
-      div.innerHTML = html || "";
-      let figIdx = 0;
-      div.querySelectorAll("img").forEach(img => {
-        figIdx++;
-        img.replaceWith(document.createTextNode(` [Figure ${figIdx}: ${img.alt || "figure"}] `));
-      });
-      return div.textContent.replace(/\s+/g, " ").trim();
-    };
+    // Build evidence context — prefer structured synthesis over raw text when available
+    let evidenceContext = "";
+    let availableFigureIds = [];
 
-    const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim());
-    const MAX_EVIDENCE_TOTAL = 8000;
-    const evidencePerSource = filledSources.length > 0 ? Math.floor(MAX_EVIDENCE_TOTAL / filledSources.length) : 0;
-    const evidenceContext = filledSources.length > 0
-      ? "\n\nCurated evidence from clinician-selected sources (attribute inline like '(per OpenEvidence)'; do NOT invent facts beyond this evidence and the note):\n" + filledSources.map(s => {
-          const t = htmlToAiText(sourceResponses[s].html);
-          return `[${sourceLabels[s]}]: ${t.length > evidencePerSource ? t.slice(0, evidencePerSource) + "[truncated]" : t}`;
-        }).join("\n\n")
-      : "";
+    if (synthesizedEvidenceParam?.synthesized && synthesizedEvidenceParam.topics?.length > 0) {
+      // Use the structured claims from synthesis — much better for grounded citations
+      const claimSummary = synthesizedEvidenceParam.topics.map(topic => {
+        const claims = topic.claims.map(c => {
+          const figRef = c.figureRefs?.length > 0 ? ` [refs: ${c.figureRefs.join(", ")}]` : "";
+          return `  • [${c.strength}] ${c.statement} — sources: ${c.sources.join(", ")}${figRef}`;
+        }).join("\n");
+        return `TOPIC: ${topic.topic}\n${claims}`;
+      }).join("\n\n");
+
+      const figureInventory = (synthesizedEvidenceParam.allFigures || []).map(f =>
+        `  [FIGURE:${f.id}] from ${f.source} — ${f.alt}`
+      ).join("\n");
+      availableFigureIds = (synthesizedEvidenceParam.allFigures || []).map(f => f.id);
+
+      evidenceContext = `\n\nSTRUCTURED EVIDENCE (already synthesized across sources — cite claims by their source names, use figure IDs when relevant):\n${claimSummary}${figureInventory ? `\n\nFIGURES AVAILABLE (reference by [FIGURE:id] in your teaching text where clinically relevant):\n${figureInventory}` : ""}`;
+    } else {
+      // Fallback: raw text from each source, if synthesis unavailable
+      const htmlToAiText = (html) => {
+        const div = document.createElement("div");
+        div.innerHTML = html || "";
+        let figIdx = 0;
+        div.querySelectorAll("img").forEach(img => {
+          figIdx++;
+          img.replaceWith(document.createTextNode(` [Figure ${figIdx}: ${img.alt || "figure"}] `));
+        });
+        return div.textContent.replace(/\s+/g, " ").trim();
+      };
+      const filledSources = activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim());
+      const MAX_EVIDENCE_TOTAL = 8000;
+      const evidencePerSource = filledSources.length > 0 ? Math.floor(MAX_EVIDENCE_TOTAL / filledSources.length) : 0;
+      evidenceContext = filledSources.length > 0
+        ? "\n\nCurated evidence from clinician-selected sources (attribute inline like '(per OpenEvidence)'; do NOT invent facts beyond this evidence and the note):\n" + filledSources.map(s => {
+            const t = htmlToAiText(sourceResponses[s].html);
+            return `[${sourceLabels[s]}]: ${t.length > evidencePerSource ? t.slice(0, evidencePerSource) + "[truncated]" : t}`;
+          }).join("\n\n")
+        : "";
+    }
 
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
     const teachingCases = [];
@@ -712,7 +734,11 @@ VOICE AND TONE (CRITICAL):
 - Reference the patient's own words, concerns, life context, and social situation when relevant
 - When possible, tie teaching to what YOU as the attending noticed, decided, or would want the student to walk away thinking about
 
-CITATION RULES: Cite landmark trials by NAME only (e.g., "SPRINT trial"). Cite guidelines by ORG + YEAR (e.g., "2023 AHA/ACC"). NEVER fabricate journal names, page numbers, or authors.
+CITATION RULES:
+- Cite landmark trials by NAME only (e.g., "SPRINT trial"). Cite guidelines by ORG + YEAR (e.g., "2023 AHA/ACC"). NEVER fabricate journal names, page numbers, or authors.
+- WHEN the STRUCTURED EVIDENCE section is provided below, every clinical claim in your teaching case that draws from it MUST be attributed to the specific source(s) named there — write inline as "(per OpenEvidence)" or "(OpenEvidence and UpToDate agree)" or "(only in DoxGPT)". Do NOT paraphrase claims without attribution.
+- When a claim in the structured evidence has a figure reference like [refs: fig-openevidence-1], you MAY reference it in your teaching text by writing "(see Figure from OpenEvidence)" in the appropriate learning point or key labs section. Only reference figures listed in FIGURES AVAILABLE — never invent figure IDs.
+- If the structured evidence contains a "conflict" claim, address it explicitly in your teaching — this is a teaching opportunity about clinical equipoise.
 
 EXAMPLES OF GOOD vs. BAD VOICE:
 - BAD (textbook): "TSH >10 indicates severe hypothyroidism requiring treatment."
@@ -726,12 +752,12 @@ Return ONLY valid JSON (no markdown fences, no commentary):
   "problem": "${problem}",
   "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for THIS patient"},
   "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "why you considered it for OUR patient — reference her actual features, meds, or context"}],
-  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student", "citation": "landmark trial name or org/year"}],
+  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student", "citation": "landmark trial name or org/year", "citedSources": ["source names from the structured evidence, if this point drew from them"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
   "shelfQuestions": [{"vignette": "detailed clinical vignette 3-5 sentences (can invent a new patient for the shelf-style question)", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to OUR patient's presentation", "steps": ["step 1", "step 2"], "interpretation": "what a positive/negative finding would tell you about THIS patient specifically"},
   "keyLabsAndImaging": [{"study": "name", "purpose": "why I ordered/would order it for OUR patient", "interpretation": "what her actual result (or what a hypothetical result) would mean in her clinical context", "role": "how it changes management for HER"}],
-  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "trial or guideline name — but explain WHY this fits our patient"}], "additional": ["patient-specific considerations, not generic bullet points"]},
+  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "trial or guideline name — but explain WHY this fits our patient", "citedSources": ["source names supporting this recommendation"]}], "additional": ["patient-specific considerations, not generic bullet points"]},
   "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation — reference her actual story (job, family, MST, name issue, whatever's relevant)",
   "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "why I want you to read this after seeing OUR patient today"}],
   "communicationTeaching": {"scenario": "a specific conversation that came up (or could have come up) in OUR visit today", "script": "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"},
@@ -854,18 +880,7 @@ I want to focus today's teaching on: ${focusText}.
       const errors = [];
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-      // Call 1: Teaching content (handles its own internal rate-limiting waits)
-      try {
-        aiContent = await generateAiTeachingContent();
-        setAiTeachingContent(aiContent);
-      } catch (e) {
-        errors.push(`Teaching content: ${e.message}`);
-      }
-
-      // Extra wait before source synthesis
-      await wait(3000);
-
-      // Call 2: Source synthesis (runs whenever any source has content)
+      // Call 1 (NEW ORDER): Synthesize sources first, so teaching cases can reference structured claims
       if (filledSources.length >= 1) {
         setAiStatus({ analyzing: false, generating: true, error: null, progress: "Synthesizing evidence from all sources" });
         try {
@@ -877,9 +892,18 @@ I want to focus today's teaching on: ${focusText}.
         await wait(3000);
       }
 
+      // Call 2: Teaching content — now has access to `synthesized` for grounded citations
+      setAiStatus(prev => ({ ...prev, progress: "Generating teaching cases" }));
+      try {
+        aiContent = await generateAiTeachingContent(synthesized);
+        setAiTeachingContent(aiContent);
+      } catch (e) {
+        errors.push(`Teaching content: ${e.message}`);
+      }
+
       if (errors.length > 0) {
         console.error("Generation errors:", errors);
-        setAiStatus({ analyzing: false, generating: false, error: errors.join(" · ") });
+        setAiStatus({ analyzing: false, generating: false, error: errors.join(" · "), progress: null });
       } else {
         setAiStatus({ analyzing: false, generating: false, error: null, progress: null });
       }
