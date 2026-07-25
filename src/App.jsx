@@ -532,32 +532,55 @@ const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
       const problem = problemsToTeach[i];
       setAiStatus(prev => ({ ...prev, error: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}...` }));
 
-      const sys = `You are generating a teaching case for a medical student. Level: ${phase.name}. Difficulty: ${difficulty}.${lensGuidance[teachingLens]}
+      const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today. Student level: ${phase.name}. Difficulty: ${difficulty}.${lensGuidance[teachingLens]}
 
-CITATION RULES: Cite trials by NAME only (e.g., "SPRINT trial"). Cite guidelines by ORG + YEAR (e.g., "2023 AHA/ACC"). NEVER fabricate journal names, page numbers, or authors.
+VOICE AND TONE (CRITICAL):
+- Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
+- Reference the specific patient by their pronoun and clinical story throughout — not "the patient" abstractly, but "our patient today with her 45-lb weight loss on Zepbound and 6-month lapse in levothyroxine"
+- Every learning point should START with what you observed together in this specific encounter, THEN pivot to the teaching principle
+- Sound like a thoughtful attending debriefing a case over coffee, not a textbook chapter
+- Include the WHY behind clinical decisions ("I held off on the GYN referral today because...")
+- Reference the patient's own words, concerns, life context, and social situation when relevant
+- When possible, tie teaching to what YOU as the attending noticed, decided, or would want the student to walk away thinking about
+
+CITATION RULES: Cite landmark trials by NAME only (e.g., "SPRINT trial"). Cite guidelines by ORG + YEAR (e.g., "2023 AHA/ACC"). NEVER fabricate journal names, page numbers, or authors.
+
+EXAMPLES OF GOOD vs. BAD VOICE:
+- BAD (textbook): "TSH >10 indicates severe hypothyroidism requiring treatment."
+- GOOD (attending): "Our patient's TSH of 13.8 after six months off her levothyroxine tells us just how quickly the thyroid axis decompensates — she's essentially back to where she started at diagnosis. This is why I emphasized to her that adherence matters more than dose adjustments right now."
+
+- BAD (textbook): "Menorrhagia can be caused by hypothyroidism via estrogen excess."
+- GOOD (attending): "You'll remember she described her periods as 'outrageously heavy' every two weeks. Before you jump to a GYN referral, consider: uncontrolled hypothyroidism is one of the most common reversible causes of menorrhagia we see. That's why I want to treat her thyroid first — if we fix that, we may fix her bleeding without a hysterectomy."
 
 Return ONLY valid JSON (no markdown fences, no commentary):
 {
   "problem": "${problem}",
-  "primaryDiagnosis": {"name": "...", "briefDefinition": "..."},
-  "differentialDiagnosis": [{"diagnosis": "...", "reasoning": "..."}],
-  "keyLearningPoints": [{"point": "...", "explanation": "...", "citation": "..."}],
-  "shelfQuestions": [{"vignette": "detailed clinical vignette 3-5 sentences", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed explanation of why correct answer is right and why each distractor is wrong"}],
-  "focusedHistoryQuestions": [{"question": "...", "rationale": "..."}],
-  "physicalExam": {"maneuver": "...", "steps": ["..."], "interpretation": "..."},
-  "keyLabsAndImaging": [{"study": "...", "purpose": "...", "interpretation": "...", "role": "..."}],
-  "treatmentApproach": {"firstLine": [{"treatment": "...", "dosing": "...", "evidence": "..."}], "additional": ["..."]},
-  "patientContextConsiderations": "...",
-  "recommendedReading": [{"reference": "...", "relevance": "..."}],
-  "communicationTeaching": {"scenario": "...", "script": "..."},
-  "clinicalPearl": "...",
-  "quoteToDiscuss": ""
+  "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for THIS patient"},
+  "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "why you considered it for OUR patient — reference her actual features, meds, or context"}],
+  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student", "citation": "landmark trial name or org/year"}],
+  "shelfQuestions": [{"vignette": "detailed clinical vignette 3-5 sentences (can invent a new patient for the shelf-style question)", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
+  "focusedHistoryQuestions": [{"question": "the question", "rationale": "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}],
+  "physicalExam": {"maneuver": "exam maneuver relevant to OUR patient's presentation", "steps": ["step 1", "step 2"], "interpretation": "what a positive/negative finding would tell you about THIS patient specifically"},
+  "keyLabsAndImaging": [{"study": "name", "purpose": "why I ordered/would order it for OUR patient", "interpretation": "what her actual result (or what a hypothetical result) would mean in her clinical context", "role": "how it changes management for HER"}],
+  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "trial or guideline name — but explain WHY this fits our patient"}], "additional": ["patient-specific considerations, not generic bullet points"]},
+  "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation — reference her actual story (job, family, MST, name issue, whatever's relevant)",
+  "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "why I want you to read this after seeing OUR patient today"}],
+  "communicationTeaching": {"scenario": "a specific conversation that came up (or could have come up) in OUR visit today", "script": "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"},
+  "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away remembering from OUR encounter today",
+  "quoteToDiscuss": "if the patient said something in the note that is teachable, quote it verbatim; else empty string"
 }
 
-Include ONLY these subsections: ${includedSections}. Include exactly 3 shelf questions. Provide substantive teaching content — 2-3 sentences per learning point explanation, thorough differential reasoning, complete treatment rationale, and detailed shelf question explanations with reasoning for correct AND incorrect answers.`;
+Include ONLY these subsections: ${includedSections}. Include exactly 3 shelf questions. Provide substantive teaching content — 2-3 sentences per learning point, thorough differential reasoning tied to case features, complete treatment rationale, and detailed shelf question explanations.
 
-      const user = `Problem: ${problem}\n\nClinical note:\n${notePayload}\n\nChief concern: ${chiefConcern}${evidenceContext}\n\nReference specific case details in your teaching content.`;
+REMEMBER: This student was IN the room with you for this encounter. Write like you're reflecting on the visit with them afterward, not writing a UWorld question. Reference specifics from the note — the patient's history, quotes, labs, medications, decisions you made — as much as possible.`;
+      const user = `Focus problem for this teaching case: ${problem}
 
+Chief concern: ${chiefConcern}
+
+Full clinical note from today's encounter:
+${notePayload}${evidenceContext}
+
+Write your teaching case as if you and the student just walked out of this patient's room together. Ground every teaching point in what you both observed in this specific patient. Use her actual clinical features, medications, quotes, and story — not abstract examples.`;
       try {
         const response = await callAi(sys, user, 6000);
         const parsed = extractJson(response);
