@@ -844,11 +844,17 @@ I want to focus today's teaching on: ${focusText}.
     let aiContent = null;
     let synthesized = null;
 
+    const filledSources = activeSources.filter(s =>
+      s === "pubmedai"
+        ? Object.values(sourceResponses.pubmedai || {}).some(v => v?.html?.trim())
+        : sourceResponses[s]?.html?.trim()
+    );
+
     if (aiEnabled && activeFocusList.length > 0) {
       const errors = [];
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Call 1: Teaching content (handles its own internal rate-limiting waits)
+      // Call 1: Teaching content (handles its own internal rate-limiting waits)
       try {
         aiContent = await generateAiTeachingContent();
         setAiTeachingContent(aiContent);
@@ -859,8 +865,7 @@ I want to focus today's teaching on: ${focusText}.
       // Extra wait before source synthesis
       await wait(3000);
 
-      // Call 2: Source synthesis (only if 2+ sources)
-      const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim() || (s === "pubmedai" && Object.values(sourceResponses.pubmedai || {}).some(v => v?.html?.trim())));
+      // Call 2: Source synthesis (runs whenever any source has content)
       if (filledSources.length >= 1) {
         setAiStatus({ analyzing: false, generating: true, error: "Synthesizing sources..." });
         try {
@@ -870,9 +875,6 @@ I want to focus today's teaching on: ${focusText}.
           errors.push(`Source synthesis: ${e.message}`);
         }
         await wait(3000);
-      } else if (filledSources.length === 1) {
-        synthesized = await synthesizeSources();
-        setSynthesizedEvidence(synthesized);
       }
 
       if (errors.length > 0) {
@@ -881,9 +883,14 @@ I want to focus today's teaching on: ${focusText}.
       } else {
         setAiStatus({ analyzing: false, generating: false, error: null });
       }
-    } else if (filledSources.length === 1) {
-        synthesized = await synthesizeSources();
-        setSynthesizedEvidence(synthesized);
+    } else {
+      // AI disabled or no focus areas selected — still handle sources
+      if (filledSources.length >= 1) {
+        try {
+          synthesized = await synthesizeSources();
+        } catch (e) {
+          console.error("Synthesis failed:", e);
+        }
       }
     }
 
@@ -925,11 +932,10 @@ I want to focus today's teaching on: ${focusText}.
           content: aiContent?.crossCuttingThemes || [],
         },
         synthesizedEvidence: {
-          enabled: !!synthesized && !(activeFocusList.length > 0 && aiContent),
+          enabled: !!synthesized,
           content: synthesized,
           note: !!synthesized && !!aiContent ? "Evidence has been integrated into teaching cases above. Enable this section to also show as a standalone summary." : null,
         },
-    
         longTermGoals: { enabled: longTermGoals.length > 0, content: longTermGoals },
         nextSessionPrep: {
           enabled: true,
