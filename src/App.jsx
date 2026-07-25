@@ -462,69 +462,158 @@ Return ONLY valid JSON (no markdown fences):
 
   // ===== Synthesize multiple external source responses =====
   // ===== Integrate external source responses into the document's voice =====
+  // ===== Integrate multiple source responses with per-claim attribution =====
   const synthesizeSources = async () => {
-    const filledSources = activeSources.filter(s => {
-      if (s === "pubmedai") {
-        return Object.values(sourceResponses.pubmedai || {}).some(v => v?.html?.trim());
-      }
-      return sourceResponses[s]?.html?.trim();
+    const filledNonPubmed = activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim());
+    const filledPubmedTopics = Object.entries(sourceResponses.pubmedai || {}).filter(([_, v]) => v?.html?.trim());
+    const totalFilled = filledNonPubmed.length + (filledPubmedTopics.length > 0 ? 1 : 0);
+
+    if (totalFilled === 0) return null;
+
+    // Extract text + figure inventory from a rich HTML value.
+    // Returns { text, figures: [{id, source, alt, dataUrl}] }
+    const extractTextAndFigures = (html, sourceLabel) => {
+      const div = document.createElement("div");
+      div.innerHTML = html || "";
+      const figures = [];
+      div.querySelectorAll("img").forEach((img, i) => {
+        const figId = `fig-${sourceLabel.toLowerCase().replace(/[^a-z0-9]/g, "")}-${i + 1}`;
+        figures.push({
+          id: figId,
+          source: sourceLabel,
+          alt: img.alt || `Figure from ${sourceLabel}`,
+          dataUrl: img.src,
+        });
+        img.replaceWith(document.createTextNode(` [FIGURE:${figId} alt="${(img.alt || "figure").replace(/"/g, "'")}"] `));
+      });
+      const text = div.textContent.replace(/\s+/g, " ").trim();
+      return { text, figures };
+    };
+
+    // Build a per-source content package for the AI
+    const sourcePackages = [];
+    filledNonPubmed.forEach(s => {
+      const { text, figures } = extractTextAndFigures(sourceResponses[s].html, sourceLabels[s]);
+      const wordCount = text.split(/\s+/).length;
+      const detailLevel = wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief";
+      sourcePackages.push({
+        key: s,
+        label: sourceLabels[s],
+        text,
+        figures,
+        wordCount,
+        detailLevel,
+      });
     });
-    if (filledSources.length === 0) return null;
-    if (!aiEnabled) {
-      // Fallback: just show raw content
-      if (filledSources.length === 1) {
-        const src = filledSources[0];
-        return { synthesized: false, singleSource: { source: sourceLabels[src], content: sourceResponses[src] } };
-      }
-      return null;
+    if (filledPubmedTopics.length > 0) {
+      // Roll up per-topic PubMed AI into one "source" but preserve topic labels inline
+      let combinedText = "";
+      const combinedFigures = [];
+      filledPubmedTopics.forEach(([topic, v], ti) => {
+        const { text, figures } = extractTextAndFigures(v.html, `PubMed AI (${topic})`);
+        combinedText += `\n\n--- On "${topic}" ---\n${text}`;
+        // Re-label figure IDs to include topic
+        figures.forEach((f, i) => {
+          f.id = `fig-pubmed-${ti + 1}-${i + 1}`;
+          combinedFigures.push(f);
+        });
+      });
+      const wordCount = combinedText.split(/\s+/).length;
+      sourcePackages.push({
+        key: "pubmedai",
+        label: "PubMed AI",
+        text: combinedText.trim(),
+        figures: combinedFigures,
+        wordCount,
+        detailLevel: wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief",
+      });
     }
 
-    const sys = `You are a teaching attending integrating evidence from ${filledSources.length === 1 ? 'a trusted source' : 'multiple trusted sources'} into a cohesive teaching narrative for your medical student. 
+    const allFigures = sourcePackages.flatMap(p => p.figures);
+    const sourceContribution = sourcePackages.map(p => ({
+      source: p.label,
+      wordCount: p.wordCount,
+      detailLevel: p.detailLevel,
+      figureCount: p.figures.length,
+    }));
 
-Do NOT paste content verbatim. Instead, REWRITE the key findings in your own attending voice — conversational, direct, teaching-focused. Attribute inline naturally (e.g., "According to OpenEvidence, the current recommendation is..." or "UpToDate frames this as...").
+    // If AI is off or only one source, return a raw fallback
+    if (!aiEnabled || totalFilled === 1) {
+      return {
+        synthesized: false,
+        singleSource: totalFilled === 1 ? { source: sourcePackages[0].label, contentHtml: sourcePackages[0].text } : null,
+        sourceContribution,
+        allFigures,
+      };
+    }
 
-Structure your integration around clinical themes that emerged, not around which source said what. When sources agree, present the consensus. When they differ, present both positions and explain what the disagreement is about.
+    // Build a compact per-source view for the AI (with figure placeholders intact)
+    const MAX_PER_SOURCE = 4500;
+    const aiSourceBlock = sourcePackages.map(p => {
+      const t = p.text.length > MAX_PER_SOURCE ? p.text.slice(0, MAX_PER_SOURCE) + " [truncated]" : p.text;
+      const figList = p.figures.length > 0 ? `\nFigures available from this source: ${p.figures.map(f => `[FIGURE:${f.id}] (${f.alt})`).join(", ")}` : "";
+      return `=== SOURCE: ${p.label} (${p.detailLevel} detail, ${p.wordCount} words) ===\n${t}${figList}`;
+    }).join("\n\n");
+
+    const sys = `You are a teaching attending in internal medicine integrating evidence from ${sourcePackages.length} clinical sources for your medical student. Your goal is a STRUCTURED synthesis where every claim is traceable back to specific sources.
+
+CRITICAL RULES:
+1. Organize by clinical topic (5-8 topics maximum). Deduplicate — do NOT create two topics that overlap heavily.
+2. Under each topic, break the content into individual CLAIMS. A claim is one clinical statement (a recommendation, a dosing fact, a mechanism, a trial finding).
+3. For each claim, tag which sources support it and mark strength:
+   - "consensus" if 3+ sources agree
+   - "majority" if exactly 2 sources agree
+   - "single-source" if only 1 source addresses it
+   - "conflict" if sources contradict
+4. When sources conflict, capture BOTH positions with their sources in perSourceDetail.
+5. Every claim needs a perSourceDetail array — for each supporting source, write 1-2 sentences describing what THAT source specifically said (this becomes an expandable "source detail" section for the student).
+6. If a claim relates to a figure available in the source material, include the figure ID(s) in figureRefs.
+7. Order topics logically for a clinician: diagnosis/workup → treatment first-line → adjunctive → monitoring → special populations. Skip categories that don't apply.
 
 Return ONLY valid JSON (no markdown fences):
 {
-  "integratedNarrative": [
-    {"topic": "clinical topic or question this addresses", "attendingCommentary": "2-4 paragraphs written in your attending voice that weave the source content into teaching prose — reference the sources by name where appropriate but do NOT paste their content verbatim", "sources": ["source names contributing to this section"]}
+  "topics": [
+    {
+      "topic": "clinical topic name (e.g., 'First-line pharmacotherapy')",
+      "orderingCategory": "diagnosis|workup|treatment|monitoring|special|other",
+      "claims": [
+        {
+          "statement": "1-2 sentence clinical claim in attending voice",
+          "strength": "consensus|majority|single-source|conflict",
+          "sources": ["source names that support this claim"],
+          "figureRefs": ["fig-id-here if referenced"],
+          "perSourceDetail": [
+            {"source": "OpenEvidence", "detail": "what specifically OpenEvidence said about this — 1-2 sentences"},
+            {"source": "UpToDate", "detail": "what UpToDate specifically said"}
+          ]
+        }
+      ]
+    }
   ],
-  "keyTakeaways": ["3-5 bullet takeaways for the student, phrased as things to remember"],
-  "conflicts": [
-    {"topic": "topic where sources disagreed", "explanation": "attending-voice explanation of the disagreement and how you'd approach it clinically"}
+  "keyTakeaways": ["3-5 bullet takeaways synthesized across all sources"],
+  "crossReferenceMatrix": [
+    {"topic": "topic name", "addressedBy": ["source names that covered this topic"], "notCoveredBy": ["source names that did NOT address it"]}
   ]
 }`;
 
-    // Strip HTML tags and replace images with placeholders for AI consumption
-    const htmlToAiText = (html) => {
-      const div = document.createElement("div");
-      div.innerHTML = html || "";
-      let figIdx = 0;
-      div.querySelectorAll("img").forEach(img => {
-        figIdx++;
-        const alt = img.alt || "figure";
-        const placeholder = document.createTextNode(` [Figure ${figIdx}: ${alt}] `);
-        img.replaceWith(placeholder);
-      });
-      return div.textContent.replace(/\s+/g, " ").trim();
-    };
+    const user = `Chief concern: ${chiefConcern || "internal medicine encounter"}
+Problems being taught: ${selectedProblems.join("; ") || workingDx}
 
-    const sourceText = filledSources.map(s => {
-      if (s === "pubmedai") {
-        const perTopic = Object.entries(sourceResponses.pubmedai || {})
-          .filter(([_, v]) => v?.html?.trim())
-          .map(([topic, content]) => `--- PubMed AI on "${topic}" ---\n${htmlToAiText(content.html)}`)
-          .join("\n\n");
-        return `=== FROM PUBMED AI (per topic) ===\n${perTopic}`;
-      }
-      return `=== FROM ${sourceLabels[s].toUpperCase()} ===\n${htmlToAiText(sourceResponses[s].html)}`;
-    }).join("\n\n");
-    const user = `Chief concern: ${chiefConcern}\nProblems being taught: ${selectedProblems.join("; ") || workingDx}\n\nSource content to integrate into a cohesive teaching narrative:\n\n${sourceText}\n\nRewrite this in your attending voice. Do NOT quote source text verbatim. Organize by clinical themes, not by source.`;
+Source content to integrate (each source clearly labeled with detail level and word count):
 
-    const response = await callAi(sys, user, 4000);
+${aiSourceBlock}
+
+Synthesize into structured claims with per-source attribution as specified. When a figure ID like [FIGURE:fig-xyz] appears in source content, you may reference it in figureRefs of a related claim. Do NOT invent figures that weren't listed.`;
+
+    const response = await callAi(sys, user, 6000);
     const parsed = extractJson(response);
-    return { synthesized: true, ...parsed, sourcesUsed: filledSources.map(s => sourceLabels[s]) };
+
+    return {
+      synthesized: true,
+      ...parsed,
+      sourceContribution,
+      allFigures,
+    };
   };
 
   // ===== Generate case-specific teaching content =====
@@ -771,8 +860,8 @@ I want to focus today's teaching on: ${focusText}.
       await wait(3000);
 
       // Call 2: Source synthesis (only if 2+ sources)
-      const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim());
-      if (filledSources.length >= 2) {
+      const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim() || (s === "pubmedai" && Object.values(sourceResponses.pubmedai || {}).some(v => v?.html?.trim())));
+      if (filledSources.length >= 1) {
         setAiStatus({ analyzing: false, generating: true, error: "Synthesizing sources..." });
         try {
           synthesized = await synthesizeSources();
@@ -782,11 +871,7 @@ I want to focus today's teaching on: ${focusText}.
         }
         await wait(3000);
       } else if (filledSources.length === 1) {
-        const s = filledSources[0];
-        const content = s === "pubmedai"
-          ? Object.entries(sourceResponses.pubmedai || {}).filter(([_, v]) => v?.html?.trim()).map(([topic, v]) => `<h4>${topic}</h4>${v.html}`).join("")
-          : sourceResponses[s].html;
-        synthesized = { synthesized: false, singleSource: { source: sourceLabels[s], contentHtml: content } };
+        synthesized = await synthesizeSources();
         setSynthesizedEvidence(synthesized);
       }
 
@@ -796,14 +881,9 @@ I want to focus today's teaching on: ${focusText}.
       } else {
         setAiStatus({ analyzing: false, generating: false, error: null });
       }
-    } else {
-      const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim());
-      if (filledSources.length === 1) {
-        const s = filledSources[0];
-        const content = s === "pubmedai"
-          ? Object.entries(sourceResponses.pubmedai || {}).filter(([_, v]) => v?.html?.trim()).map(([topic, v]) => `<h4>${topic}</h4>${v.html}`).join("")
-          : sourceResponses[s].html;
-        synthesized = { synthesized: false, singleSource: { source: sourceLabels[s], contentHtml: content } };
+    } else if (filledSources.length === 1) {
+        synthesized = await synthesizeSources();
+        setSynthesizedEvidence(synthesized);
       }
     }
 
