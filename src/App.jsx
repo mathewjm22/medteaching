@@ -590,7 +590,11 @@ Return ONLY valid JSON (no markdown fences, no commentary):
   "quoteToDiscuss": "if the patient said something in the note that is teachable, quote it verbatim; else empty string"
 }
 
-Include ONLY these subsections: ${includedSections}. Include exactly 3 shelf questions. Provide substantive teaching content — 2-3 sentences per learning point, thorough differential reasoning tied to case features, complete treatment rationale, and detailed shelf question explanations.
+ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss.
+
+Additionally include ONLY these focus-driven optional subsections based on what the attending selected: ${includedSections || "(none — core sections only)"}. Map focus keys to subsections as follows: history → focusedHistoryQuestions, physicalExam → physicalExam, workup → keyLabsAndImaging, management → treatmentApproach, patientContext → patientContextConsiderations, communication → communicationTeaching. If a focus key isn't in the selected list above, OMIT that subsection entirely (return null or empty).
+
+Provide substantive teaching content — 2-3 sentences per learning point, thorough differential reasoning tied to case features, complete treatment rationale, and detailed shelf question explanations.
 
 REMEMBER: This student was IN the room with you for this encounter. Write like you're reflecting on the visit with them afterward, not writing a UWorld question. Reference specifics from the note — the patient's history, quotes, labs, medications, decisions you made — as much as possible.`;
       const user = `Focus problem for this teaching case: ${problem}
@@ -604,6 +608,8 @@ Write your teaching case as if you and the student just walked out of this patie
       try {
         const response = await callAi(sys, user, 8000);
         const parsed = extractJson(response);
+        // Always inject the known problem name — never trust the AI to echo it correctly
+        parsed.problem = problem;
         teachingCases.push(parsed);
       } catch (e) {
         console.error(`Failed to generate case for "${problem}":`, e);
