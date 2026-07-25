@@ -607,6 +607,7 @@ Synthesize into structured claims with per-source attribution as specified. When
 
     const response = await callAi(sys, user, 6000);
     const parsed = extractJson(response);
+    console.log("[synthesizeSources] topics:", parsed.topics?.length, "first claim sample:", JSON.stringify(parsed.topics?.[0]?.claims?.[0], null, 2));
 
     return {
       synthesized: true,
@@ -783,6 +784,7 @@ Write your teaching case as if you and the student just walked out of this patie
       try {
         const response = await callAi(sys, user, 8000);
         const parsed = extractJson(response);
+        console.log(`[teachingCase] "${problem}" cites:`, parsed.keyLearningPoints?.map(lp => lp.citedSources).filter(Boolean));
         // Always inject the known problem name — never trust the AI to echo it correctly
         parsed.problem = problem;
         teachingCases.push(parsed);
@@ -793,7 +795,7 @@ Write your teaching case as if you and the student just walked out of this patie
 
       if (i < problemsToTeach.length - 1) {
         setAiStatus(prev => ({ ...prev, progress: `Working on case ${i+2} of ${problemsToTeach.length}` }));
-        await wait(500);
+        await wait(8000);
       }
     }
 
@@ -1060,12 +1062,14 @@ I want to focus today's teaching on: ${focusText}.
       <style>{`
         @media print {
           .no-print { display: none !important; }
+          .print-only { display: block !important; }
           body { background: white; }
           .print-doc { box-shadow: none !important; border: none !important; }
           .print-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .section-block { page-break-inside: avoid; }
           table { page-break-inside: avoid; }
           h2 { page-break-after: avoid; }
+          figure { page-break-inside: avoid; }
         }
         @page { margin: 0.5in; }
       `}</style>
@@ -2538,46 +2542,7 @@ function DocumentContent({ doc, phase, session }) {
         )}
 
         {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
-          <section>
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Deep-Dive</h2>
-            {s.synthesizedEvidence.content.synthesized && s.synthesizedEvidence.content.integratedNarrative?.length > 0 ? (
-              <div className="space-y-5">
-                {s.synthesizedEvidence.content.integratedNarrative.map((topic, i) => (
-                  <div key={i}>
-                    <h3 className="text-sm font-bold text-slate-900 mb-2">{topic.topic}</h3>
-                    <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{topic.attendingCommentary}</div>
-                    {topic.sources && topic.sources.length > 0 && (
-                      <div className="text-xs text-slate-500 italic mt-1">Sources: {Array.isArray(topic.sources) ? topic.sources.join(", ") : topic.sources}</div>
-                    )}
-                  </div>
-                ))}
-                {s.synthesizedEvidence.content.keyTakeaways?.length > 0 && (
-                  <div className="mt-4 border-l-4 border-indigo-500 bg-indigo-50 p-3">
-                    <div className="text-xs uppercase font-bold text-indigo-900 mb-2">Key Takeaways</div>
-                    <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
-                      {s.synthesizedEvidence.content.keyTakeaways.map((t, i) => <li key={i}>{t}</li>)}
-                    </ul>
-                  </div>
-                )}
-                {s.synthesizedEvidence.content.conflicts?.length > 0 && (
-                  <div className="mt-4">
-                    <div className="text-xs uppercase font-bold text-amber-800 mb-2">Where Sources Disagreed</div>
-                    {s.synthesizedEvidence.content.conflicts.map((c, i) => (
-                      <div key={i} className="border-l-4 border-amber-500 bg-amber-50 p-3 mb-2">
-                        <div className="text-sm font-semibold text-slate-900 mb-1">{c.topic}</div>
-                        <div className="text-sm text-slate-800">{c.explanation}</div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            ) : s.synthesizedEvidence.content.singleSource ? (
-              <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">
-                <div className="text-xs italic text-slate-500 mb-2">Note: This content is displayed as-provided because AI synthesis was unavailable. Enable AI for integrated narrative.</div>
-                {s.synthesizedEvidence.content.singleSource.content}
-              </div>
-            ) : null}
-          </section>
+          <EvidenceDeepDive content={s.synthesizedEvidence.content} allSourceImages={doc.allSourceImages} />
         )}
 
         
@@ -2649,5 +2614,182 @@ function DocumentContent({ doc, phase, session }) {
         </div>
       </div>
     </>
+  );
+}
+// ============ EVIDENCE DEEP-DIVE (structured claims rendering) ============
+function EvidenceDeepDive({ content, allSourceImages = [] }) {
+  const [expandedClaims, setExpandedClaims] = React.useState({});
+
+  // Build a lookup map: figure ID -> {dataUrl, alt, source}
+  const figureMap = React.useMemo(() => {
+    const map = {};
+    (content.allFigures || []).forEach(f => { map[f.id] = f; });
+    return map;
+  }, [content.allFigures]);
+
+  const strengthConfig = {
+    consensus: { label: "Consensus", color: "bg-emerald-100 text-emerald-800 border-emerald-300", dot: "bg-emerald-500" },
+    majority: { label: "Majority", color: "bg-sky-100 text-sky-800 border-sky-300", dot: "bg-sky-500" },
+    "single-source": { label: "Single source", color: "bg-slate-100 text-slate-700 border-slate-300", dot: "bg-slate-400" },
+    conflict: { label: "Conflict", color: "bg-amber-100 text-amber-900 border-amber-300", dot: "bg-amber-500" },
+  };
+
+  // Single-source non-synthesized fallback
+  if (!content.synthesized && content.singleSource) {
+    return (
+      <section>
+        <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Deep-Dive</h2>
+        <div className="text-xs italic text-slate-500 mb-2">Displayed as-provided from {content.singleSource.source}.</div>
+        <div className="text-sm text-slate-800 leading-relaxed prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: content.singleSource.contentHtml || "" }} />
+      </section>
+    );
+  }
+
+  if (!content.synthesized || !content.topics?.length) return null;
+
+  const toggleClaim = (key) => setExpandedClaims(prev => ({ ...prev, [key]: !prev[key] }));
+
+  // Order topics: diagnosis → workup → treatment → monitoring → special → other
+  const categoryOrder = { diagnosis: 1, workup: 2, treatment: 3, monitoring: 4, special: 5, other: 6 };
+  const orderedTopics = [...content.topics].sort((a, b) =>
+    (categoryOrder[a.orderingCategory] || 99) - (categoryOrder[b.orderingCategory] || 99)
+  );
+
+  return (
+    <section>
+      <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Deep-Dive</h2>
+
+      {/* Source contribution header */}
+      {content.sourceContribution?.length > 0 && (
+        <div className="mb-4 p-3 bg-slate-50 border border-slate-200 rounded">
+          <div className="text-xs uppercase font-semibold text-slate-600 mb-2">Synthesized from</div>
+          <div className="flex flex-wrap gap-2">
+            {content.sourceContribution.map((s, i) => (
+              <div key={i} className="text-xs bg-white border border-slate-300 rounded px-2 py-1">
+                <span className="font-semibold text-slate-800">{s.source}</span>
+                <span className="text-slate-500 ml-1">— {s.detailLevel} detail ({s.wordCount} words{s.figureCount > 0 ? `, ${s.figureCount} fig${s.figureCount !== 1 ? "s" : ""}` : ""})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Topics with claims */}
+      <div className="space-y-5">
+        {orderedTopics.map((topic, ti) => (
+          <div key={ti} className="border border-slate-200 rounded overflow-hidden">
+            <div className="bg-slate-100 px-3 py-2 border-b border-slate-200">
+              <h3 className="text-sm font-bold text-slate-900">{topic.topic}</h3>
+            </div>
+            <div className="p-3 space-y-3">
+              {topic.claims?.map((claim, ci) => {
+                const cfg = strengthConfig[claim.strength] || strengthConfig["single-source"];
+                const claimKey = `${ti}-${ci}`;
+                const hasDetail = claim.perSourceDetail?.length > 0;
+                const refFigures = (claim.figureRefs || []).map(id => figureMap[id]).filter(Boolean);
+                return (
+                  <div key={ci} className="text-sm">
+                    <div className="flex items-start gap-2">
+                      <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-2 ${cfg.dot}`}></div>
+                      <div className="flex-1">
+                        <div className="text-slate-800 leading-relaxed">
+                          {claim.statement}
+                          {claim.sources?.length > 0 && (
+                            <span className="text-xs text-slate-500 ml-1 italic">
+                              ({claim.sources.join(", ")})
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-1 no-print">
+                          <span className={`text-xs px-1.5 py-0.5 rounded border font-medium ${cfg.color}`}>{cfg.label}</span>
+                          {hasDetail && (
+                            <button
+                              onClick={() => toggleClaim(claimKey)}
+                              className="text-xs text-indigo-600 hover:text-indigo-800 underline"
+                            >
+                              {expandedClaims[claimKey] ? "Hide" : "Show"} per-source detail
+                            </button>
+                          )}
+                        </div>
+                        {/* Print-only source detail — always visible on print */}
+                        {hasDetail && (
+                          <div className="print-only mt-2 pl-3 border-l-2 border-slate-300 space-y-1" style={{ display: "none" }}>
+                            {claim.perSourceDetail.map((psd, pi) => (
+                              <div key={pi} className="text-xs">
+                                <span className="font-semibold text-slate-700">{psd.source}:</span>
+                                <span className="text-slate-600 ml-1">{psd.detail}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {/* Screen expandable */}
+                        {expandedClaims[claimKey] && hasDetail && (
+                          <div className="mt-2 pl-3 border-l-2 border-indigo-300 space-y-1.5 bg-indigo-50/50 py-2 pr-2 rounded-r">
+                            {claim.perSourceDetail.map((psd, pi) => (
+                              <div key={pi} className="text-xs">
+                                <span className="font-semibold text-indigo-900">{psd.source}:</span>
+                                <span className="text-slate-700 ml-1">{psd.detail}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {/* Inline figures referenced by this claim */}
+                        {refFigures.length > 0 && (
+                          <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+                            {refFigures.map((fig, fi) => (
+                              <figure key={fi} className="border border-slate-200 rounded overflow-hidden bg-white">
+                                <img src={fig.dataUrl} alt={fig.alt} className="w-full h-auto" style={{ maxHeight: "300px", objectFit: "contain" }} />
+                                <figcaption className="text-xs text-slate-600 px-2 py-1 bg-slate-50 border-t border-slate-200">
+                                  <span className="font-semibold">{fig.source}:</span> {fig.alt}
+                                </figcaption>
+                              </figure>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Key takeaways */}
+      {content.keyTakeaways?.length > 0 && (
+        <div className="mt-4 border-l-4 border-indigo-500 bg-indigo-50 p-3">
+          <div className="text-xs uppercase font-bold text-indigo-900 mb-2">Key Takeaways Across Sources</div>
+          <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
+            {content.keyTakeaways.map((t, i) => <li key={i}>{t}</li>)}
+          </ul>
+        </div>
+      )}
+
+      {/* Cross-reference matrix */}
+      {content.crossReferenceMatrix?.length > 0 && (
+        <div className="mt-4">
+          <div className="text-xs uppercase font-bold text-slate-700 mb-2">Which Sources Addressed What</div>
+          <table className="w-full text-xs border border-slate-300">
+            <thead>
+              <tr className="bg-slate-100">
+                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Topic</th>
+                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Addressed by</th>
+                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Not covered by</th>
+              </tr>
+            </thead>
+            <tbody>
+              {content.crossReferenceMatrix.map((row, i) => (
+                <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
+                  <td className="px-2 py-1.5 font-medium text-slate-900 border-t border-slate-200 align-top">{row.topic}</td>
+                  <td className="px-2 py-1.5 text-slate-700 border-t border-slate-200 align-top">{(row.addressedBy || []).join(", ") || "—"}</td>
+                  <td className="px-2 py-1.5 text-slate-500 italic border-t border-slate-200 align-top">{(row.notCoveredBy || []).join(", ") || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </section>
   );
 }
