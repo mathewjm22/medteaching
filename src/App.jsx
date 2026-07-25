@@ -741,7 +741,7 @@ I want to focus today's teaching on: ${focusText}.
       await wait(3000);
 
       // Call 2: Source synthesis (only if 2+ sources)
-      const filledSources = activeSources.filter(s => sourceResponses[s]?.trim());
+      const filledSources = activeSources.filter(s => sourceResponses[s]?.html?.trim());
       if (filledSources.length >= 2) {
         setAiStatus({ analyzing: false, generating: true, error: "Synthesizing sources..." });
         try {
