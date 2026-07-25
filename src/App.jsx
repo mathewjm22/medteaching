@@ -176,25 +176,48 @@ const [customTopics, setCustomTopics] = useState([]);
     try {
       return JSON.parse(s);
     } catch (e) {
-      // Attempt to repair truncated JSON
+      // Attempt to repair truncated JSON — walk the string tracking state
       let repaired = s;
-      const lastComma = repaired.lastIndexOf(",");
-      const lastQuote = repaired.lastIndexOf('"');
-      if (lastQuote > lastComma) {
-        repaired = repaired.slice(0, lastComma);
+
+      // Step 1: if we're inside an unterminated string, close it
+      // Count unescaped quotes to determine parity
+      let inString = false;
+      let escape = false;
+      let lastGoodIdx = 0;
+      for (let i = 0; i < repaired.length; i++) {
+        const ch = repaired[i];
+        if (escape) { escape = false; continue; }
+        if (ch === "\\") { escape = true; continue; }
+        if (ch === '"') {
+          inString = !inString;
+          if (!inString) lastGoodIdx = i;
+        } else if (!inString && (ch === "," || ch === "}" || ch === "]")) {
+          lastGoodIdx = i;
+        }
       }
+      if (inString) {
+        // Truncated mid-string — cut back to the last safe boundary
+        repaired = repaired.slice(0, lastGoodIdx + 1);
+      }
+
+      // Step 2: trim trailing comma
+      repaired = repaired.replace(/,\s*$/, "");
+
+      // Step 3: balance brackets
       const opens = (repaired.match(/\{/g) || []).length;
       const closes = (repaired.match(/\}/g) || []).length;
       const openBrackets = (repaired.match(/\[/g) || []).length;
       const closeBrackets = (repaired.match(/\]/g) || []).length;
       for (let i = 0; i < openBrackets - closeBrackets; i++) repaired += "]";
       for (let i = 0; i < opens - closes; i++) repaired += "}";
+
       try {
         console.warn("[extractJson] Repaired truncated JSON");
         return JSON.parse(repaired);
       } catch (e2) {
         console.error("[extractJson] Raw response:", s.slice(0, 500));
-        throw new Error(`JSON parse failed (response likely truncated): ${e.message}`);
+        console.error("[extractJson] Repair attempt:", repaired.slice(-300));
+        throw new Error(`JSON parse failed (response truncated): ${e.message}`);
       }
     }
   };
@@ -548,9 +571,16 @@ Return ONLY valid JSON (no markdown fences):
 
     // Belt-and-suspenders: still hard-cap in case extraction leaves too much
     const MAX_NOTE = 12000;
-    const notePayload = extracted.length > MAX_NOTE
+    let notePayload = extracted.length > MAX_NOTE
       ? extracted.slice(0, MAX_NOTE) + "\n[truncated]"
       : extracted;
+    // Normalize unusual unicode that can confuse tokenization
+    // (non-breaking hyphens, smart quotes, etc.)
+    notePayload = notePayload
+      .replace(/[\u2010\u2011\u2012\u2013\u2014]/g, "-")  // various dashes/hyphens
+      .replace(/[\u2018\u2019]/g, "'")  // smart single quotes
+      .replace(/[\u201C\u201D]/g, '"')  // smart double quotes
+      .replace(/\u00A0/g, " ");  // non-breaking space
 
 // Strip HTML/images to plain text with figure placeholders for AI
     const htmlToAiText = (html) => {
