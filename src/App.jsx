@@ -2462,7 +2462,7 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                         )}
                         {sourceUrls[src] && (
                           
-                            href={sourceUrls[src]}
+                            <a href={sourceUrls[src]}
                             target="_blank"
                             rel="noreferrer"
                             className="text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1"
