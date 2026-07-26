@@ -1330,40 +1330,92 @@ I want to focus today's teaching on: ${focusText}.
     setPdfAttachments(prev => [...prev, ...results]);
     setProcessingPdf(false);
 
-    // Kick off citation extraction in background (non-blocking) for each PDF that has text
+    // Kick off citation extraction serially in background (avoids rate limits).
+    // Fire-and-forget — non-blocking to the user.
     if (aiEnabled) {
-      results.forEach(pdf => {
-        if (!pdf.extractedText || pdf.error) return;
-        extractPdfCitation(pdf).catch(e => console.warn(`Citation extraction failed for ${pdf.filename}:`, e));
-      });
+      (async () => {
+        for (const pdf of results) {
+          if (!pdf.extractedText || pdf.error) continue;
+          await extractPdfCitation(pdf);
+          // Small gap between PDFs to be gentle on rate limits
+          await new Promise(r => setTimeout(r, 800));
+        }
+      })().catch(e => console.warn("PDF citation batch failed:", e));
     }
   };
 
   // Ask the AI to produce a short AMA-style citation from the PDF's title page / abstract text.
   // Runs once per PDF, non-blocking, populated into pdfAttachments state when ready.
-  const extractPdfCitation = async (pdf) => {
-    // First 2500 chars usually contain title, authors, journal, year, DOI
-    const headerSample = pdf.extractedText.slice(0, 2500);
-    const sys = `You extract short AMA-style citations from academic article text. Return ONLY valid JSON (no markdown fences):
+  const extractPdfCitation = async (pdf, opts = {}) => {
+    const { attempt = 1 } = opts;
+    // Mark as "extracting" so UI can show a spinner on this specific card
+    setPdfAttachments(prev => prev.map(p =>
+      p.id === pdf.id ? { ...p, citationExtracting: true, citationError: null } : p
+    ));
+
+    // Build a smarter sample: header + tail (references often live at the end)
+    const text = pdf.extractedText;
+    let sample;
+    if (attempt === 1) {
+      // First pass: focused sample — header (title/authors/journal) + tail (bibliography sometimes has self-citation)
+      const head = text.slice(0, 4000);
+      const tail = text.length > 6000 ? text.slice(-1500) : "";
+      sample = tail ? `${head}\n\n[...body omitted...]\n\n${tail}` : head;
+    } else {
+      // Retry pass: much bigger window — some PDFs have covers/TOCs before the real title page
+      sample = text.slice(0, 10000);
+    }
+
+    const sys = `You extract short AMA-style citations from academic article text. Look for: title, first author's surname, "et al." for multiple authors, journal name (or its standard abbreviation), publication year, volume/issue/pages, DOI, and any "cite as" or "how to cite" instruction the article itself provides.
+
+Return ONLY valid JSON (no markdown fences):
 {
-  "citation": "Short AMA format: Author et al. Journal Abbreviation. Year;Volume(Issue):Pages. — omit any fields you cannot find. Examples: 'Rodondi N et al. JAMA. 2010;304(12):1365-72.' or 'Layon et al. Aesthet Plast Surg. 2021.' or 'Perdikis et al. Plast Reconstr Surg. 2022.' If it's clearly a chapter or non-journal document, use: 'Author. Chapter/Book Title. Year.' If you can only identify a title, use: 'Untitled document — [title]'.",
-  "shortLabel": "Very short display label, 30 chars max: 'Author et al. Year' — e.g. 'Layon et al. 2021' or 'Rodondi et al. 2010'"
+  "citation": "Short AMA format: 'FirstAuthor et al. JournalAbbrev. Year;Volume(Issue):Pages.' — omit any fields you cannot find. Examples: 'Rodondi N et al. JAMA. 2010;304(12):1365-72.', 'Layon et al. Aesthet Plast Surg. 2021.', 'Perdikis et al. Plast Reconstr Surg. 2022.'. For book chapters: 'Author. Chapter Title. In: Book Title. Publisher; Year.'. If you can only identify a title, use: 'Untitled — [title as shown]'.",
+  "shortLabel": "Very short display label, 30 chars max: 'FirstAuthor et al. Year' — e.g. 'Layon et al. 2021', 'Rodondi et al. 2010'. If year is unknown, use just 'FirstAuthor et al.'. If author is unknown, use short title."
 }
-NEVER fabricate authors, years, or journals you cannot see in the text. If the header text is empty or unreadable, return: {"citation": "", "shortLabel": ""}`;
-    const user = `Extract the citation from this PDF's opening text:\n\n${headerSample}`;
+
+NEVER fabricate authors, years, journals, or numbers you cannot see in the text. Look carefully — the title is often in the largest heading; authors follow immediately below; journal/year often appear in a header, footer, or DOI line like "doi.org/10.1016/j.xxx.2021.xx.xxx". If the text truly contains no identifiable citation, return: {"citation": "", "shortLabel": ""}`;
+
+    const user = `Extract the AMA citation from this PDF's text:\n\n${sample}`;
+
     try {
-      const response = await callAi(sys, user, 300);
+      const response = await callAi(sys, user, 400);
       const parsed = extractJson(response);
-      if (parsed.citation || parsed.shortLabel) {
+      const hasResult = parsed.citation?.trim() || parsed.shortLabel?.trim();
+
+      if (hasResult) {
         setPdfAttachments(prev => prev.map(p =>
           p.id === pdf.id
-            ? { ...p, citation: parsed.citation || null, shortLabel: parsed.shortLabel || null }
+            ? { ...p, citation: parsed.citation || null, shortLabel: parsed.shortLabel || null, citationExtracting: false, citationError: null }
             : p
         ));
-        console.log(`[extractPdfCitation] ${pdf.filename} → "${parsed.shortLabel}" / "${parsed.citation}"`);
+        console.log(`[extractPdfCitation] ${pdf.filename} (attempt ${attempt}) → "${parsed.shortLabel}" / "${parsed.citation}"`);
+        return;
       }
+
+      // Empty result — retry with bigger sample if this was the first pass
+      if (attempt === 1 && text.length > 4000) {
+        console.log(`[extractPdfCitation] ${pdf.filename} attempt 1 empty; retrying with larger sample`);
+        // Small wait so we don't stack calls
+        await new Promise(r => setTimeout(r, 2000));
+        return extractPdfCitation(pdf, { attempt: 2 });
+      }
+
+      // Truly no citation found
+      setPdfAttachments(prev => prev.map(p =>
+        p.id === pdf.id
+          ? { ...p, citation: null, shortLabel: null, citationExtracting: false, citationError: "No citation info found in text" }
+          : p
+      ));
+      console.warn(`[extractPdfCitation] ${pdf.filename}: no citation info extractable after ${attempt} attempts`);
     } catch (e) {
-      console.warn(`[extractPdfCitation] Failed for ${pdf.filename}:`, e.message);
+      // Rate limit or API error — mark as failed with error message so UI can offer retry
+      setPdfAttachments(prev => prev.map(p =>
+        p.id === pdf.id
+          ? { ...p, citationExtracting: false, citationError: e.message.slice(0, 80) }
+          : p
+      ));
+      console.warn(`[extractPdfCitation] ${pdf.filename} failed:`, e.message);
     }
   };
 
@@ -2424,12 +2476,43 @@ NEVER fabricate authors, years, or journals you cannot see in the text. If the h
                         <FileText className="w-5 h-5 text-slate-500 flex-shrink-0 mt-0.5" />
                         <div className="flex-1 min-w-0">
                           <div className="text-sm font-medium text-slate-900 truncate">{pdf.filename}</div>
-                          {pdf.citation && (
-                            <div className="text-xs text-indigo-700 italic mt-0.5 truncate" title={pdf.citation}>
-                              → Cited as: {pdf.citation}
+
+                          {/* Citation row: spinner while extracting, editable input once we have (or fail to get) a citation */}
+                          {!pdf.error && (
+                            <div className="mt-1 flex items-center gap-2 flex-wrap">
+                              {pdf.citationExtracting ? (
+                                <div className="text-xs text-indigo-600 flex items-center gap-1">
+                                  <Loader2 className="w-3 h-3 animate-spin" />Extracting citation from PDF text...
+                                </div>
+                              ) : (
+                                <>
+                                  <label className="text-xs font-medium text-slate-600 whitespace-nowrap">Cited as:</label>
+                                  <input
+                                    type="text"
+                                    value={pdf.citation || ""}
+                                    onChange={e => setPdfAttachments(prev => prev.map(p =>
+                                      p.id === pdf.id
+                                        ? { ...p, citation: e.target.value, shortLabel: e.target.value ? (e.target.value.length > 30 ? e.target.value.slice(0, 30).trim() + "…" : e.target.value) : null }
+                                        : p
+                                    ))}
+                                    placeholder={pdf.citationError ? `Extraction failed — enter manually` : "Author et al. Journal. Year."}
+                                    className={`flex-1 min-w-0 px-2 py-1 border rounded text-xs ${pdf.citationError && !pdf.citation ? "border-amber-300 bg-amber-50" : "border-slate-300"}`}
+                                  />
+                                  {aiEnabled && !pdf.citationExtracting && (
+                                    <button
+                                      onClick={() => extractPdfCitation(pdf)}
+                                      className="text-xs px-2 py-1 bg-slate-100 hover:bg-indigo-100 text-slate-700 hover:text-indigo-700 rounded transition"
+                                      title="Re-extract citation from PDF text"
+                                    >
+                                      <Wand2 className="w-3 h-3 inline" />
+                                    </button>
+                                  )}
+                                </>
+                              )}
                             </div>
                           )}
-                          <div className="text-xs text-slate-500 mt-0.5">
+
+                          <div className="text-xs text-slate-500 mt-1">
                             {pdf.error ? (
                               <span className="text-red-600">Extraction failed: {pdf.error}</span>
                             ) : (
@@ -2438,8 +2521,8 @@ NEVER fabricate authors, years, or journals you cannot see in the text. If the h
                                 {pdf.isScannedLikely && (
                                   <span className="ml-2 text-amber-700 font-medium">⚠ Scanned PDF suspected — little text extracted</span>
                                 )}
-                                {!pdf.citation && !pdf.isScannedLikely && aiEnabled && (
-                                  <span className="ml-2 text-slate-400 italic">Extracting citation...</span>
+                                {pdf.citationError && !pdf.citation && (
+                                  <span className="ml-2 text-amber-700 italic">Citation not auto-detected: {pdf.citationError}</span>
                                 )}
                               </>
                             )}
