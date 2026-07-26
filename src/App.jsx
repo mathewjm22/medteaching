@@ -84,21 +84,62 @@ const [customTopics, setCustomTopics] = useState([]);
   const [previewMode, setPreviewMode] = useState(false);
   const [previewData, setPreviewData] = useState(null);
   // ===== Auto-save / restore =====
-  const [restoredSession, setRestoredSession] = useState(null); // { timestamp } if we restored
-  const [hasRestored, setHasRestored] = useState(false); // guard against re-saving before initial load completes
+  const [restoredSession, setRestoredSession] = useState(null);
+  const [hasRestored, setHasRestored] = useState(false);
+  const [saveStatus, setSaveStatus] = useState({ state: "idle", lastSavedAt: null, error: null });
+  const [nowTick, setNowTick] = useState(Date.now()); // forces "N seconds ago" to update
 
-  // Debounced save helper — coalesces rapid changes into one write per key per ~1s
+  // Tick every 15s so the "Saved · X ago" display stays current
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 15000);
+    return () => clearInterval(t);
+  }, []);
+
   const saveTimers = React.useRef({});
+  const pendingWrites = React.useRef(new Set()); // track in-flight writes across all keys
   const debouncedSave = React.useCallback((key, value) => {
     if (saveTimers.current[key]) clearTimeout(saveTimers.current[key]);
+    // Immediately flip to "saving" so the pill reflects pending work
+    setSaveStatus(prev => ({ ...prev, state: "saving", error: null }));
     saveTimers.current[key] = setTimeout(async () => {
+      pendingWrites.current.add(key);
       try {
         await window.storage.set(key, JSON.stringify(value));
+        pendingWrites.current.delete(key);
+        // Only flip to "saved" when ALL pending writes have completed
+        if (pendingWrites.current.size === 0) {
+          setSaveStatus({ state: "saved", lastSavedAt: Date.now(), error: null });
+        }
       } catch (e) {
+        pendingWrites.current.delete(key);
         console.warn(`[autosave] Failed to save ${key}:`, e.message);
+        setSaveStatus({ state: "error", lastSavedAt: saveStatus.lastSavedAt, error: e.message.slice(0, 80) });
       }
     }, 1000);
   }, []);
+
+  // Helper: format "just now / N minutes ago / at HH:MM"
+  const formatSaveTime = (ts) => {
+    if (!ts) return "";
+    const diff = Math.floor((nowTick - ts) / 1000);
+    if (diff < 5) return "just now";
+    if (diff < 60) return `${diff}s ago`;
+    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
+    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
+    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  // Manual retry: kicks all state watchers to re-save
+  const retrySave = () => {
+    setSaveStatus({ state: "saving", lastSavedAt: saveStatus.lastSavedAt, error: null });
+    // Force a re-save by touching the most important slice
+    debouncedSave("inProgress", {
+      timestamp: new Date().toISOString(),
+      clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
+      activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
+      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
+    });
+  };
 
   // Load persisted state
   // Load persisted state (both durable state and in-progress session)
@@ -1870,10 +1911,54 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                 <p className="text-xs text-slate-500">Phase-aware teaching {aiEnabled && <span className="text-indigo-600">· AI enabled</span>}</p>
               </div>
             </div>
-            <button onClick={saveState} className="flex items-center gap-2 px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 rounded-lg transition">
-              {saved ? <Check className="w-4 h-4 text-emerald-600" /> : <Save className="w-4 h-4" />}
-              {saved ? "Saved" : "Save"}
-            </button>
+            <div className="flex items-center gap-2">
+              {/* Auto-save status pill */}
+              {hasRestored && (
+                <div
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition ${
+                    saveStatus.state === "error"
+                      ? "bg-amber-50 border border-amber-200 text-amber-800"
+                      : saveStatus.state === "saving"
+                      ? "bg-indigo-50 border border-indigo-200 text-indigo-700"
+                      : saveStatus.lastSavedAt
+                      ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
+                      : "bg-slate-50 border border-slate-200 text-slate-500"
+                  }`}
+                  title={saveStatus.error || (saveStatus.lastSavedAt ? `Last saved ${new Date(saveStatus.lastSavedAt).toLocaleString()}` : "Auto-save enabled")}
+                >
+                  {saveStatus.state === "saving" && (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Saving...</span>
+                    </>
+                  )}
+                  {saveStatus.state === "saved" && (
+                    <>
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Saved · {formatSaveTime(saveStatus.lastSavedAt)}</span>
+                    </>
+                  )}
+                  {saveStatus.state === "error" && (
+                    <>
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      <span>Save failed</span>
+                      <button onClick={retrySave} className="underline hover:text-amber-900">Retry</button>
+                    </>
+                  )}
+                  {saveStatus.state === "idle" && (
+                    <>
+                      <Save className="w-3.5 h-3.5" />
+                      <span>Auto-save on</span>
+                    </>
+                  )}
+                </div>
+              )}
+              {/* Existing manual save button (still useful for the durable pieces) */}
+              <button onClick={saveState} className="flex items-center gap-2 px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 rounded-lg transition" title="Save session metadata and long-term goals immediately">
+                {saved ? <Check className="w-4 h-4 text-emerald-600" /> : <Save className="w-4 h-4" />}
+                {saved ? "Saved" : "Save"}
+              </button>
+            </div>
           </div>
         </div>
         <div className="max-w-6xl mx-auto px-6">
@@ -2725,7 +2810,6 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
             onClose={() => setPromptViewerFor(null)}
           />
         )}
-      </main>
       </main>
     </div>
   );
