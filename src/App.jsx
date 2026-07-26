@@ -9,6 +9,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("setup");
   const [saved, setSaved] = useState(false);
   const [copiedPrompt, setCopiedPrompt] = useState(null);
+  const [promptViewerFor, setPromptViewerFor] = useState(null); // source key when open
   const [expandedSections, setExpandedSections] = useState({});
 
   // AI is enabled by default; user only toggles on/off
@@ -2341,22 +2342,51 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
               <div className="space-y-4">
                 {activeSources.map(src => (
                   <div key={src} className="border border-slate-200 rounded-lg overflow-hidden">
-                    <div className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition">
-                      <button onClick={() => toggleSection(src)} className="flex items-center gap-2 font-medium text-slate-900 flex-1 text-left">
-                        {expandedSections[src] ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                        {sourceLabels[src]}
+                    <div
+                      className="w-full flex items-center justify-between p-4 bg-slate-50 hover:bg-slate-100 transition cursor-pointer"
+                      onClick={() => toggleSection(src)}
+                    >
+                      <div className="flex items-center gap-2 font-medium text-slate-900 flex-1 text-left min-w-0">
+                        {expandedSections[src] ? <ChevronDown className="w-4 h-4 flex-shrink-0" /> : <ChevronRight className="w-4 h-4 flex-shrink-0" />}
+                        <span className="truncate">{sourceLabels[src]}</span>
                         {src === "pubmedai" ? (
                           Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length > 0 &&
-                          <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">{Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length} responses added</span>
+                          <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full flex-shrink-0">{Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length} responses added</span>
                         ) : (
-                          sourceResponses[src]?.html?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Response added</span>
+                          sourceResponses[src]?.html?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full flex-shrink-0">Response added</span>
                         )}
-                      </button>
-                      {sourceUrls[src] && (
-                        <a href={sourceUrls[src]} target="_blank" rel="noreferrer" className="ml-2 text-xs px-2 py-1 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                          Open {sourceLabels[src].split(" ")[0]} ↗
-                        </a>
-                      )}
+                      </div>
+                      <div className="flex items-center gap-2 ml-3 flex-shrink-0">
+                        {src !== "pubmedai" && (
+                          <>
+                            <button
+                              onClick={e => { e.stopPropagation(); setPromptViewerFor(src); }}
+                              className="text-xs px-3 py-1.5 bg-slate-600 text-white hover:bg-slate-700 rounded transition flex items-center gap-1"
+                              title="Open prompt in a popup for review"
+                            >
+                              <FileText className="w-3 h-3" />View Prompt
+                            </button>
+                            <button
+                              onClick={e => { e.stopPropagation(); copyPrompt(src); }}
+                              className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === src ? "bg-emerald-600 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600"}`}
+                              title="Copy the prompt to clipboard"
+                            >
+                              {copiedPrompt === src ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy Prompt</>}
+                            </button>
+                          </>
+                        )}
+                        {sourceUrls[src] && (
+                          
+                            href={sourceUrls[src]}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            Open {sourceLabels[src].split(" ")[0]} ↗
+                          </a>
+                        )}
+                      </div>
                     </div>
                     {expandedSections[src] && src === "pubmedai" && (
                       <div className="p-4 space-y-4 bg-white">
@@ -2403,32 +2433,24 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                       </div>
                     )}
                     {expandedSections[src] && src !== "pubmedai" && (
-                      <div className="p-4 space-y-4 bg-white">
-                        <div>
-                          <div className="flex items-center justify-between mb-2">
-                            <label className="text-sm font-medium text-slate-700">Prompt for {sourceLabels[src]}</label>
-                            <button onClick={() => copyPrompt(src)} className="flex items-center gap-1 text-xs px-2 py-1 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded transition">
-                              {copiedPrompt === src ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy</>}
-                            </button>
+                      <div className="p-4 bg-white">
+                        {src === "other" && (
+                          <div className="mb-3 text-xs text-slate-600 bg-blue-50 border border-blue-200 rounded p-2">
+                            Use this for any AI tool not listed above (Perplexity, ChatGPT, Claude, Gemini, etc.) or for any other evidence source. Copy the prompt above and paste it into your tool of choice, then paste the response back here.
                           </div>
-                          {src === "other" && (
-                            <div className="mb-2 text-xs text-slate-600 bg-blue-50 border border-blue-200 rounded p-2">
-                              Use this for any AI tool not listed above (Perplexity, ChatGPT, Claude, Gemini, etc.) or for any other evidence source. Copy the prompt below and paste it into your tool of choice, then paste the response back.
-                            </div>
-                          )}
-                          <div className="p-3 bg-slate-50 rounded border border-slate-200 text-xs font-mono text-slate-700 whitespace-pre-wrap max-h-60 overflow-y-auto">{generateSourcePrompt(src)}</div>
-                        </div>
-                        <div>
-                          <label className="block text-sm font-medium text-slate-700 mb-1">Paste response from {sourceLabels[src]} <span className="text-xs font-normal text-slate-500">(rich text + images supported)</span></label>
-                          <RichPaste
-                            value={sourceResponses[src]}
-                            onChange={v => setSourceResponses({...sourceResponses, [src]: v})}
-                            placeholder="Paste the response here — text, formatting, tables, and images will all carry through..."
-                            rows={6}
-                            sessionImageBytes={sessionImageBytes}
-                            onImageBytesChange={delta => setSessionImageBytes(b => b + delta)}
-                          />
-                        </div>
+                        )}
+                        <label className="block text-sm font-medium text-slate-700 mb-1">
+                          Paste response from {sourceLabels[src]}
+                          <span className="text-xs font-normal text-slate-500 ml-1">(rich text + images supported)</span>
+                        </label>
+                        <RichPaste
+                          value={sourceResponses[src]}
+                          onChange={v => setSourceResponses({...sourceResponses, [src]: v})}
+                          placeholder="Paste the response here — text, formatting, tables, and images will all carry through..."
+                          rows={6}
+                          sessionImageBytes={sessionImageBytes}
+                          onImageBytesChange={delta => setSessionImageBytes(b => b + delta)}
+                        />
                       </div>
                     )}
                   </div>
@@ -2696,6 +2718,14 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
             )}
           </>
         )}
+          {promptViewerFor && (
+          <PromptViewer
+            sourceName={sourceLabels[promptViewerFor]}
+            initialPrompt={generateSourcePrompt(promptViewerFor)}
+            onClose={() => setPromptViewerFor(null)}
+          />
+        )}
+      </main>
       </main>
     </div>
   );
@@ -4062,6 +4092,9 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
     </section>
   );
 }
+
+
+
 // ============ IMAGE LIGHTBOX ============
 function ImageLightbox({ src, alt, onClose }) {
   React.useEffect(() => {
@@ -4148,6 +4181,167 @@ function ImageLightbox({ src, alt, onClose }) {
         letterSpacing: "0.15em",
       }}>
         Click anywhere or press Esc to close
+      </div>
+    </div>
+  );
+}
+
+// ============ PROMPT VIEWER MODAL ============
+function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
+  const [editedPrompt, setEditedPrompt] = React.useState(initialPrompt);
+  const [copied, setCopied] = React.useState(false);
+
+  React.useEffect(() => {
+    const handleKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(editedPrompt).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      className="no-print"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 42, 68, 0.6)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "2rem",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: "white",
+          borderRadius: "8px",
+          maxWidth: "800px",
+          width: "100%",
+          maxHeight: "85vh",
+          display: "flex",
+          flexDirection: "column",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.3)",
+          overflow: "hidden",
+        }}
+      >
+        <div style={{
+          padding: "1rem 1.25rem",
+          borderBottom: "1px solid #e5e7eb",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          background: "linear-gradient(135deg, #0F2A44 0%, #1a3d5c 100%)",
+          color: "white",
+        }}>
+          <div>
+            <div style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.15em", opacity: 0.7 }}>Prompt for</div>
+            <div style={{ fontSize: "1.1rem", fontWeight: 600, marginTop: "0.15rem" }}>{sourceName}</div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{
+              background: "rgba(255,255,255,0.15)",
+              border: "1px solid rgba(255,255,255,0.3)",
+              color: "white",
+              borderRadius: "50%",
+              width: "2rem",
+              height: "2rem",
+              fontSize: "1.1rem",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+            }}
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+
+        <div style={{ padding: "0.75rem 1.25rem", background: "#fef3c7", borderBottom: "1px solid #fde68a", fontSize: "0.8rem", color: "#78350f", display: "flex", alignItems: "start", gap: "0.5rem" }}>
+          <AlertCircle style={{ width: "1rem", height: "1rem", flexShrink: 0, marginTop: "0.1rem" }} />
+          <div>You can edit this prompt before copying, but edits won't persist across sessions. The saved template will regenerate next time you view it.</div>
+        </div>
+
+        <textarea
+          value={editedPrompt}
+          onChange={e => setEditedPrompt(e.target.value)}
+          spellCheck={false}
+          style={{
+            flex: 1,
+            padding: "1rem 1.25rem",
+            border: "none",
+            outline: "none",
+            resize: "none",
+            fontFamily: "ui-monospace, SFMono-Regular, Menlo, Monaco, monospace",
+            fontSize: "0.85rem",
+            lineHeight: 1.5,
+            color: "#334155",
+            minHeight: "300px",
+          }}
+        />
+
+        <div style={{
+          padding: "0.75rem 1.25rem",
+          borderTop: "1px solid #e5e7eb",
+          background: "#f8fafc",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: "0.75rem",
+        }}>
+          <div style={{ fontSize: "0.75rem", color: "#64748b" }}>
+            {editedPrompt.length.toLocaleString()} characters · {editedPrompt.split(/\s+/).filter(Boolean).length.toLocaleString()} words
+          </div>
+          <div style={{ display: "flex", gap: "0.5rem" }}>
+            <button
+              onClick={onClose}
+              style={{
+                padding: "0.5rem 1rem",
+                background: "white",
+                border: "1px solid #cbd5e1",
+                borderRadius: "6px",
+                fontSize: "0.85rem",
+                color: "#475569",
+                cursor: "pointer",
+              }}
+            >
+              Close
+            </button>
+            <button
+              onClick={handleCopy}
+              style={{
+                padding: "0.5rem 1rem",
+                background: copied ? "#059669" : "#4f46e5",
+                color: "white",
+                border: "none",
+                borderRadius: "6px",
+                fontSize: "0.85rem",
+                fontWeight: 500,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "0.4rem",
+                transition: "background 0.15s",
+              }}
+            >
+              {copied ? <><Check style={{width: "0.9rem", height: "0.9rem"}} />Copied to clipboard</> : <><Copy style={{width: "0.9rem", height: "0.9rem"}} />Copy Prompt</>}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
