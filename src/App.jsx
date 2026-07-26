@@ -82,20 +82,164 @@ const [customTopics, setCustomTopics] = useState([]);
   // Preview/edit mode - each section has {enabled, content}
   const [previewMode, setPreviewMode] = useState(false);
   const [previewData, setPreviewData] = useState(null);
+  // ===== Auto-save / restore =====
+  const [restoredSession, setRestoredSession] = useState(null); // { timestamp } if we restored
+  const [hasRestored, setHasRestored] = useState(false); // guard against re-saving before initial load completes
+
+  // Debounced save helper — coalesces rapid changes into one write per key per ~1s
+  const saveTimers = React.useRef({});
+  const debouncedSave = React.useCallback((key, value) => {
+    if (saveTimers.current[key]) clearTimeout(saveTimers.current[key]);
+    saveTimers.current[key] = setTimeout(async () => {
+      try {
+        await window.storage.set(key, JSON.stringify(value));
+      } catch (e) {
+        console.warn(`[autosave] Failed to save ${key}:`, e.message);
+      }
+    }, 1000);
+  }, []);
 
   // Load persisted state
+  // Load persisted state (both durable state and in-progress session)
   useEffect(() => {
     (async () => {
-      try {
-        const g = await window.storage.get("longTermGoals");
-        if (g?.value) setLongTermGoals(JSON.parse(g.value));
-      } catch {}
-      try {
-        const s = await window.storage.get("session");
-        if (s?.value) setSession(JSON.parse(s.value));
-      } catch {}
+      const safeGet = async (key) => {
+        try {
+          const r = await window.storage.get(key);
+          return r?.value ? JSON.parse(r.value) : null;
+        } catch { return null; }
+      };
+
+      // Durable state (across all sessions)
+      const g = await safeGet("longTermGoals");
+      if (g) setLongTermGoals(g);
+      const s = await safeGet("session");
+      if (s) setSession(s);
+
+      // In-progress session state
+      const inProgress = await safeGet("inProgress");
+      if (inProgress && inProgress.timestamp) {
+        // Restore everything we saved
+        if (inProgress.clinicalNote) setClinicalNote(inProgress.clinicalNote);
+        if (inProgress.chiefConcern) setChiefConcern(inProgress.chiefConcern);
+        if (inProgress.workingDx) setWorkingDx(inProgress.workingDx);
+        if (inProgress.extractedTopics) setExtractedTopics(inProgress.extractedTopics);
+        if (inProgress.noteAnalysis) setNoteAnalysis(inProgress.noteAnalysis);
+        if (inProgress.activeProblems) setActiveProblems(inProgress.activeProblems);
+        if (inProgress.selectedProblems) setSelectedProblems(inProgress.selectedProblems);
+        if (inProgress.patientQuotes) setPatientQuotes(inProgress.patientQuotes);
+        if (inProgress.labTrends) setLabTrends(inProgress.labTrends);
+        if (inProgress.teachingLens) setTeachingLens(inProgress.teachingLens);
+        if (inProgress.focusAreas) setFocusAreas(inProgress.focusAreas);
+        if (inProgress.aiSuggestedFocus) setAiSuggestedFocus(inProgress.aiSuggestedFocus);
+        if (inProgress.customTopics) setCustomTopics(inProgress.customTopics);
+        if (inProgress.sources) setSources(inProgress.sources);
+        if (inProgress.sessionGoal) setSessionGoal(inProgress.sessionGoal);
+        if (inProgress.aiEnabled !== undefined) setAiEnabled(inProgress.aiEnabled);
+        setRestoredSession({ timestamp: inProgress.timestamp });
+      }
+      // Load bulky items separately (each has its own storage key due to 5MB per-key cap)
+      const sr = await safeGet("inProgress_sourceResponses");
+      if (sr) setSourceResponses(sr);
+      const pdfs = await safeGet("inProgress_pdfs");
+      if (pdfs) setPdfAttachments(pdfs);
+      const imgs = await safeGet("inProgress_images");
+      if (imgs) setImageAttachments(imgs);
+      const bytes = await safeGet("inProgress_imageBytes");
+      if (bytes !== null) setSessionImageBytes(bytes);
+      const gen = await safeGet("inProgress_generated");
+      if (gen) {
+        if (gen.aiTeachingContent) setAiTeachingContent(gen.aiTeachingContent);
+        if (gen.synthesizedEvidence) setSynthesizedEvidence(gen.synthesizedEvidence);
+        if (gen.generatedDoc) setGeneratedDoc(gen.generatedDoc);
+        if (gen.previewData) setPreviewData(gen.previewData);
+      }
+
+      // Mark load complete — from now on, changes will trigger auto-save
+      setHasRestored(true);
     })();
   }, []);
+
+  // Auto-save watchers — each runs when the relevant piece of state changes
+  useEffect(() => {
+    if (!hasRestored) return;
+    debouncedSave("inProgress", {
+      timestamp: new Date().toISOString(),
+      clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
+      activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
+      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
+    });
+  }, [hasRestored, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
+      activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
+      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled, debouncedSave]);
+
+  useEffect(() => {
+    if (!hasRestored) return;
+    debouncedSave("inProgress_sourceResponses", sourceResponses);
+  }, [hasRestored, sourceResponses, debouncedSave]);
+
+  useEffect(() => {
+    if (!hasRestored) return;
+    debouncedSave("inProgress_pdfs", pdfAttachments);
+  }, [hasRestored, pdfAttachments, debouncedSave]);
+
+  useEffect(() => {
+    if (!hasRestored) return;
+    debouncedSave("inProgress_images", imageAttachments);
+  }, [hasRestored, imageAttachments, debouncedSave]);
+
+  useEffect(() => {
+    if (!hasRestored) return;
+    debouncedSave("inProgress_imageBytes", sessionImageBytes);
+  }, [hasRestored, sessionImageBytes, debouncedSave]);
+
+  useEffect(() => {
+    if (!hasRestored) return;
+    debouncedSave("inProgress_generated", {
+      aiTeachingContent, synthesizedEvidence, generatedDoc, previewData,
+    });
+  }, [hasRestored, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, debouncedSave]);
+
+  const discardRestoredSession = async () => {
+    if (!confirm("Discard all restored work and start fresh? This will clear the current clinical note, sources, attachments, and any generated content.")) return;
+    try {
+      await window.storage.delete("inProgress");
+      await window.storage.delete("inProgress_sourceResponses");
+      await window.storage.delete("inProgress_pdfs");
+      await window.storage.delete("inProgress_images");
+      await window.storage.delete("inProgress_imageBytes");
+      await window.storage.delete("inProgress_generated");
+    } catch {}
+    // Reset all in-progress state
+    setClinicalNote(""); setChiefConcern(""); setWorkingDx("");
+    setExtractedTopics([]); setNoteAnalysis(null);
+    setActiveProblems([]); setSelectedProblems([]);
+    setPatientQuotes([]); setLabTrends([]);
+    setTeachingLens("general_im");
+    setFocusAreas({ history: false, physicalExam: false, differential: false, workup: false, management: false, patientContext: false, ebm: false, communication: false });
+    setAiSuggestedFocus(null);
+    setCustomTopics([]);
+    setSources({ openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false, other: false });
+    setSourceResponses({
+      openevidence: { html: "", images: [] },
+      uptodate: { html: "", images: [] },
+      dynamed: { html: "", images: [] },
+      doxgpt: { html: "", images: [] },
+      other: { html: "", images: [] },
+      pubmedai: {},
+    });
+    setPdfAttachments([]);
+    setImageAttachments([]);
+    setSessionImageBytes(0);
+    setSessionGoal("");
+    setAiTeachingContent(null);
+    setSynthesizedEvidence(null);
+    setGeneratedDoc(null);
+    setPreviewData(null);
+    setPreviewMode(false);
+    setActiveTab("setup");
+    setRestoredSession(null);
+  };
 
   // ===== Phase logic =====
   const getPhase = () => {
@@ -1708,6 +1852,27 @@ NEVER fabricate authors, years, or journals you cannot see in the text. If the h
           </div>
         </div>
 
+        {restoredSession && (
+          <div className="no-print mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900 flex items-center gap-2">
+            <Save className="w-4 h-4 flex-shrink-0 text-emerald-700" />
+            <div className="flex-1">
+              <strong>Session restored</strong> from {new Date(restoredSession.timestamp).toLocaleString()}. Your work will continue to save automatically.
+            </div>
+            <button
+              onClick={discardRestoredSession}
+              className="text-xs px-2 py-1 bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100 rounded"
+            >
+              Discard & start fresh
+            </button>
+            <button
+              onClick={() => setRestoredSession(null)}
+              className="text-emerald-600 hover:text-emerald-900"
+              title="Dismiss"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
         {aiStatus.progress && (
           <div className="no-print mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-800 flex items-center gap-2">
             <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin text-indigo-600" />
