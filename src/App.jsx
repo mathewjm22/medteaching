@@ -550,23 +550,21 @@ Return ONLY valid JSON (no markdown fences):
 
     
     console.log("[synthesizeSources] BEFORE PDF PUSH: packages so far:", sourcePackages.map(p => p.label));
-    // Add each PDF as its own source package
-    // Add each PDF as its own source package
+    // Add each PDF as its own source package. Prefer AI-extracted short citation for display;
+    // fall back to filename if citation extraction failed or hasn't finished yet.
     filledPdfs.forEach(pdf => {
       const MAX_PDF_CHARS = 12000;
-      // TEMPORARY DIAGNOSTIC: inject a marker phrase at the top of every PDF
-      // to prove the AI actually reads PDF content. Remove after verification.
-      const marker = `IMPORTANT MARKER FROM THIS PDF: The unique diagnostic phrase is "PROVENANCE-VERIFY-XQ742". Any claim mentioning this exact phrase confirms the PDF was read.\n\n`;
-      const rawText = marker + pdf.extractedText;
-      const truncatedText = rawText.length > MAX_PDF_CHARS
-        ? rawText.slice(0, MAX_PDF_CHARS) + " [truncated]"
-        : rawText;
+      const truncatedText = pdf.extractedText.length > MAX_PDF_CHARS
+        ? pdf.extractedText.slice(0, MAX_PDF_CHARS) + " [truncated]"
+        : pdf.extractedText;
       const wordCount = truncatedText.split(/\s+/).length;
+      const displayLabel = pdf.shortLabel || pdf.filename.replace(/\.pdf$/i, "");
       sourcePackages.push({
         key: `pdf-${pdf.id}`,
-        label: `PDF: ${pdf.filename}`,
+        label: displayLabel,
+        fullCitation: pdf.citation || null,
         text: truncatedText,
-        figures: [], // PDF text extraction doesn't capture images
+        figures: [],
         wordCount,
         detailLevel: wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief",
       });
@@ -600,6 +598,7 @@ Return ONLY valid JSON (no markdown fences):
     const allFigures = sourcePackages.flatMap(p => p.figures);
     const sourceContribution = sourcePackages.map(p => ({
       source: p.label,
+      fullCitation: p.fullCitation || null,
       wordCount: p.wordCount,
       detailLevel: p.detailLevel,
       figureCount: p.figures.length,
@@ -643,6 +642,18 @@ RULES:
 7. Order topics: diagnosis/workup → treatment first-line → adjunctive → monitoring → special populations.
 8. The crossReferenceMatrix maps topics to the REAL guidelines/trials that address them — NOT to AI tool names.
 
+9. ACTIVE PER-SOURCE PASS (CRITICAL — do not skip):
+   You have ${sourcePackages.length} sources. Before finalizing your output, perform this check for EACH source individually:
+   - Read the source's content again with fresh eyes.
+   - Ask: "What claim in this source is NOT already covered by claims I've generated from other sources?"
+   - If the source contains a unique fact, trial, dosing detail, mechanism, or nuance not yet represented, ADD a claim for it with that source in its provenance.
+   - Only after doing this pass may you consider the synthesis complete.
+
+   PDF sources deserve especially close attention: they are often full-text articles or book chapters with detailed data (specific trial numbers, effect sizes, patient cohorts, dosing regimens, mechanistic explanations) that broad research aggregators like OpenEvidence or DoxGPT typically summarize away. Do not let a PDF's word count go to waste — extract its distinctive contributions.
+
+   If, after honest review, a source truly contains nothing unique beyond what other sources already cover, that is acceptable — but you MUST have done the review. Do NOT default to attributing everything to the first source listed.
+
+
 Return ONLY valid JSON (no markdown fences):
 {
   "topics": [
@@ -678,7 +689,9 @@ ${aiSourceBlock}
 
 Synthesize into structured claims with per-source attribution as specified. When a figure ID like [FIGURE:fig-xyz] appears in source content, you may reference it in figureRefs of a related claim. Do NOT invent figures that weren't listed.
 
-CRITICAL: For every claim, the "provenance" array must accurately list which of the ${sourcePackages.length} sources above actually contributed to that claim. If two sources both discuss a topic, list both. If only one source discusses a topic (e.g., only the PDF has the case-specific dosing detail), list only that one. Do NOT lazily attribute every claim to just the first source.`;
+CRITICAL: For every claim, the "provenance" array must accurately list which of the ${sourcePackages.length} sources above actually contributed to that claim. If two sources both discuss a topic, list both. If only one source discusses a topic (e.g., only the PDF has the case-specific dosing detail), list only that one. Do NOT lazily attribute every claim to just the first source.
+
+BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many claims have each source in their provenance. If any source has zero or only one claim cited to it, go back to that source's raw text above and find at least one distinctive contribution — a specific number, a mechanism, a patient-population nuance, a trial detail, a dosing subtlety — that isn't already represented. Add it as a claim. This is especially important for PDFs, which are dense full-text documents that always contain something unique. Attributing 4 of 10 claims to the first-listed source while leaving PDFs at 0-1 claims each indicates you did not perform this active per-source review — go back and do it before returning your JSON.`;
 
     console.log("[synthesizeSources] SENDING TO AI:", {
       sourcePackageCount: sourcePackages.length,
@@ -1145,15 +1158,17 @@ I want to focus today's teaching on: ${focusText}.
       if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) continue;
       try {
         const { text, pageCount, extractedPageCount } = await extractPdfText(file);
-        results.push({
+        const pdfEntry = {
           id: `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
           filename: file.name,
           extractedText: text,
           pageCount,
           extractedPageCount,
-          isScannedLikely: text.length < 200 && pageCount > 0, // very little text → probably scanned
+          isScannedLikely: text.length < 200 && pageCount > 0,
+          citation: null, // will be populated asynchronously
           addedAt: new Date().toLocaleString(),
-        });
+        };
+        results.push(pdfEntry);
       } catch (e) {
         console.error(`PDF extraction failed for ${file.name}:`, e);
         results.push({
@@ -1163,12 +1178,49 @@ I want to focus today's teaching on: ${focusText}.
           pageCount: 0,
           extractedPageCount: 0,
           error: e.message,
+          citation: null,
           addedAt: new Date().toLocaleString(),
         });
       }
     }
     setPdfAttachments(prev => [...prev, ...results]);
     setProcessingPdf(false);
+
+    // Kick off citation extraction in background (non-blocking) for each PDF that has text
+    if (aiEnabled) {
+      results.forEach(pdf => {
+        if (!pdf.extractedText || pdf.error) return;
+        extractPdfCitation(pdf).catch(e => console.warn(`Citation extraction failed for ${pdf.filename}:`, e));
+      });
+    }
+  };
+
+  // Ask the AI to produce a short AMA-style citation from the PDF's title page / abstract text.
+  // Runs once per PDF, non-blocking, populated into pdfAttachments state when ready.
+  const extractPdfCitation = async (pdf) => {
+    // First 2500 chars usually contain title, authors, journal, year, DOI
+    const headerSample = pdf.extractedText.slice(0, 2500);
+    const sys = `You extract short AMA-style citations from academic article text. Return ONLY valid JSON (no markdown fences):
+{
+  "citation": "Short AMA format: Author et al. Journal Abbreviation. Year;Volume(Issue):Pages. — omit any fields you cannot find. Examples: 'Rodondi N et al. JAMA. 2010;304(12):1365-72.' or 'Layon et al. Aesthet Plast Surg. 2021.' or 'Perdikis et al. Plast Reconstr Surg. 2022.' If it's clearly a chapter or non-journal document, use: 'Author. Chapter/Book Title. Year.' If you can only identify a title, use: 'Untitled document — [title]'.",
+  "shortLabel": "Very short display label, 30 chars max: 'Author et al. Year' — e.g. 'Layon et al. 2021' or 'Rodondi et al. 2010'"
+}
+NEVER fabricate authors, years, or journals you cannot see in the text. If the header text is empty or unreadable, return: {"citation": "", "shortLabel": ""}`;
+    const user = `Extract the citation from this PDF's opening text:\n\n${headerSample}`;
+    try {
+      const response = await callAi(sys, user, 300);
+      const parsed = extractJson(response);
+      if (parsed.citation || parsed.shortLabel) {
+        setPdfAttachments(prev => prev.map(p =>
+          p.id === pdf.id
+            ? { ...p, citation: parsed.citation || null, shortLabel: parsed.shortLabel || null }
+            : p
+        ));
+        console.log(`[extractPdfCitation] ${pdf.filename} → "${parsed.shortLabel}" / "${parsed.citation}"`);
+      }
+    } catch (e) {
+      console.warn(`[extractPdfCitation] Failed for ${pdf.filename}:`, e.message);
+    }
   };
 
   const removePdfAttachment = (id) => {
@@ -2198,6 +2250,11 @@ I want to focus today's teaching on: ${focusText}.
                         <FileText className="w-5 h-5 text-slate-500 flex-shrink-0 mt-0.5" />
                         <div className="flex-1 min-w-0">
                           <div className="text-sm font-medium text-slate-900 truncate">{pdf.filename}</div>
+                          {pdf.citation && (
+                            <div className="text-xs text-indigo-700 italic mt-0.5 truncate" title={pdf.citation}>
+                              → Cited as: {pdf.citation}
+                            </div>
+                          )}
                           <div className="text-xs text-slate-500 mt-0.5">
                             {pdf.error ? (
                               <span className="text-red-600">Extraction failed: {pdf.error}</span>
@@ -2206,6 +2263,9 @@ I want to focus today's teaching on: ${focusText}.
                                 {pdf.pageCount} pages · {Math.round(pdf.extractedText.length / 1000)}k chars extracted
                                 {pdf.isScannedLikely && (
                                   <span className="ml-2 text-amber-700 font-medium">⚠ Scanned PDF suspected — little text extracted</span>
+                                )}
+                                {!pdf.citation && !pdf.isScannedLikely && aiEnabled && (
+                                  <span className="ml-2 text-slate-400 italic">Extracting citation...</span>
                                 )}
                               </>
                             )}
@@ -3561,12 +3621,18 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
               }, 0);
               const totalClaims = (content.topics || []).reduce((acc, topic) => acc + (topic.claims?.length || 0), 0);
               const pct = totalClaims > 0 ? Math.round((citingClaims / totalClaims) * 100) : 0;
-              const isPdf = sc.source.startsWith("PDF:");
+              // A source is a PDF if it has a fullCitation field OR the legacy label starts with "PDF:"
+              const isPdf = !!sc.fullCitation || sc.source.startsWith("PDF:");
               return (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.75rem", fontSize: "0.82rem" }}>
+                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", fontSize: "0.82rem" }}>
                   <div style={{ minWidth: "180px", fontWeight: 500, color: isPdf ? "var(--doc-terracotta)" : "var(--doc-navy)" }}>
                     {isPdf && <span style={{ marginRight: "0.3rem" }}>📄</span>}
                     {sc.source}
+                    {sc.fullCitation && (
+                      <div style={{ fontSize: "0.7rem", fontWeight: 400, fontStyle: "italic", color: "var(--doc-warm-gray)", marginTop: "0.1rem" }}>
+                        {sc.fullCitation}
+                      </div>
+                    )}
                   </div>
                   <div style={{ flex: 1, height: "6px", background: "#e5e0d5", borderRadius: "3px", overflow: "hidden" }}>
                     <div style={{
@@ -3576,8 +3642,9 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
                       transition: "width 0.3s",
                     }}></div>
                   </div>
-                  <div style={{ fontSize: "0.72rem", color: "var(--doc-warm-gray)", minWidth: "140px", textAlign: "right" }}>
+                  <div style={{ fontSize: "0.72rem", color: citingClaims === 0 ? "var(--doc-terracotta)" : "var(--doc-warm-gray)", minWidth: "140px", textAlign: "right", fontWeight: citingClaims === 0 ? 600 : 400 }}>
                     {citingClaims} of {totalClaims} claims · {sc.wordCount.toLocaleString()} words
+                    {citingClaims === 0 && <div style={{ fontSize: "0.65rem", fontWeight: 500, fontStyle: "italic", marginTop: "0.1rem" }}>not cited — content may overlap with other sources</div>}
                   </div>
                 </div>
               );
