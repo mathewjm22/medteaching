@@ -1590,14 +1590,6 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
           color: white;
           padding: 3rem 3rem 2.25rem;
         }
-        .doc-cover .cover-monogram {
-          font-family: 'Source Serif 4', serif;
-          font-size: 1.5rem;
-          font-weight: 400;
-          font-style: italic;
-          opacity: 0.85;
-          letter-spacing: 0.02em;
-        }
         .doc-cover .cover-eyebrow {
           font-family: 'Inter', sans-serif;
           text-transform: uppercase;
@@ -3500,8 +3492,7 @@ function DocumentContent({ doc, phase, session }) {
     <div className="doc-body">
       {/* ========== COVER ========== */}
       <div className="doc-cover">
-        <div className="cover-monogram">Ic</div>
-        <div style={{ marginTop: "3.5rem" }}>
+        <div>
           <div className="cover-eyebrow">Longitudinal Integrated Clerkship · Teaching Document</div>
           <h1 className="cover-title">Clinical Case Learning Document</h1>
         </div>
