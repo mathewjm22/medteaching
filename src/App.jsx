@@ -188,51 +188,63 @@ const [customTopics, setCustomTopics] = useState([]);
     s = s.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "");
     const m = s.match(/\{[\s\S]*\}/);
     if (m) s = m[0];
+
+    // Try parsing as-is first
     try {
       return JSON.parse(s);
     } catch (e) {
-      // Attempt to repair truncated JSON — walk the string tracking state
-      let repaired = s;
-
-      // Step 1: if we're inside an unterminated string, close it
-      // Count unescaped quotes to determine parity
-      let inString = false;
-      let escape = false;
-      let lastGoodIdx = 0;
-      for (let i = 0; i < repaired.length; i++) {
-        const ch = repaired[i];
-        if (escape) { escape = false; continue; }
-        if (ch === "\\") { escape = true; continue; }
-        if (ch === '"') {
-          inString = !inString;
-          if (!inString) lastGoodIdx = i;
-        } else if (!inString && (ch === "," || ch === "}" || ch === "]")) {
-          lastGoodIdx = i;
-        }
-      }
-      if (inString) {
-        // Truncated mid-string — cut back to the last safe boundary
-        repaired = repaired.slice(0, lastGoodIdx + 1);
-      }
-
-      // Step 2: trim trailing comma
-      repaired = repaired.replace(/,\s*$/, "");
-
-      // Step 3: balance brackets
-      const opens = (repaired.match(/\{/g) || []).length;
-      const closes = (repaired.match(/\}/g) || []).length;
-      const openBrackets = (repaired.match(/\[/g) || []).length;
-      const closeBrackets = (repaired.match(/\]/g) || []).length;
-      for (let i = 0; i < openBrackets - closeBrackets; i++) repaired += "]";
-      for (let i = 0; i < opens - closes; i++) repaired += "}";
+      // Attempt 1: normalize common AI-generated JSON pathologies
+      let normalized = s
+        // Smart quotes → straight (but only outside string values is hard; do all)
+        .replace(/[\u201C\u201D]/g, '"')
+        .replace(/[\u2018\u2019]/g, "'")
+        // Remove backslash-escaped quotes that shouldn't be escaped (\" inside outer strings)
+        // This is the common failure mode: AI writes {"B": \"Ask, 'Can'\"} — the outer JSON expects "B": "Ask, 'Can'"
+        // But we can't blindly unescape without breaking correctly-escaped strings.
+        // Best heuristic: if a \" is preceded by another " (start of value) or comma/colon, it's likely wrong.
+        .replace(/([:,]\s*)\\"/g, '$1"')  // \" at start of value → "
+        .replace(/\\"(\s*[,}\]])/g, '"$1'); // \" at end of value → "
 
       try {
-        console.warn("[extractJson] Repaired truncated JSON");
-        return JSON.parse(repaired);
+        console.warn("[extractJson] Normalized quotes; retrying");
+        return JSON.parse(normalized);
       } catch (e2) {
-        console.error("[extractJson] Raw response:", s.slice(0, 500));
-        console.error("[extractJson] Repair attempt:", repaired.slice(-300));
-        throw new Error(`JSON parse failed (response truncated): ${e.message}`);
+        // Attempt 2: walk-and-repair truncation
+        let repaired = normalized;
+        let inString = false;
+        let escape = false;
+        let lastGoodIdx = 0;
+        for (let i = 0; i < repaired.length; i++) {
+          const ch = repaired[i];
+          if (escape) { escape = false; continue; }
+          if (ch === "\\") { escape = true; continue; }
+          if (ch === '"') {
+            inString = !inString;
+            if (!inString) lastGoodIdx = i;
+          } else if (!inString && (ch === "," || ch === "}" || ch === "]")) {
+            lastGoodIdx = i;
+          }
+        }
+        if (inString) {
+          repaired = repaired.slice(0, lastGoodIdx + 1);
+        }
+        repaired = repaired.replace(/,\s*$/, "");
+        const opens = (repaired.match(/\{/g) || []).length;
+        const closes = (repaired.match(/\}/g) || []).length;
+        const openBrackets = (repaired.match(/\[/g) || []).length;
+        const closeBrackets = (repaired.match(/\]/g) || []).length;
+        for (let i = 0; i < openBrackets - closeBrackets; i++) repaired += "]";
+        for (let i = 0; i < opens - closes; i++) repaired += "}";
+
+        try {
+          console.warn("[extractJson] Repaired truncated JSON");
+          return JSON.parse(repaired);
+        } catch (e3) {
+          console.error("[extractJson] Raw response:", s.slice(0, 800));
+          console.error("[extractJson] Normalized:", normalized.slice(0, 800));
+          console.error("[extractJson] Repair attempt:", repaired.slice(-400));
+          throw new Error(`JSON parse failed (response truncated or malformed): ${e.message}`);
+        }
       }
     }
   };
@@ -536,6 +548,8 @@ Return ONLY valid JSON (no markdown fences):
       });
     });
 
+    
+    console.log("[synthesizeSources] BEFORE PDF PUSH: packages so far:", sourcePackages.map(p => p.label));
     // Add each PDF as its own source package
     filledPdfs.forEach(pdf => {
       const MAX_PDF_CHARS = 12000;
@@ -552,6 +566,7 @@ Return ONLY valid JSON (no markdown fences):
         detailLevel: wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief",
       });
     });
+    console.log("[synthesizeSources] AFTER PDF PUSH: packages:", sourcePackages.map(p => `${p.label} (${p.wordCount}w)`));
 
     if (filledPubmedTopics.length > 0) {
       // Roll up per-topic PubMed AI into one "source" but preserve topic labels inline
@@ -829,7 +844,8 @@ EXAMPLES OF GOOD vs. BAD VOICE AND CITATIONS:
 - BAD: "The patient should be counseled on adherence (per OpenEvidence)."
 - GOOD: "System-level barriers like a name mismatch on refill records — exactly what happened to our patient — are increasingly recognized as a driver of apparent 'non-adherence.' Asking 'have you been able to get your medications?' rather than 'are you taking them?' surfaces these barriers (VA/DoD Clinical Practice Guidelines 2022)."
 
-Return ONLY valid JSON (no markdown fences, no commentary):
+Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES: (1) Use straight quotes " and ' — NEVER smart/curly quotes. (2) When you need an apostrophe or quote inside a string value, use single quote ' — never backslash-escape (\\"). Example: "vignette": "The patient's mother says 'take a look'" — NOT "vignette": "The patient\\'s mother says \\"take a look\\"". (3) Never include line breaks inside string values.
+
 {
   "problem": "${problem}",
   "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for THIS patient"},
