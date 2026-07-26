@@ -49,6 +49,12 @@ const [customTopics, setCustomTopics] = useState([]);
   const [sources, setSources] = useState({
     openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false, other: false,
   });
+
+  const [pdfAttachments, setPdfAttachments] = useState([]);
+  const [imageAttachments, setImageAttachments] = useState([]);
+  const [processingPdf, setProcessingPdf] = useState(false);
+
+
   const [sourceResponses, setSourceResponses] = useState({
     openevidence: { html: "", images: [] },
     uptodate: { html: "", images: [] },
@@ -475,7 +481,8 @@ Return ONLY valid JSON (no markdown fences):
   const synthesizeSources = async () => {
     const filledNonPubmed = activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim());
     const filledPubmedTopics = Object.entries(sourceResponses.pubmedai || {}).filter(([_, v]) => v?.html?.trim());
-    const totalFilled = filledNonPubmed.length + (filledPubmedTopics.length > 0 ? 1 : 0);
+    const filledPdfs = pdfAttachments.filter(p => p.extractedText?.trim() && !p.error);
+    const totalFilled = filledNonPubmed.length + (filledPubmedTopics.length > 0 ? 1 : 0) + filledPdfs.length;
 
     if (totalFilled === 0) return null;
 
@@ -514,6 +521,24 @@ Return ONLY valid JSON (no markdown fences):
         detailLevel,
       });
     });
+
+    // Add each PDF as its own source package
+    filledPdfs.forEach(pdf => {
+      const MAX_PDF_CHARS = 12000;
+      const truncatedText = pdf.extractedText.length > MAX_PDF_CHARS
+        ? pdf.extractedText.slice(0, MAX_PDF_CHARS) + " [truncated]"
+        : pdf.extractedText;
+      const wordCount = truncatedText.split(/\s+/).length;
+      sourcePackages.push({
+        key: `pdf-${pdf.id}`,
+        label: `PDF: ${pdf.filename}`,
+        text: truncatedText,
+        figures: [], // PDF text extraction doesn't capture images
+        wordCount,
+        detailLevel: wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief",
+      });
+    });
+
     if (filledPubmedTopics.length > 0) {
       // Roll up per-topic PubMed AI into one "source" but preserve topic labels inline
       let combinedText = "";
@@ -722,13 +747,21 @@ Synthesize into structured claims with per-source attribution as specified. When
         return div.textContent.replace(/\s+/g, " ").trim();
       };
       const filledSources = activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim());
+      const filledPdfs = pdfAttachments.filter(p => p.extractedText?.trim() && !p.error);
+      const totalItems = filledSources.length + filledPdfs.length;
       const MAX_EVIDENCE_TOTAL = 8000;
-      const evidencePerSource = filledSources.length > 0 ? Math.floor(MAX_EVIDENCE_TOTAL / filledSources.length) : 0;
-      evidenceContext = filledSources.length > 0
-        ? "\n\nCurated evidence from clinician-selected sources (attribute inline like '(per OpenEvidence)'; do NOT invent facts beyond this evidence and the note):\n" + filledSources.map(s => {
-            const t = htmlToAiText(sourceResponses[s].html);
-            return `[${sourceLabels[s]}]: ${t.length > evidencePerSource ? t.slice(0, evidencePerSource) + "[truncated]" : t}`;
-          }).join("\n\n")
+      const evidencePerItem = totalItems > 0 ? Math.floor(MAX_EVIDENCE_TOTAL / totalItems) : 0;
+      const parts = [];
+      filledSources.forEach(s => {
+        const t = htmlToAiText(sourceResponses[s].html);
+        parts.push(`[${sourceLabels[s]}]: ${t.length > evidencePerItem ? t.slice(0, evidencePerItem) + "[truncated]" : t}`);
+      });
+      filledPdfs.forEach(pdf => {
+        const t = pdf.extractedText;
+        parts.push(`[PDF: ${pdf.filename}]: ${t.length > evidencePerItem ? t.slice(0, evidencePerItem) + "[truncated]" : t}`);
+      });
+      evidenceContext = parts.length > 0
+        ? "\n\nCurated evidence from clinician-selected sources (do NOT invent facts beyond this evidence and the note):\n" + parts.join("\n\n")
         : "";
     }
 
@@ -915,7 +948,8 @@ I want to focus today's teaching on: ${focusText}.
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
       // Call 1 (NEW ORDER): Synthesize sources first, so teaching cases can reference structured claims
-      if (filledSources.length >= 1) {
+      const hasPdfs = pdfAttachments.some(p => p.extractedText?.trim() && !p.error);
+      if (filledSources.length >= 1 || hasPdfs) {
         setAiStatus({ analyzing: false, generating: true, error: null, progress: "Synthesizing evidence from all sources" });
         try {
           synthesized = await synthesizeSources();
@@ -943,7 +977,8 @@ I want to focus today's teaching on: ${focusText}.
       }
     } else {
       // AI disabled or no focus areas selected — still handle sources
-      if (filledSources.length >= 1) {
+      const hasPdfs = pdfAttachments.some(p => p.extractedText?.trim() && !p.error);
+      if (filledSources.length >= 1 || hasPdfs) {
         try {
           synthesized = await synthesizeSources();
         } catch (e) {
@@ -975,6 +1010,7 @@ I want to focus today's teaching on: ${focusText}.
       longTermGoals,
       noteAnalysis,
       allSourceImages,
+      imageAttachments,
       sections: {
         caseAtGlance: { enabled: true, editable: false },
         sessionGoal: { enabled: !!sessionGoal, content: sessionGoal },
@@ -1058,6 +1094,81 @@ I want to focus today's teaching on: ${focusText}.
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) { console.error(e); }
+  };
+
+  const addPdfAttachments = async (files) => {
+    if (!files || files.length === 0) return;
+    setProcessingPdf(true);
+    const results = [];
+    for (const file of files) {
+      if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) continue;
+      try {
+        const { text, pageCount, extractedPageCount } = await extractPdfText(file);
+        results.push({
+          id: `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          filename: file.name,
+          extractedText: text,
+          pageCount,
+          extractedPageCount,
+          isScannedLikely: text.length < 200 && pageCount > 0, // very little text → probably scanned
+          addedAt: new Date().toLocaleString(),
+        });
+      } catch (e) {
+        console.error(`PDF extraction failed for ${file.name}:`, e);
+        results.push({
+          id: `pdf-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+          filename: file.name,
+          extractedText: "",
+          pageCount: 0,
+          extractedPageCount: 0,
+          error: e.message,
+          addedAt: new Date().toLocaleString(),
+        });
+      }
+    }
+    setPdfAttachments(prev => [...prev, ...results]);
+    setProcessingPdf(false);
+  };
+
+  const removePdfAttachment = (id) => {
+    setPdfAttachments(prev => prev.filter(p => p.id !== id));
+  };
+
+  const addImageAttachments = async (files) => {
+    if (!files || files.length === 0) return;
+    let addedBytes = 0;
+    const results = [];
+    for (const file of files) {
+      if (!file.type.startsWith("image/")) continue;
+      try {
+        const dataUrl = await blobToDataUrl(file);
+        const result = await processImageSrc(dataUrl, sessionImageBytes + addedBytes);
+        if (result.dataUrl) {
+          results.push({
+            id: `imgatt-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+            dataUrl: result.dataUrl,
+            filename: file.name,
+            caption: "",
+            addedAt: new Date().toLocaleString(),
+          });
+          addedBytes += result.bytes;
+        } else {
+          console.warn(`Image ${file.name} rejected: ${result.warning}`);
+        }
+      } catch (e) {
+        console.error(`Image processing failed for ${file.name}:`, e);
+      }
+    }
+    if (addedBytes > 0) setSessionImageBytes(b => b + addedBytes);
+    setImageAttachments(prev => [...prev, ...results]);
+  };
+
+  const removeImageAttachment = (id) => {
+    setImageAttachments(prev => prev.filter(i => i.id !== id));
+  };
+
+  const updateImageCaption = (id, caption) => {
+    setImageAttachments(prev => prev.map(i => i.id === id ? {...i, caption} : i));
   };
 
   const addGoal = () => {
@@ -2005,7 +2116,122 @@ I want to focus today's teaching on: ${focusText}.
                 ))}
               </div>
             </div>
+{/* ATTACHMENTS PANEL — PDFs and images */}
+            <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
+              <div>
+                <h2 className="text-lg font-semibold text-slate-900 mb-1">Attachments</h2>
+                <p className="text-sm text-slate-500">Add PDFs of articles or book chapters (their text will be extracted and fed to the AI), and reference images that will appear at the end of the final document.</p>
+              </div>
 
+              {/* PDFs */}
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-slate-700">PDF articles & chapters</label>
+                  <label className="cursor-pointer inline-flex items-center gap-1 text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition">
+                    <Plus className="w-3 h-3" />Add PDF(s)
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      multiple
+                      onChange={e => { addPdfAttachments(Array.from(e.target.files || [])); e.target.value = ""; }}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                <p className="text-xs text-slate-500 mb-2">Text-based PDFs work best. Scanned PDFs (image-only) may extract poorly — the system will warn you.</p>
+
+                {processingPdf && (
+                  <div className="text-xs text-indigo-600 flex items-center gap-1 mb-2">
+                    <Loader2 className="w-3 h-3 animate-spin" />Extracting PDF text...
+                  </div>
+                )}
+
+                {pdfAttachments.length === 0 ? (
+                  <div className="text-center py-6 text-sm text-slate-500 bg-slate-50 rounded border-2 border-dashed border-slate-200">
+                    No PDFs attached yet.
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {pdfAttachments.map(pdf => (
+                      <div key={pdf.id} className="flex items-start gap-3 p-3 bg-slate-50 rounded border border-slate-200">
+                        <FileText className="w-5 h-5 text-slate-500 flex-shrink-0 mt-0.5" />
+                        <div className="flex-1 min-w-0">
+                          <div className="text-sm font-medium text-slate-900 truncate">{pdf.filename}</div>
+                          <div className="text-xs text-slate-500 mt-0.5">
+                            {pdf.error ? (
+                              <span className="text-red-600">Extraction failed: {pdf.error}</span>
+                            ) : (
+                              <>
+                                {pdf.pageCount} pages · {Math.round(pdf.extractedText.length / 1000)}k chars extracted
+                                {pdf.isScannedLikely && (
+                                  <span className="ml-2 text-amber-700 font-medium">⚠ Scanned PDF suspected — little text extracted</span>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => removePdfAttachment(pdf.id)}
+                          className="text-slate-400 hover:text-red-600 p-1 flex-shrink-0"
+                          title="Remove"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Images */}
+              <div className="pt-4 border-t border-slate-200">
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-sm font-medium text-slate-700">Reference images</label>
+                  <label className="cursor-pointer inline-flex items-center gap-1 text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition">
+                    <Plus className="w-3 h-3" />Add image(s)
+                    <input
+                      type="file"
+                      accept="image/*"
+                      multiple
+                      onChange={e => { addImageAttachments(Array.from(e.target.files || [])); e.target.value = ""; }}
+                      className="hidden"
+                    />
+                  </label>
+                </div>
+                <p className="text-xs text-slate-500 mb-2">Images appear at the end of the final document as reference figures. Not fed to the AI.</p>
+
+                {imageAttachments.length === 0 ? (
+                  <div className="text-center py-6 text-sm text-slate-500 bg-slate-50 rounded border-2 border-dashed border-slate-200">
+                    No images attached yet.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {imageAttachments.map(img => (
+                      <div key={img.id} className="p-2 bg-slate-50 rounded border border-slate-200">
+                        <div className="relative">
+                          <img src={img.dataUrl} alt={img.caption || img.filename} className="w-full h-32 object-contain bg-white rounded" />
+                          <button
+                            onClick={() => removeImageAttachment(img.id)}
+                            className="absolute top-1 right-1 bg-white/95 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-full w-6 h-6 flex items-center justify-center shadow"
+                            title="Remove"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1 truncate">{img.filename}</div>
+                        <input
+                          type="text"
+                          value={img.caption}
+                          onChange={e => updateImageCaption(img.id, e.target.value)}
+                          placeholder="Add a caption (optional)..."
+                          className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-xs"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
             <div className="flex gap-2">
               <button onClick={() => setActiveTab("focus")} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back</button>
               <button onClick={() => setActiveTab("goals")} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium">Continue →</button>
@@ -2180,6 +2406,48 @@ const processImageSrc = async (src, currentTotalBytes) => {
     return { dataUrl: null, bytes: 0, warning: `Session image limit reached (${Math.round(IMG_SESSION_TOTAL_BYTES / 1024 / 1024)}MB total)` };
   }
   return { dataUrl, bytes, warning: null };
+};
+
+// ============ PDF UTILITIES ============
+// Lazy-load PDF.js only when needed
+let pdfJsPromise = null;
+const loadPdfJs = () => {
+  if (pdfJsPromise) return pdfJsPromise;
+  pdfJsPromise = new Promise((resolve, reject) => {
+    if (window.pdfjsLib) return resolve(window.pdfjsLib);
+    const script = document.createElement("script");
+    script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+    script.onload = () => {
+      if (window.pdfjsLib) {
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+        resolve(window.pdfjsLib);
+      } else {
+        reject(new Error("PDF.js failed to load"));
+      }
+    };
+    script.onerror = () => reject(new Error("PDF.js CDN unreachable"));
+    document.head.appendChild(script);
+  });
+  return pdfJsPromise;
+};
+
+const extractPdfText = async (file) => {
+  const pdfjs = await loadPdfJs();
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjs.getDocument({ data: arrayBuffer }).promise;
+  const pageTexts = [];
+  for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+    const page = await pdf.getPage(pageNum);
+    const content = await page.getTextContent();
+    const pageText = content.items.map(item => item.str).join(" ").replace(/\s+/g, " ").trim();
+    if (pageText) pageTexts.push(pageText);
+  }
+  return {
+    text: pageTexts.join("\n\n"),
+    pageCount: pdf.numPages,
+    extractedPageCount: pageTexts.length,
+  };
 };
 
 // ============ RICH PASTE COMPONENT ============
@@ -3149,6 +3417,25 @@ function DocumentContent({ doc, phase, session }) {
               </section>
             )}
           </div>
+        )}
+{/* Reference Figures (user-attached images) */}
+        {doc.imageAttachments && doc.imageAttachments.length > 0 && (
+          <section style={{ marginTop: "2.5rem" }} className="keep-together">
+            <h2 className="doc-h2">Reference Figures</h2>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
+              {doc.imageAttachments.map((img, i) => (
+                <figure key={img.id || i} className="keep-together" style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white", padding: "0.5rem" }}>
+                  <img src={img.dataUrl} alt={img.caption || img.filename || `Figure ${i+1}`} style={{ width: "100%", height: "auto", maxHeight: "400px", objectFit: "contain", display: "block" }} />
+                  <figcaption style={{ fontSize: "0.78rem", color: "var(--doc-warm-gray)", marginTop: "0.5rem", padding: "0 0.25rem" }}>
+                    <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.12em", fontSize: "0.65rem", color: "var(--doc-navy)", marginRight: "0.4rem" }}>
+                      Figure {i + 1}
+                    </span>
+                    {img.caption || img.filename || ""}
+                  </figcaption>
+                </figure>
+              ))}
+            </div>
+          </section>
         )}
 
         {/* Footer */}
