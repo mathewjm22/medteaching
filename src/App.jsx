@@ -482,6 +482,20 @@ Return ONLY valid JSON (no markdown fences):
     const filledNonPubmed = activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim());
     const filledPubmedTopics = Object.entries(sourceResponses.pubmedai || {}).filter(([_, v]) => v?.html?.trim());
     const filledPdfs = pdfAttachments.filter(p => p.extractedText?.trim() && !p.error);
+
+    console.log("[synthesizeSources] INPUT CHECK:", {
+      totalPdfsInState: pdfAttachments.length,
+      pdfSummary: pdfAttachments.map(p => ({
+        filename: p.filename,
+        hasText: !!p.extractedText,
+        textLength: p.extractedText?.length || 0,
+        hasError: !!p.error,
+        errorMsg: p.error || null,
+      })),
+      filledPdfsCount: filledPdfs.length,
+      filledNonPubmedCount: filledNonPubmed.length,
+    });
+
     const totalFilled = filledNonPubmed.length + (filledPubmedTopics.length > 0 ? 1 : 0) + filledPdfs.length;
 
     if (totalFilled === 0) return null;
@@ -644,6 +658,10 @@ ${aiSourceBlock}
 
 Synthesize into structured claims with per-source attribution as specified. When a figure ID like [FIGURE:fig-xyz] appears in source content, you may reference it in figureRefs of a related claim. Do NOT invent figures that weren't listed.`;
 
+    console.log("[synthesizeSources] SENDING TO AI:", {
+      sourcePackageCount: sourcePackages.length,
+      packageLabels: sourcePackages.map(p => `${p.label} (${p.wordCount} words)`),
+    });
     const response = await callAi(sys, user, 6000);
     const parsed = extractJson(response);
     console.log("[synthesizeSources] topics:", parsed.topics?.length, "first claim sample:", JSON.stringify(parsed.topics?.[0]?.claims?.[0], null, 2));
@@ -847,7 +865,7 @@ Write your teaching case as if you and the student just walked out of this patie
       try {
         const response = await callAi(sys, user, 8000);
         const parsed = extractJson(response);
-        console.log(`[teachingCase] "${problem}" cites:`, parsed.keyLearningPoints?.map(lp => lp.citedSources).filter(Boolean));
+        console.log(`[teachingCase] "${problem}" citations:`, parsed.keyLearningPoints?.map(lp => lp.citation).filter(Boolean));
         // Always inject the known problem name — never trust the AI to echo it correctly
         parsed.problem = problem;
         teachingCases.push(parsed);
