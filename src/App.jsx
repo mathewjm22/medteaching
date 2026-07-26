@@ -47,13 +47,14 @@ const [customTopics, setCustomTopics] = useState([]);
   const [newCustomTopic, setNewCustomTopic] = useState("");
   // Sources
   const [sources, setSources] = useState({
-    openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false,
+    openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false, other: false,
   });
   const [sourceResponses, setSourceResponses] = useState({
     openevidence: { html: "", images: [] },
     uptodate: { html: "", images: [] },
     dynamed: { html: "", images: [] },
     doxgpt: { html: "", images: [] },
+    other: { html: "", images: [] },
     // pubmedai stores an object keyed by diagnosis: {"Diagnosis 1": {html, images}, ...}
     pubmedai: {},
   });
@@ -117,13 +118,21 @@ const [customTopics, setCustomTopics] = useState([]);
 
   const focusIcons = { history: Stethoscope, physicalExam: Users, differential: Brain, workup: ClipboardList, management: Target, patientContext: Users, ebm: BookOpen, communication: Users };
   const focusLabels = { history: "History Taking", physicalExam: "Physical Exam", differential: "Differential Diagnosis", workup: "Diagnostic Workup", management: "Management Plan", patientContext: "Patient Context / SDoH", ebm: "Evidence-Based Medicine", communication: "Communication" };
-  const sourceLabels = { openevidence: "OpenEvidence", uptodate: "UpToDate", dynamed: "DynaMed", doxgpt: "DoxGPT (Doximity GPT)", pubmedai: "PubMed AI" };
+  const sourceLabels = {
+    openevidence: "OpenEvidence",
+    uptodate: "UpToDate",
+    dynamed: "DynaMed",
+    doxgpt: "DoxGPT (Doximity GPT)",
+    pubmedai: "PubMed AI",
+    other: "Other Source",
+  };
   const sourceUrls = {
     openevidence: "https://www.openevidence.com/",
     uptodate: "https://www.uptodate.com/contents/search",
     dynamed: "https://www.dynamed.com/",
     doxgpt: "https://www.doximity.com/gpt",
     pubmedai: "https://www.pubmed.ai/home",
+    other: null,
   };
 
   const activeSources = Object.keys(sources).filter(k => sources[k]);
@@ -882,8 +891,11 @@ I want to focus today's teaching on: ${focusText}.
         return base + `Give DynaMed-style summary:\n1. Level of Evidence for each recommendation\n2. NNT/NNH where applicable\n3. Practice-changing updates in last 2 years\n4. Cost-conscious alternatives\n5. Choosing Wisely recommendations relevant to this case`;
       case "doxgpt":
         return base + `Peer-consult response as an experienced clinician colleague:\n1. Practical real-world guidance\n2. Pearls and pitfalls from experience\n3. How to explain to the patient\n4. Common trainee errors\n5. What you'd worry about missing`;
+      case "other":
       default:
-        return base;
+        // "Other" and unknown sources reuse the OpenEvidence-style prompt
+        return base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
+    }
     }
   };
 
@@ -1911,9 +1923,11 @@ I want to focus today's teaching on: ${focusText}.
                           sourceResponses[src]?.html?.trim() && <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full">Response added</span>
                         )}
                       </button>
-                      <a href={sourceUrls[src]} target="_blank" rel="noreferrer" className="ml-2 text-xs px-2 py-1 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1" onClick={e => e.stopPropagation()}>
-                        Open {sourceLabels[src].split(" ")[0]} ↗
-                      </a>
+                      {sourceUrls[src] && (
+                        <a href={sourceUrls[src]} target="_blank" rel="noreferrer" className="ml-2 text-xs px-2 py-1 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1" onClick={e => e.stopPropagation()}>
+                          Open {sourceLabels[src].split(" ")[0]} ↗
+                        </a>
+                      )}
                     </div>
                     {expandedSections[src] && src === "pubmedai" && (
                       <div className="p-4 space-y-4 bg-white">
@@ -1968,6 +1982,11 @@ I want to focus today's teaching on: ${focusText}.
                               {copiedPrompt === src ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy</>}
                             </button>
                           </div>
+                          {src === "other" && (
+                            <div className="mb-2 text-xs text-slate-600 bg-blue-50 border border-blue-200 rounded p-2">
+                              Use this for any AI tool not listed above (Perplexity, ChatGPT, Claude, Gemini, etc.) or for any other evidence source. Copy the prompt below and paste it into your tool of choice, then paste the response back.
+                            </div>
+                          )}
                           <div className="p-3 bg-slate-50 rounded border border-slate-200 text-xs font-mono text-slate-700 whitespace-pre-wrap max-h-60 overflow-y-auto">{generateSourcePrompt(src)}</div>
                         </div>
                         <div>
