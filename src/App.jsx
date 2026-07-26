@@ -4,7 +4,42 @@ import { FileText, Printer, Copy, Check, Plus, X, BookOpen, Target, Stethoscope,
 // ===== Hardcoded config =====
 const WORKER_URL = "https://medteachingtool.sweet-dream-0ed6.workers.dev/";
 const DEFAULT_MODEL = "gpt-oss-120b";
-
+// ===== Storage adapter =====
+// Wraps localStorage in an async API matching the shape we use throughout.
+// Falls back to no-op if storage is unavailable (private browsing, disabled, etc.)
+const storage = {
+  async get(key) {
+    try {
+      const value = localStorage.getItem(key);
+      return value !== null ? { value } : null;
+    } catch { return null; }
+  },
+  async set(key, value) {
+    try {
+      localStorage.setItem(key, value);
+      return { value };
+    } catch (e) {
+      // Quota exceeded, private browsing, etc.
+      throw e;
+    }
+  },
+  async delete(key) {
+    try {
+      localStorage.removeItem(key);
+      return { deleted: true };
+    } catch { return null; }
+  },
+  async list(prefix = "") {
+    try {
+      const keys = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith(prefix)) keys.push(k);
+      }
+      return { keys };
+    } catch { return { keys: [] }; }
+  },
+};
 export default function App() {
   const [activeTab, setActiveTab] = useState("setup");
   const [saved, setSaved] = useState(false);
@@ -104,7 +139,7 @@ const [customTopics, setCustomTopics] = useState([]);
     saveTimers.current[key] = setTimeout(async () => {
       pendingWrites.current.add(key);
       try {
-        await window.storage.set(key, JSON.stringify(value));
+        await storage.set(key, JSON.stringify(value));
         pendingWrites.current.delete(key);
         // Only flip to "saved" when ALL pending writes have completed
         if (pendingWrites.current.size === 0) {
@@ -147,7 +182,7 @@ const [customTopics, setCustomTopics] = useState([]);
     (async () => {
       const safeGet = async (key) => {
         try {
-          const r = await window.storage.get(key);
+          const r = await storage.get(key);
           return r?.value ? JSON.parse(r.value) : null;
         } catch { return null; }
       };
@@ -245,12 +280,12 @@ const [customTopics, setCustomTopics] = useState([]);
   const discardRestoredSession = async () => {
     if (!confirm("Discard all restored work and start fresh? This will clear the current clinical note, sources, attachments, and any generated content.")) return;
     try {
-      await window.storage.delete("inProgress");
-      await window.storage.delete("inProgress_sourceResponses");
-      await window.storage.delete("inProgress_pdfs");
-      await window.storage.delete("inProgress_images");
-      await window.storage.delete("inProgress_imageBytes");
-      await window.storage.delete("inProgress_generated");
+      await storage.delete("inProgress");
+      await storage.delete("inProgress_sourceResponses");
+      await storage.delete("inProgress_pdfs");
+      await storage.delete("inProgress_images");
+      await storage.delete("inProgress_imageBytes");
+      await storage.delete("inProgress_generated");
     } catch {}
     // Reset all in-progress state
     setClinicalNote(""); setChiefConcern(""); setWorkingDx("");
@@ -1329,8 +1364,8 @@ I want to focus today's teaching on: ${focusText}.
 
   const saveState = async () => {
     try {
-      await window.storage.set("session", JSON.stringify(session));
-      await window.storage.set("longTermGoals", JSON.stringify(longTermGoals));
+      await storage.set("session", JSON.stringify(session));
+      await storage.set("longTermGoals", JSON.stringify(longTermGoals));
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
     } catch (e) { console.error(e); }
@@ -1506,12 +1541,12 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
     if (!newGoal.trim()) return;
     const updated = [...longTermGoals, { id: Date.now(), text: newGoal, added: new Date().toLocaleDateString(), status: "active" }];
     setLongTermGoals(updated); setNewGoal("");
-    window.storage.set("longTermGoals", JSON.stringify(updated)).catch(() => {});
+    storage.set("longTermGoals", JSON.stringify(updated)).catch(() => {});
   };
   const removeGoal = (id) => {
     const updated = longTermGoals.filter(g => g.id !== id);
     setLongTermGoals(updated);
-    window.storage.set("longTermGoals", JSON.stringify(updated)).catch(() => {});
+    storage.set("longTermGoals", JSON.stringify(updated)).catch(() => {});
   };
   const copyPrompt = (source) => {
     navigator.clipboard.writeText(generateSourcePrompt(source)).then(() => {
