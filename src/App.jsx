@@ -2220,7 +2220,18 @@ I want to focus today's teaching on: ${focusText}.
               </div>
 
               {/* Images */}
-              <div className="pt-4 border-t border-slate-200">
+              <div
+                className="pt-4 border-t border-slate-200"
+                tabIndex={0}
+                onPaste={e => {
+                  const files = Array.from(e.clipboardData?.files || []).filter(f => f.type.startsWith("image/"));
+                  if (files.length > 0) {
+                    e.preventDefault();
+                    addImageAttachments(files);
+                  }
+                }}
+                style={{ outline: "none" }}
+              >
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm font-medium text-slate-700">Reference images</label>
                   <label className="cursor-pointer inline-flex items-center gap-1 text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition">
@@ -2234,11 +2245,16 @@ I want to focus today's teaching on: ${focusText}.
                     />
                   </label>
                 </div>
-                <p className="text-xs text-slate-500 mb-2">Images appear at the end of the final document as reference figures. Not fed to the AI.</p>
+                <p className="text-xs text-slate-500 mb-2">Images appear at the end of the final document as reference figures. Not fed to the AI. <span className="text-slate-400">Tip: click into the drop zone below and paste (Ctrl/Cmd+V) to add from clipboard.</span></p>
 
                 {imageAttachments.length === 0 ? (
-                  <div className="text-center py-6 text-sm text-slate-500 bg-slate-50 rounded border-2 border-dashed border-slate-200">
-                    No images attached yet.
+                  <div
+                    className="text-center py-6 text-sm text-slate-500 bg-slate-50 rounded border-2 border-dashed border-slate-200 focus:border-indigo-400 focus:bg-indigo-50 transition cursor-text"
+                    tabIndex={0}
+                    onFocus={e => { e.target.textContent = "Ready — paste image now (Ctrl/Cmd+V)"; }}
+                    onBlur={e => { e.target.textContent = "No images attached yet. Click here and paste to add from clipboard."; }}
+                  >
+                    No images attached yet. Click here and paste to add from clipboard.
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
