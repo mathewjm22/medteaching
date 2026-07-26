@@ -624,7 +624,7 @@ CRITICAL: The tool names below (OpenEvidence, UpToDate, DynaMed, DoxGPT, PubMed 
 
 WHAT GOES WHERE:
 - \`citations\`: an array of REAL clinical references (e.g. ["ATA 2014", "SPRINT trial", "USPSTF Grade B", "ACOG PB 128", "Cochrane 2021"]). Every claim needs at least one citation here. If the source content doesn't name a specific reference, use your medical training to identify the canonical reference (e.g., "hypothyroidism and menorrhagia link" → "ATA 2014" or "ACOG PB 128"). NEVER put "OpenEvidence" here.
-- \`provenance\`: the AI tool names — internal only, used for transparency but hidden from student by default. This is where "OpenEvidence", "DoxGPT" etc. go.
+- \`provenance\`: the ORIGINAL SOURCE LABELS from the "=== SOURCE:" headers below (e.g. "OpenEvidence", "PDF: NEJMcpc2517866.pdf", "DoxGPT"). Use these EXACT labels verbatim — do NOT abbreviate, generalize, or drop labels. If a claim draws content from BOTH OpenEvidence and a PDF, include BOTH labels in the array. This is used for provenance tracking so we can see which of our sources contributed to each claim.
 - \`perSourceDetail\`: what each AI tool specifically said, for the "provenance" expandable view.
 - \`statement\`: written in attending voice with the real citation inline in parentheses.
 
@@ -671,7 +671,9 @@ Source content to integrate (each source clearly labeled with detail level and w
 
 ${aiSourceBlock}
 
-Synthesize into structured claims with per-source attribution as specified. When a figure ID like [FIGURE:fig-xyz] appears in source content, you may reference it in figureRefs of a related claim. Do NOT invent figures that weren't listed.`;
+Synthesize into structured claims with per-source attribution as specified. When a figure ID like [FIGURE:fig-xyz] appears in source content, you may reference it in figureRefs of a related claim. Do NOT invent figures that weren't listed.
+
+CRITICAL: For every claim, the "provenance" array must accurately list which of the ${sourcePackages.length} sources above actually contributed to that claim. If two sources both discuss a topic, list both. If only one source discusses a topic (e.g., only the PDF has the case-specific dosing detail), list only that one. Do NOT lazily attribute every claim to just the first source.`;
 
     console.log("[synthesizeSources] SENDING TO AI:", {
       sourcePackageCount: sourcePackages.length,
