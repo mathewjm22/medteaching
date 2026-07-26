@@ -551,11 +551,16 @@ Return ONLY valid JSON (no markdown fences):
     
     console.log("[synthesizeSources] BEFORE PDF PUSH: packages so far:", sourcePackages.map(p => p.label));
     // Add each PDF as its own source package
+    // Add each PDF as its own source package
     filledPdfs.forEach(pdf => {
       const MAX_PDF_CHARS = 12000;
-      const truncatedText = pdf.extractedText.length > MAX_PDF_CHARS
-        ? pdf.extractedText.slice(0, MAX_PDF_CHARS) + " [truncated]"
-        : pdf.extractedText;
+      // TEMPORARY DIAGNOSTIC: inject a marker phrase at the top of every PDF
+      // to prove the AI actually reads PDF content. Remove after verification.
+      const marker = `IMPORTANT MARKER FROM THIS PDF: The unique diagnostic phrase is "PROVENANCE-VERIFY-XQ742". Any claim mentioning this exact phrase confirms the PDF was read.\n\n`;
+      const rawText = marker + pdf.extractedText;
+      const truncatedText = rawText.length > MAX_PDF_CHARS
+        ? rawText.slice(0, MAX_PDF_CHARS) + " [truncated]"
+        : rawText;
       const wordCount = truncatedText.split(/\s+/).length;
       sourcePackages.push({
         key: `pdf-${pdf.id}`,
@@ -3543,7 +3548,52 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
           {showProvenance ? "Hide" : "Show"} AI-tool provenance
         </button>
       </div>
-
+{content.sourceContribution?.length > 0 && (
+        <div style={{ marginBottom: "1.25rem", padding: "0.75rem 1rem", background: "var(--doc-paper)", border: "1px solid var(--doc-hairline)", borderRadius: "2px" }}>
+          <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Sources Contributing to This Synthesis</div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
+            {content.sourceContribution.map((sc, i) => {
+              // Count how many claims cite this source
+              const citingClaims = (content.topics || []).reduce((acc, topic) => {
+                return acc + (topic.claims || []).filter(c =>
+                  (c.provenance || c.sources || []).some(p => p === sc.source)
+                ).length;
+              }, 0);
+              const totalClaims = (content.topics || []).reduce((acc, topic) => acc + (topic.claims?.length || 0), 0);
+              const pct = totalClaims > 0 ? Math.round((citingClaims / totalClaims) * 100) : 0;
+              const isPdf = sc.source.startsWith("PDF:");
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.75rem", fontSize: "0.82rem" }}>
+                  <div style={{ minWidth: "180px", fontWeight: 500, color: isPdf ? "var(--doc-terracotta)" : "var(--doc-navy)" }}>
+                    {isPdf && <span style={{ marginRight: "0.3rem" }}>📄</span>}
+                    {sc.source}
+                  </div>
+                  <div style={{ flex: 1, height: "6px", background: "#e5e0d5", borderRadius: "3px", overflow: "hidden" }}>
+                    <div style={{
+                      height: "100%",
+                      width: `${pct}%`,
+                      background: isPdf ? "var(--doc-terracotta)" : "var(--doc-navy-mid)",
+                      transition: "width 0.3s",
+                    }}></div>
+                  </div>
+                  <div style={{ fontSize: "0.72rem", color: "var(--doc-warm-gray)", minWidth: "140px", textAlign: "right" }}>
+                    {citingClaims} of {totalClaims} claims · {sc.wordCount.toLocaleString()} words
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {content.sourceContribution.some(sc => sc.source.startsWith("PDF:")) &&
+           content.sourceContribution.filter(sc => sc.source.startsWith("PDF:")).every(sc => {
+             const citing = (content.topics || []).reduce((acc, topic) => acc + (topic.claims || []).filter(c => (c.provenance || c.sources || []).includes(sc.source)).length, 0);
+             return citing === 0;
+           }) && (
+            <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "rgba(184, 92, 46, 0.08)", borderLeft: "2px solid var(--doc-terracotta)", fontSize: "0.75rem", color: "var(--doc-terracotta)" }}>
+              ⚠ PDF content was provided but the AI did not attribute any claims to it. The content may have overlapped with other sources, or the AI may not have found unique claims to draw from it.
+            </div>
+          )}
+        </div>
+      )}
       <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
         {orderedTopics.map((topic, ti) => (
           <div key={ti} className="keep-together">
