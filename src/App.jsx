@@ -1648,6 +1648,15 @@ NEVER fabricate authors, years, or journals you cannot see in the text. If the h
           section:first-child { margin-top: 0; }
           .doc-cover { page-break-after: always; break-after: always; }
         }
+          /* Preview editor: stack vertically on narrow screens */
+        @media (max-width: 1200px) {
+          .preview-split-grid {
+            grid-template-columns: minmax(0, 1fr) !important;
+          }
+          .preview-split-grid > div:last-child .sticky {
+            position: static !important;
+          }
+        }
         @page { margin: 0.55in; }
         @page :first { margin: 0; }
       `}</style>
@@ -2420,6 +2429,8 @@ NEVER fabricate authors, years, or journals you cannot see in the text. If the h
                 fetchingPubmed={fetchingPubmed}
                 aiStatus={aiStatus}
                 focusLabels={focusLabels}
+                phase={phase}
+                session={session}
               />
             ) : (
               // ============ FINAL DOCUMENT ============
@@ -2821,7 +2832,7 @@ function Editable({ value, onSave, multiline = false, className = "", as: Tag = 
 }
 
 // ============ PREVIEW EDITOR COMPONENT ============
-function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, aiStatus, focusLabels }) {
+function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, aiStatus, focusLabels, phase, session }) {
   const s = previewData.sections;
 
   const SectionHeader = ({ label, enabled, onToggle, count }) => (
@@ -2839,12 +2850,13 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
   );
 
   return (
-    <div className="space-y-4">
-      <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
+    <div>
+      {/* Top action bar */}
+      <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4">
         <div className="flex items-start justify-between flex-wrap gap-2">
           <div>
             <h2 className="text-lg font-bold text-slate-900">Preview & Edit</h2>
-            <p className="text-sm text-slate-700 mt-1">Toggle sections on/off, edit content, then generate the final document.</p>
+            <p className="text-sm text-slate-700 mt-1">Configure sections on the left, see the live document on the right. When you're happy, generate the final version.</p>
           </div>
           <div className="flex gap-2">
             <button onClick={onBack} className="px-3 py-2 text-slate-600 hover:bg-white rounded-lg text-sm">← Back to Goals</button>
@@ -2858,116 +2870,142 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
         </div>
       </div>
 
-      {/* Session Goal */}
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        <SectionHeader label="Session Goal" enabled={s.sessionGoal.enabled} onToggle={() => togglePreviewSection("sessionGoal")} />
-        {s.sessionGoal.enabled && (
-          <div className="p-3">
-            <input type="text" value={s.sessionGoal.content} onChange={e => updatePreviewField("sections.sessionGoal.content", e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded text-sm" />
-          </div>
-        )}
-      </div>
+      {/* Split layout: controls left, live preview right */}
+      <div className="grid gap-4 preview-split-grid" style={{ gridTemplateColumns: "minmax(0, 380px) minmax(0, 1fr)" }}>
+        {/* LEFT: controls */}
+        <div className="space-y-3" style={{ maxHeight: "calc(100vh - 200px)", overflowY: "auto", paddingRight: "0.5rem" }}>
+          <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider mb-1">Sections</div>
 
-      {/* Teaching Cases - individually toggleable */}
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        {s.teachingCases.length === 0 ? (
-          <div className="bg-slate-100 px-4 py-3 flex items-center justify-between">
-            <div className="font-semibold text-sm text-slate-500">Teaching Cases</div>
-            <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">No AI content — check errors above or re-run</span>
+          {/* Session Goal */}
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            <SectionHeader label="Session Goal" enabled={s.sessionGoal.enabled} onToggle={() => togglePreviewSection("sessionGoal")} />
+            {s.sessionGoal.enabled && (
+              <div className="p-3">
+                <input type="text" value={s.sessionGoal.content} onChange={e => updatePreviewField("sections.sessionGoal.content", e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded text-sm" />
+              </div>
+            )}
           </div>
-        ) : (
-          <>
-          <div className="bg-slate-800 text-white px-4 py-2">
-            <div className="font-semibold text-sm">Teaching Cases ({s.teachingCases.filter(tc => tc.enabled).length} of {s.teachingCases.length} enabled)</div>
-          </div>
-          {s.teachingCases.map((tc, idx) => (
-            <div key={idx} className="border-t border-slate-200">
-              <SectionHeader label={`Case ${idx+1}: ${tc.data.problem}`} enabled={tc.enabled} onToggle={() => toggleTeachingCase(idx)} />
-              {tc.enabled && (
-                <div className="p-4 space-y-3 bg-slate-50">
-                  {tc.data.primaryDiagnosis?.name && (
-                    <div>
-                      <label className="text-xs font-semibold text-slate-600 uppercase">Primary Diagnosis</label>
-                      <input type="text" value={tc.data.primaryDiagnosis.name} onChange={e => updateTeachingCaseField(idx, "primaryDiagnosis", {...tc.data.primaryDiagnosis, name: e.target.value})} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" />
-                      <textarea value={tc.data.primaryDiagnosis.briefDefinition || ""} onChange={e => updateTeachingCaseField(idx, "primaryDiagnosis", {...tc.data.primaryDiagnosis, briefDefinition: e.target.value})} rows={2} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" placeholder="Brief definition" />
-                    </div>
-                  )}
-                  {tc.data.clinicalPearl && (
-                    <div>
-                      <label className="text-xs font-semibold text-slate-600 uppercase">Clinical Pearl</label>
-                      <textarea value={tc.data.clinicalPearl} onChange={e => updateTeachingCaseField(idx, "clinicalPearl", e.target.value)} rows={2} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" />
-                    </div>
-                  )}
-                  {tc.data.shelfQuestions?.length > 0 && (
-                    <details className="text-sm">
-                      <summary className="cursor-pointer font-semibold text-slate-700">Shelf Questions ({tc.data.shelfQuestions.length})</summary>
-                      <div className="mt-2 space-y-2">
-                        {tc.data.shelfQuestions.map((q, qi) => (
-                          <div key={qi} className="border border-slate-200 rounded p-2 bg-white">
-                            <textarea value={q.vignette} onChange={e => {
-                              const newQ = [...tc.data.shelfQuestions];
-                              newQ[qi] = {...q, vignette: e.target.value};
-                              updateTeachingCaseField(idx, "shelfQuestions", newQ);
-                            }} rows={3} className="w-full px-2 py-1 border border-slate-300 rounded text-xs" />
-                            <div className="text-xs text-slate-500 mt-1">Answer: {q.correctAnswer}</div>
-                          </div>
-                        ))}
-                      </div>
-                    </details>
-                  )}
-                  <details className="text-sm text-slate-600">
-                    <summary className="cursor-pointer">View all content for this case</summary>
-                    <pre className="text-xs bg-white p-2 mt-1 rounded overflow-x-auto max-h-64">{JSON.stringify(tc.data, null, 2)}</pre>
-                  </details>
+
+          {/* Teaching Cases */}
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            {s.teachingCases.length === 0 ? (
+              <div className="bg-slate-100 px-4 py-3 flex items-center justify-between">
+                <div className="font-semibold text-sm text-slate-500">Teaching Cases</div>
+                <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded">No AI content — re-run</span>
+              </div>
+            ) : (
+              <>
+                <div className="bg-slate-800 text-white px-4 py-2">
+                  <div className="font-semibold text-sm">Teaching Cases ({s.teachingCases.filter(tc => tc.enabled).length} of {s.teachingCases.length} on)</div>
                 </div>
-              )}
+                {s.teachingCases.map((tc, idx) => (
+                  <div key={idx} className="border-t border-slate-200">
+                    <SectionHeader label={`Case ${idx+1}: ${tc.data.problem}`} enabled={tc.enabled} onToggle={() => toggleTeachingCase(idx)} />
+                    {tc.enabled && (
+                      <div className="p-3 space-y-2 bg-slate-50">
+                        {tc.data.primaryDiagnosis?.name && (
+                          <div>
+                            <label className="text-xs font-semibold text-slate-600 uppercase">Primary Diagnosis</label>
+                            <input type="text" value={tc.data.primaryDiagnosis.name} onChange={e => updateTeachingCaseField(idx, "primaryDiagnosis", {...tc.data.primaryDiagnosis, name: e.target.value})} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" />
+                            <textarea value={tc.data.primaryDiagnosis.briefDefinition || ""} onChange={e => updateTeachingCaseField(idx, "primaryDiagnosis", {...tc.data.primaryDiagnosis, briefDefinition: e.target.value})} rows={2} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" placeholder="Brief definition" />
+                          </div>
+                        )}
+                        {tc.data.clinicalPearl && (
+                          <div>
+                            <label className="text-xs font-semibold text-slate-600 uppercase">Clinical Pearl</label>
+                            <textarea value={tc.data.clinicalPearl} onChange={e => updateTeachingCaseField(idx, "clinicalPearl", e.target.value)} rows={2} className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-sm" />
+                          </div>
+                        )}
+                        {tc.data.shelfQuestions?.length > 0 && (
+                          <details className="text-sm">
+                            <summary className="cursor-pointer font-semibold text-slate-700">Shelf Questions ({tc.data.shelfQuestions.length})</summary>
+                            <div className="mt-2 space-y-2">
+                              {tc.data.shelfQuestions.map((q, qi) => (
+                                <div key={qi} className="border border-slate-200 rounded p-2 bg-white">
+                                  <textarea value={q.vignette} onChange={e => {
+                                    const newQ = [...tc.data.shelfQuestions];
+                                    newQ[qi] = {...q, vignette: e.target.value};
+                                    updateTeachingCaseField(idx, "shelfQuestions", newQ);
+                                  }} rows={3} className="w-full px-2 py-1 border border-slate-300 rounded text-xs" />
+                                  <div className="text-xs text-slate-500 mt-1">Answer: {q.correctAnswer}</div>
+                                </div>
+                              ))}
+                            </div>
+                          </details>
+                        )}
+                        <details className="text-sm text-slate-600">
+                          <summary className="cursor-pointer">View all content for this case</summary>
+                          <pre className="text-xs bg-white p-2 mt-1 rounded overflow-x-auto max-h-64">{JSON.stringify(tc.data, null, 2)}</pre>
+                        </details>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </>
+            )}
+          </div>
+
+          {/* Lab Trends */}
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            <SectionHeader label="Lab & Vital Trends" enabled={s.labTrends.enabled} onToggle={() => togglePreviewSection("labTrends")} count={s.labTrends.content?.length} />
+          </div>
+
+          {/* Cross-Cutting Themes */}
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            {s.crossCuttingThemes.content.length > 0 ? (
+              <SectionHeader label="Cross-Cutting Themes" enabled={s.crossCuttingThemes.enabled} onToggle={() => togglePreviewSection("crossCuttingThemes")} count={s.crossCuttingThemes.content.length} />
+            ) : (
+              <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Cross-Cutting Themes</div><span className="text-xs text-slate-500 italic">Not generated</span></div>
+            )}
+          </div>
+
+          {/* Synthesized Evidence */}
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            {s.synthesizedEvidence.content ? (
+              <>
+                <SectionHeader label="Evidence Summary" enabled={s.synthesizedEvidence.enabled} onToggle={() => togglePreviewSection("synthesizedEvidence")} />
+                {s.synthesizedEvidence.note && <div className="px-4 py-2 text-xs text-slate-600 italic bg-emerald-50 border-t border-emerald-100">{s.synthesizedEvidence.note}</div>}
+              </>
+            ) : (
+              <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Evidence Summary</div><span className="text-xs text-slate-500 italic">No external sources added</span></div>
+            )}
+          </div>
+
+          {/* Long-term goals */}
+          {s.longTermGoals.content.length > 0 && (
+            <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+              <SectionHeader label="Ongoing Learning Goals" enabled={s.longTermGoals.enabled} onToggle={() => togglePreviewSection("longTermGoals")} count={s.longTermGoals.content.length} />
             </div>
-          ))}
-          </>
-        )}
-      </div>
+          )}
 
-      {/* Lab Trends */}
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        <SectionHeader label="Lab & Vital Trends" enabled={s.labTrends.enabled} onToggle={() => togglePreviewSection("labTrends")} count={s.labTrends.content?.length} />
-      </div>
+          {/* Next Session Prep */}
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            <SectionHeader label="Prep for Next Session" enabled={s.nextSessionPrep.enabled} onToggle={() => togglePreviewSection("nextSessionPrep")} />
+          </div>
 
-      {/* Cross-Cutting Themes */}
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        {s.crossCuttingThemes.content.length > 0 ? (
-          <SectionHeader label="Cross-Cutting Themes" enabled={s.crossCuttingThemes.enabled} onToggle={() => togglePreviewSection("crossCuttingThemes")} count={s.crossCuttingThemes.content.length} />
-        ) : (
-          <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Cross-Cutting Themes</div><span className="text-xs text-slate-500 italic">Not generated</span></div>
-        )}
-      </div>
-
-      {/* Synthesized Evidence */}
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        {s.synthesizedEvidence.content ? (
-          <>
-            <SectionHeader label="Evidence Summary (from external sources)" enabled={s.synthesizedEvidence.enabled} onToggle={() => togglePreviewSection("synthesizedEvidence")} />
-            {s.synthesizedEvidence.note && <div className="px-4 py-2 text-xs text-slate-600 italic bg-emerald-50 border-t border-emerald-100">{s.synthesizedEvidence.note}</div>}
-          </>
-        ) : (
-          <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Evidence Summary</div><span className="text-xs text-slate-500 italic">No external sources added</span></div>
-        )}
-      </div>
-
-      
-
-      {/* Long-term goals */}
-      {s.longTermGoals.content.length > 0 && (
-        <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-          <SectionHeader label="Ongoing Learning Goals" enabled={s.longTermGoals.enabled} onToggle={() => togglePreviewSection("longTermGoals")} count={s.longTermGoals.content.length} />
+          <div className="text-xs text-slate-500 italic pt-2 border-t border-slate-200">
+            Preview updates live on the right as you toggle sections and edit fields.
+          </div>
         </div>
-      )}
 
-      {/* Next Session Prep */}
-      <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
-        <SectionHeader label="Prep for Next Session" enabled={s.nextSessionPrep.enabled} onToggle={() => togglePreviewSection("nextSessionPrep")} />
+        {/* RIGHT: live document preview */}
+        <div className="relative">
+          <div className="sticky top-24">
+            <div className="flex items-center justify-between mb-2 px-1">
+              <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider">Live Preview</div>
+              <div className="text-xs text-slate-400 italic">Read-only · edits happen in the left panel</div>
+            </div>
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm" style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
+              <div style={{ transform: "scale(0.72)", transformOrigin: "top left", width: "138.9%", pointerEvents: "none" }}>
+                <DocumentContent doc={previewData} phase={phase} session={session} />
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
 
-      <div className="sticky bottom-4 bg-white border-2 border-indigo-600 rounded-lg p-4 shadow-lg flex items-center justify-between">
+      {/* Bottom sticky commit bar */}
+      <div className="sticky bottom-4 mt-4 bg-white border-2 border-indigo-600 rounded-lg p-4 shadow-lg flex items-center justify-between">
         <div className="text-sm text-slate-700">Ready when you are. {Object.values(s).filter(sec => Array.isArray(sec) ? sec.some(x => x.enabled) : sec.enabled).length} sections enabled.</div>
         <button onClick={commitPreviewToDocument} className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-semibold flex items-center gap-2">
           <Sparkles className="w-4 h-4" />Generate Final Document
