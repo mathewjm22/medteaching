@@ -2591,7 +2591,7 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                     />
                   </label>
                 </div>
-                <p className="text-xs text-slate-500 mb-2">Text-based PDFs work best. Scanned PDFs (image-only) may extract poorly — the system will warn you.</p>
+                <p className="text-xs text-slate-500 mb-2">Text-based PDFs work best. Scanned PDFs (image-only) may extract poorly — the system will warn you. Click the box below (or drag files onto it) to add.</p>
 
                 {processingPdf && (
                   <div className="text-xs text-indigo-600 flex items-center gap-1 mb-2">
@@ -2600,9 +2600,28 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                 )}
 
                 {pdfAttachments.length === 0 ? (
-                  <div className="text-center py-6 text-sm text-slate-500 bg-slate-50 rounded border-2 border-dashed border-slate-200">
-                    No PDFs attached yet.
-                  </div>
+                  <label
+                    className="block cursor-pointer text-center py-8 text-sm text-slate-500 bg-slate-50 hover:bg-indigo-50 rounded border-2 border-dashed border-slate-200 hover:border-indigo-300 transition"
+                    onDragOver={e => { e.preventDefault(); e.currentTarget.classList.add("bg-indigo-50", "border-indigo-400"); }}
+                    onDragLeave={e => { e.currentTarget.classList.remove("bg-indigo-50", "border-indigo-400"); }}
+                    onDrop={e => {
+                      e.preventDefault();
+                      e.currentTarget.classList.remove("bg-indigo-50", "border-indigo-400");
+                      const files = Array.from(e.dataTransfer.files || []).filter(f => f.type === "application/pdf" || f.name.toLowerCase().endsWith(".pdf"));
+                      if (files.length > 0) addPdfAttachments(files);
+                    }}
+                  >
+                    <input
+                      type="file"
+                      accept="application/pdf,.pdf"
+                      multiple
+                      onChange={e => { addPdfAttachments(Array.from(e.target.files || [])); e.target.value = ""; }}
+                      className="hidden"
+                    />
+                    <FileText className="w-6 h-6 mx-auto mb-1.5 text-slate-400" />
+                    <div className="font-medium text-slate-600">Click to select PDFs</div>
+                    <div className="text-xs text-slate-400 mt-0.5">or drag and drop them here</div>
+                  </label>
                 ) : (
                   <div className="space-y-2">
                     {pdfAttachments.map(pdf => (
