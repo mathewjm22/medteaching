@@ -685,9 +685,11 @@ Synthesize into structured claims with per-source attribution as specified. When
     if (synthesizedEvidenceParam?.synthesized && synthesizedEvidenceParam.topics?.length > 0) {
       // Use the structured claims from synthesis — much better for grounded citations
       const claimSummary = synthesizedEvidenceParam.topics.map(topic => {
-        const claims = topic.claims.map(c => {
+        const claims = (topic.claims || []).map(c => {
           const figRef = c.figureRefs?.length > 0 ? ` [refs: ${c.figureRefs.join(", ")}]` : "";
-          return `  • [${c.strength}] ${c.statement} — sources: ${c.sources.join(", ")}${figRef}`;
+          const realCites = (c.citations || []).join(", ") || "no citation";
+          const tools = (c.provenance || c.sources || []).join(", ") || "unknown";
+          return `  • [${c.strength}] ${c.statement} — citations: ${realCites} — via: ${tools}${figRef}`;
         }).join("\n");
         return `TOPIC: ${topic.topic}\n${claims}`;
       }).join("\n\n");
