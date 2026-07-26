@@ -1202,37 +1202,45 @@ I want to focus today's teaching on: ${focusText}.
         .doc-subsection-label {
           font-family: 'Inter', sans-serif;
           text-transform: uppercase;
-          letter-spacing: 0.13em;
-          font-size: 0.68rem;
-          font-weight: 600;
+          letter-spacing: 0.11em;
+          font-size: 0.88rem;
+          font-weight: 700;
           color: var(--doc-navy);
-          padding-left: 0.625rem;
-          border-left: 2px solid var(--doc-navy-mid);
-          margin-bottom: 0.6rem;
+          padding: 0.5rem 0 0.5rem 0.75rem;
+          border-left: 3px solid var(--doc-navy-mid);
+          margin-bottom: 0.85rem;
+          background: linear-gradient(90deg, rgba(30, 91, 148, 0.06) 0%, transparent 60%);
         }
 
         /* ========== CASE TREATMENT ========== */
         .doc-case-wrap {
-          margin-top: 2.5rem;
-          padding-top: 1.75rem;
-          border-top: 2px solid var(--doc-navy);
+          margin-top: 3rem;
         }
-        .doc-case-numeral {
-          font-family: 'Inter', sans-serif;
-          font-weight: 700;
-          font-size: 0.72rem;
-          letter-spacing: 0.22em;
-          color: var(--doc-navy-mid);
-          text-transform: uppercase;
+        .doc-case-banner {
+          background: linear-gradient(135deg, var(--doc-navy) 0%, #1a3d5c 100%);
+          color: white;
+          padding: 1.25rem 1.5rem;
+          margin: 0 -1.5rem 1.75rem;
+          border-radius: 2px;
+          box-shadow: 0 1px 3px rgba(15, 42, 68, 0.15);
         }
-        .doc-case-title {
+        .doc-case-banner .doc-case-numeral {
           font-family: 'Inter', sans-serif;
           font-weight: 600;
-          font-size: 1.375rem;
-          line-height: 1.25;
-          color: var(--doc-navy);
-          letter-spacing: -0.01em;
-          margin: 0.15rem 0 1.5rem;
+          font-size: 0.65rem;
+          letter-spacing: 0.28em;
+          color: rgba(255, 255, 255, 0.7);
+          text-transform: uppercase;
+          margin-bottom: 0.35rem;
+        }
+        .doc-case-banner .doc-case-title {
+          font-family: 'Inter', sans-serif;
+          font-weight: 600;
+          font-size: 1.5rem;
+          line-height: 1.2;
+          color: white;
+          letter-spacing: -0.015em;
+          margin: 0;
         }
 
         /* ========== TABLES ========== */
@@ -1246,15 +1254,16 @@ I want to focus today's teaching on: ${focusText}.
         .doc-table thead th {
           font-family: 'Inter', sans-serif;
           text-transform: uppercase;
-          letter-spacing: 0.11em;
-          font-size: 0.68rem;
+          letter-spacing: 0.12em;
+          font-size: 0.62rem;
           font-weight: 600;
-          color: var(--doc-navy);
+          color: var(--doc-warm-gray);
           text-align: left;
-          padding: 0.6rem 0.75rem;
+          padding: 0.55rem 0.75rem;
           border-bottom: 1px solid var(--doc-navy);
           background: transparent;
         }
+
         .doc-table tbody td {
           padding: 0.65rem 0.75rem;
           border-bottom: 1px solid var(--doc-hairline);
@@ -1273,28 +1282,29 @@ I want to focus today's teaching on: ${focusText}.
 
         /* ========== CALLOUTS ========== */
         .doc-callout-pearl {
-          background: var(--doc-paper);
+          background: linear-gradient(90deg, rgba(184, 92, 46, 0.09) 0%, rgba(184, 92, 46, 0.03) 100%);
           border-left: 3px solid var(--doc-terracotta);
           padding: 1rem 1.25rem;
           margin: 1.25rem 0;
         }
+
         .doc-callout-pearl .label {
-          font-family: 'Source Serif 4', serif;
-          font-style: italic;
-          font-size: 0.75rem;
+          font-family: 'Inter', sans-serif;
+          font-size: 0.7rem;
           color: var(--doc-terracotta);
           text-transform: uppercase;
-          letter-spacing: 0.15em;
-          font-weight: 600;
-          margin-bottom: 0.35rem;
+          letter-spacing: 0.16em;
+          font-weight: 700;
+          margin-bottom: 0.4rem;
         }
         .doc-callout-quote {
-          background: var(--doc-paper);
+          background: linear-gradient(90deg, rgba(30, 91, 148, 0.09) 0%, rgba(30, 91, 148, 0.03) 100%);
           border-left: 3px solid var(--doc-navy);
           padding: 1rem 1.25rem 1rem 2.5rem;
           margin: 1.25rem 0;
           position: relative;
         }
+
         .doc-callout-quote::before {
           content: '"';
           position: absolute;
@@ -1316,12 +1326,12 @@ I want to focus today's teaching on: ${focusText}.
         }
         .doc-callout-quote .label {
           font-family: 'Inter', sans-serif;
-          font-size: 0.65rem;
+          font-size: 0.7rem;
           color: var(--doc-navy);
           text-transform: uppercase;
-          letter-spacing: 0.15em;
-          font-weight: 600;
-          margin-bottom: 0.35rem;
+          letter-spacing: 0.16em;
+          font-weight: 700;
+          margin-bottom: 0.4rem;
         }
         .doc-callout-goal {
           background: linear-gradient(180deg, var(--doc-paper) 0%, #fff 100%);
@@ -2779,8 +2789,10 @@ function DocumentContent({ doc, phase, session }) {
           const c = tc.data;
           return (
             <section key={idx} className="doc-case-wrap">
-              <div className="doc-case-numeral">Case {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}</div>
-              <h2 className="doc-case-title">{c.problem}</h2>
+              <div className="doc-case-banner">
+                <div className="doc-case-numeral">Case {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}</div>
+                <h2 className="doc-case-title">{c.problem}</h2>
+              </div>
 
               {c.primaryDiagnosis?.name && (
                 <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
@@ -3136,6 +3148,7 @@ function DocumentContent({ doc, phase, session }) {
 function EvidenceDeepDive({ content, allSourceImages = [] }) {
   const [expandedClaims, setExpandedClaims] = React.useState({});
   const [showProvenance, setShowProvenance] = React.useState(false);
+  const [lightboxImg, setLightboxImg] = React.useState(null);
 
   const figureMap = React.useMemo(() => {
     const map = {};
@@ -3229,7 +3242,15 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
                       <div style={{ marginTop: "0.6rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "0.6rem" }}>
                         {refFigures.map((fig, fi) => (
                           <figure key={fi} style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white" }}>
-                            <img src={fig.dataUrl} alt={fig.alt} style={{ width: "100%", height: "auto", maxHeight: "260px", objectFit: "contain", display: "block" }} />
+                            <button
+                              onClick={() => setLightboxImg(fig)}
+                              className="no-print"
+                              style={{ display: "block", width: "100%", padding: 0, border: "none", background: "none", cursor: "zoom-in" }}
+                              title="Click to enlarge"
+                            >
+                              <img src={fig.dataUrl} alt={fig.alt} style={{ width: "100%", height: "auto", maxHeight: "260px", objectFit: "contain", display: "block" }} />
+                            </button>
+                            <img className="print-only" src={fig.dataUrl} alt={fig.alt} style={{ width: "100%", height: "auto", maxHeight: "260px", objectFit: "contain", display: "none" }} />
                             <figcaption style={{ fontSize: "0.72rem", color: "var(--doc-warm-gray)", padding: "0.35rem 0.5rem", borderTop: "1px solid var(--doc-hairline)", fontStyle: "italic" }}>
                               {fig.alt}
                             </figcaption>
@@ -3277,6 +3298,97 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
           </table>
         </div>
       )}
+      {lightboxImg && <ImageLightbox src={lightboxImg.dataUrl} alt={lightboxImg.alt} onClose={() => setLightboxImg(null)} />}
     </section>
+  );
+}
+// ============ IMAGE LIGHTBOX ============
+function ImageLightbox({ src, alt, onClose }) {
+  React.useEffect(() => {
+    const handleKey = (e) => { if (e.key === "Escape") onClose(); };
+    document.addEventListener("keydown", handleKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      onClick={onClose}
+      className="no-print"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 42, 68, 0.92)",
+        zIndex: 9999,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "2rem",
+        cursor: "zoom-out",
+      }}
+    >
+      <button
+        onClick={onClose}
+        style={{
+          position: "absolute",
+          top: "1rem",
+          right: "1rem",
+          background: "rgba(255,255,255,0.15)",
+          border: "1px solid rgba(255,255,255,0.3)",
+          color: "white",
+          borderRadius: "50%",
+          width: "2.5rem",
+          height: "2.5rem",
+          fontSize: "1.25rem",
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+        aria-label="Close"
+      >
+        ×
+      </button>
+      <img
+        src={src}
+        alt={alt}
+        onClick={e => e.stopPropagation()}
+        style={{
+          maxWidth: "95vw",
+          maxHeight: "85vh",
+          objectFit: "contain",
+          boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
+          borderRadius: "4px",
+          cursor: "default",
+        }}
+      />
+      {alt && (
+        <div style={{
+          marginTop: "1rem",
+          color: "rgba(255,255,255,0.85)",
+          fontFamily: "'Inter', sans-serif",
+          fontSize: "0.85rem",
+          fontStyle: "italic",
+          maxWidth: "60ch",
+          textAlign: "center",
+        }}>
+          {alt}
+        </div>
+      )}
+      <div style={{
+        marginTop: "0.75rem",
+        color: "rgba(255,255,255,0.5)",
+        fontFamily: "'Inter', sans-serif",
+        fontSize: "0.7rem",
+        textTransform: "uppercase",
+        letterSpacing: "0.15em",
+      }}>
+        Click anywhere or press Esc to close
+      </div>
+    </div>
   );
 }
