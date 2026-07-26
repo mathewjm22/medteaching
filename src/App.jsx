@@ -896,7 +896,6 @@ I want to focus today's teaching on: ${focusText}.
         // "Other" and unknown sources reuse the OpenEvidence-style prompt
         return base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
     }
-    }
   };
 
  // ===== Generate preview (was: generate document) =====
