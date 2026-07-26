@@ -1079,69 +1079,350 @@ I want to focus today's teaching on: ${focusText}.
   return (
     <div className="min-h-screen bg-slate-50">
       <style>{`
+        /* ========== DESIGN TOKENS ========== */
+        :root {
+          --doc-navy: #0F2A44;
+          --doc-navy-mid: #1E5B94;
+          --doc-paper: #F5F1EA;
+          --doc-surface: #FFFFFF;
+          --doc-warm-gray: #5C6470;
+          --doc-terracotta: #B85C2E;
+          --doc-consensus: #0F7A5A;
+          --doc-majority: #1E5B94;
+          --doc-single: #8B7355;
+          --doc-conflict: #B85C2E;
+          --doc-hairline: #D8D3CA;
+        }
+
+        /* ========== DOCUMENT TYPOGRAPHY ========== */
+        .doc-body {
+          font-family: 'Inter', system-ui, -apple-system, sans-serif;
+          font-size: 15px;
+          line-height: 1.65;
+          color: #1a1a1a;
+          background: var(--doc-paper);
+          font-feature-settings: 'ss01', 'cv11';
+        }
+        .doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 {
+          font-family: 'Inter', system-ui, sans-serif;
+          font-weight: 600;
+          color: var(--doc-navy);
+          line-height: 1.25;
+        }
+        .doc-serif {
+          font-family: 'Source Serif 4', Georgia, serif;
+          font-optical-sizing: auto;
+        }
+        .doc-caps {
+          font-family: 'Inter', sans-serif;
+          text-transform: uppercase;
+          letter-spacing: 0.11em;
+          font-weight: 600;
+          font-size: 0.72rem;
+        }
+        .doc-meta-label {
+          font-family: 'Inter', sans-serif;
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-weight: 500;
+          font-size: 0.65rem;
+          color: var(--doc-warm-gray);
+        }
+
+        /* ========== COVER ========== */
+        .doc-cover {
+          background: linear-gradient(135deg, #0F2A44 0%, #1a3d5c 50%, #0F2A44 100%);
+          color: white;
+          padding: 3rem 3rem 2.25rem;
+        }
+        .doc-cover .cover-monogram {
+          font-family: 'Source Serif 4', serif;
+          font-size: 1.5rem;
+          font-weight: 400;
+          font-style: italic;
+          opacity: 0.85;
+          letter-spacing: 0.02em;
+        }
+        .doc-cover .cover-eyebrow {
+          font-family: 'Inter', sans-serif;
+          text-transform: uppercase;
+          letter-spacing: 0.24em;
+          font-size: 0.68rem;
+          font-weight: 500;
+          color: rgba(255,255,255,0.7);
+          margin-bottom: 0.75rem;
+        }
+        .doc-cover .cover-title {
+          font-family: 'Inter', sans-serif;
+          font-weight: 500;
+          font-size: 2.25rem;
+          line-height: 1.15;
+          letter-spacing: -0.02em;
+          color: #fff;
+        }
+        .doc-cover .cover-rule {
+          height: 1px;
+          background: rgba(255,255,255,0.25);
+          margin: 1.75rem 0 1.5rem;
+        }
+        .doc-cover .cover-docket {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 1.25rem;
+        }
+        .doc-cover .cover-docket .label {
+          font-family: 'Inter', sans-serif;
+          text-transform: uppercase;
+          letter-spacing: 0.16em;
+          font-size: 0.6rem;
+          font-weight: 500;
+          color: rgba(255,255,255,0.6);
+          margin-bottom: 0.25rem;
+        }
+        .doc-cover .cover-docket .value {
+          font-family: 'Inter', sans-serif;
+          font-size: 0.9rem;
+          font-weight: 500;
+          color: #fff;
+        }
+
+        /* ========== SECTION HEADERS ========== */
+        .doc-h2 {
+          font-family: 'Inter', sans-serif;
+          font-size: 1.0625rem;
+          font-weight: 600;
+          color: var(--doc-navy);
+          letter-spacing: -0.005em;
+          margin: 0 0 1rem;
+          padding-bottom: 0.5rem;
+          border-bottom: 2px solid var(--doc-navy);
+        }
+        .doc-subsection-label {
+          font-family: 'Inter', sans-serif;
+          text-transform: uppercase;
+          letter-spacing: 0.13em;
+          font-size: 0.68rem;
+          font-weight: 600;
+          color: var(--doc-navy);
+          padding-left: 0.625rem;
+          border-left: 2px solid var(--doc-navy-mid);
+          margin-bottom: 0.6rem;
+        }
+
+        /* ========== CASE TREATMENT ========== */
+        .doc-case-wrap {
+          margin-top: 2.5rem;
+          padding-top: 1.75rem;
+          border-top: 2px solid var(--doc-navy);
+        }
+        .doc-case-numeral {
+          font-family: 'Inter', sans-serif;
+          font-weight: 700;
+          font-size: 0.72rem;
+          letter-spacing: 0.22em;
+          color: var(--doc-navy-mid);
+          text-transform: uppercase;
+        }
+        .doc-case-title {
+          font-family: 'Inter', sans-serif;
+          font-weight: 600;
+          font-size: 1.375rem;
+          line-height: 1.25;
+          color: var(--doc-navy);
+          letter-spacing: -0.01em;
+          margin: 0.15rem 0 1.5rem;
+        }
+
+        /* ========== TABLES ========== */
+        .doc-table {
+          width: 100%;
+          border-collapse: collapse;
+          font-size: 0.875rem;
+          border-top: 2px solid var(--doc-navy);
+          border-bottom: 2px solid var(--doc-navy);
+        }
+        .doc-table thead th {
+          font-family: 'Inter', sans-serif;
+          text-transform: uppercase;
+          letter-spacing: 0.11em;
+          font-size: 0.68rem;
+          font-weight: 600;
+          color: var(--doc-navy);
+          text-align: left;
+          padding: 0.6rem 0.75rem;
+          border-bottom: 1px solid var(--doc-navy);
+          background: transparent;
+        }
+        .doc-table tbody td {
+          padding: 0.65rem 0.75rem;
+          border-bottom: 1px solid var(--doc-hairline);
+          vertical-align: top;
+          color: #1a1a1a;
+        }
+        .doc-table tbody tr:last-child td {
+          border-bottom: none;
+        }
+        .doc-table .row-label {
+          font-weight: 500;
+          color: var(--doc-navy);
+          width: 30%;
+          padding-right: 1rem;
+        }
+
+        /* ========== CALLOUTS ========== */
+        .doc-callout-pearl {
+          background: var(--doc-paper);
+          border-left: 3px solid var(--doc-terracotta);
+          padding: 1rem 1.25rem;
+          margin: 1.25rem 0;
+        }
+        .doc-callout-pearl .label {
+          font-family: 'Source Serif 4', serif;
+          font-style: italic;
+          font-size: 0.75rem;
+          color: var(--doc-terracotta);
+          text-transform: uppercase;
+          letter-spacing: 0.15em;
+          font-weight: 600;
+          margin-bottom: 0.35rem;
+        }
+        .doc-callout-quote {
+          background: var(--doc-paper);
+          border-left: 3px solid var(--doc-navy);
+          padding: 1rem 1.25rem 1rem 2.5rem;
+          margin: 1.25rem 0;
+          position: relative;
+        }
+        .doc-callout-quote::before {
+          content: '"';
+          position: absolute;
+          left: 0.75rem;
+          top: 0.35rem;
+          font-family: 'Source Serif 4', serif;
+          font-size: 2.75rem;
+          font-weight: 400;
+          color: var(--doc-navy);
+          line-height: 1;
+          opacity: 0.5;
+        }
+        .doc-callout-quote .quote-text {
+          font-family: 'Source Serif 4', serif;
+          font-style: italic;
+          font-size: 0.95rem;
+          line-height: 1.55;
+          color: #1a1a1a;
+        }
+        .doc-callout-quote .label {
+          font-family: 'Inter', sans-serif;
+          font-size: 0.65rem;
+          color: var(--doc-navy);
+          text-transform: uppercase;
+          letter-spacing: 0.15em;
+          font-weight: 600;
+          margin-bottom: 0.35rem;
+        }
+        .doc-callout-goal {
+          background: linear-gradient(180deg, var(--doc-paper) 0%, #fff 100%);
+          border-left: 3px solid var(--doc-navy-mid);
+          padding: 1rem 1.25rem;
+        }
+
+        /* ========== STRENGTH BADGES ========== */
+        .doc-strength {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.4rem;
+          font-family: 'Inter', sans-serif;
+          font-size: 0.65rem;
+          text-transform: uppercase;
+          letter-spacing: 0.12em;
+          font-weight: 600;
+          color: var(--doc-warm-gray);
+        }
+        .doc-strength .dot {
+          width: 7px;
+          height: 7px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+        .doc-strength.consensus .dot { background: var(--doc-consensus); }
+        .doc-strength.majority .dot { background: var(--doc-majority); }
+        .doc-strength.single-source .dot { background: var(--doc-single); }
+        .doc-strength.conflict .dot { background: var(--doc-conflict); }
+        .doc-strength.consensus { color: var(--doc-consensus); }
+        .doc-strength.majority { color: var(--doc-majority); }
+        .doc-strength.single-source { color: var(--doc-single); }
+        .doc-strength.conflict { color: var(--doc-conflict); }
+
+        /* ========== SHELF QUESTIONS ========== */
+        .doc-shelf-q {
+          border-top: 1px solid var(--doc-hairline);
+          padding: 1rem 0;
+        }
+        .doc-shelf-q:first-child { border-top: none; padding-top: 0.25rem; }
+        .doc-shelf-answer {
+          margin-top: 0.75rem;
+          padding: 0.75rem 1rem;
+          background: var(--doc-paper);
+          border-left: 2px solid var(--doc-consensus);
+        }
+        .doc-shelf-answer .label {
+          font-family: 'Inter', sans-serif;
+          font-size: 0.65rem;
+          text-transform: uppercase;
+          letter-spacing: 0.14em;
+          font-weight: 600;
+          color: var(--doc-consensus);
+          margin-bottom: 0.3rem;
+        }
+
+        /* ========== DOCUMENT FOOTER ========== */
+        .doc-footer {
+          margin-top: 3rem;
+          padding-top: 1.25rem;
+          border-top: 2px solid var(--doc-navy);
+          text-align: center;
+          font-family: 'Inter', sans-serif;
+          font-size: 0.7rem;
+          color: var(--doc-warm-gray);
+          letter-spacing: 0.02em;
+        }
+
+        /* ========== PRINT ========== */
         @media print {
-          /* Hide UI chrome */
           .no-print { display: none !important; }
           .print-only { display: block !important; }
-
-          /* Clean document background */
           body { background: white; }
-          .print-doc { box-shadow: none !important; border: none !important; }
-          .print-header { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .doc-body { background: white; }
+          .print-doc { box-shadow: none !important; border: none !important; border-radius: 0 !important; }
+          .doc-cover { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .doc-callout-pearl, .doc-callout-quote, .doc-callout-goal, .doc-shelf-answer {
+            -webkit-print-color-adjust: exact; print-color-adjust: exact;
+          }
 
-          /* Global paragraph orphan/widow protection */
           p, li, div { orphans: 3; widows: 3; }
-
-          /* Headers must never be orphaned at page bottom */
           h1, h2, h3, h4, h5, h6 { page-break-after: avoid; break-after: avoid; }
           h2 + *, h3 + *, h4 + * { page-break-before: avoid; break-before: avoid; }
 
-          /* Do NOT force whole teaching cases to stay together —
-             they are too large and cause huge whitespace gaps.
-             Instead, keep smaller units atomic. */
-          .section-block { page-break-inside: auto; break-inside: auto; }
-
-          /* Atomic units: don't split these */
           .keep-together { page-break-inside: avoid; break-inside: avoid; }
           li { page-break-inside: avoid; break-inside: avoid; }
           tr { page-break-inside: avoid; break-inside: avoid; }
           thead { display: table-header-group; }
           tfoot { display: table-footer-group; }
           figure { page-break-inside: avoid; break-inside: avoid; }
-
-          /* Tables: keep headers with body but allow long tables to split */
           table { page-break-inside: auto; break-inside: auto; }
 
-          /* Callout boxes (pearls, quotes) should not split */
-          .callout-box { page-break-inside: avoid; break-inside: avoid; }
+          .doc-callout-pearl, .doc-callout-quote, .doc-callout-goal { page-break-inside: avoid; break-inside: avoid; }
+          .doc-case-wrap { page-break-inside: auto; }
+          .doc-case-title, .doc-case-numeral { page-break-after: avoid; break-after: avoid; }
+          .doc-subsection-label { page-break-after: avoid; break-after: avoid; }
 
-          /* Teaching case header should stay with its content */
-          .case-header { page-break-after: avoid; break-after: avoid; }
-
-          /* Reduce spacing between sections in print to fit more per page */
-          section { margin-top: 0.3in; }
+          section { margin-top: 0.35in; }
           section:first-child { margin-top: 0; }
-
-          /* Trim large empty spaces from bottom of pages */
-          .avoid-orphan-section { page-break-before: auto; }
-
-          /* Section headers stay with at least a few lines of content */
-          h2 { page-break-inside: avoid; break-inside: avoid; }
-
-          /* Nested subsection headers should stick to what follows */
-          .subsection-header {
-            page-break-after: avoid;
-            break-after: avoid;
-            page-break-inside: avoid;
-            break-inside: avoid;
-          }
+          .doc-cover { page-break-after: always; break-after: always; }
         }
-        @page {
-          margin: 0.5in;
-        }
-        @page :first {
-          margin-top: 0.5in;
-        }
+        @page { margin: 0.55in; }
+        @page :first { margin: 0; }
       `}</style>
 
       <header className="no-print bg-white border-b border-slate-200 sticky top-0 z-10">
@@ -2401,291 +2682,454 @@ function DocumentContent({ doc, phase, session }) {
   const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
 
   return (
-    <>
-      <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white px-8 py-6 print-header rounded-t-xl">
-        <div className="flex items-start justify-between">
+    <div className="doc-body">
+      {/* ========== COVER ========== */}
+      <div className="doc-cover">
+        <div className="cover-monogram">Ic</div>
+        <div style={{ marginTop: "3.5rem" }}>
+          <div className="cover-eyebrow">Longitudinal Integrated Clerkship · Teaching Document</div>
+          <h1 className="cover-title">Clinical Case Learning Document</h1>
+        </div>
+        <div className="cover-rule"></div>
+        <div className="cover-docket">
           <div>
-            <div className="text-xs uppercase tracking-widest text-slate-300 mb-1">Teaching Session</div>
-            <h1 className="text-2xl font-bold">Clinical Case Learning Document</h1>
-            <div className="text-sm text-slate-200 mt-2">
-              Prepared for <span className="font-semibold text-white">{doc.student}</span> · {session.sessionDate}
-            </div>
+            <div className="label">Student</div>
+            <div className="value">{doc.student}</div>
           </div>
-          <div className="text-right text-xs text-slate-300">
-            <div>Generated {doc.generated}</div>
-            <div className="mt-1 inline-block px-2 py-1 bg-white/10 rounded font-sans">
-              Month {doc.phase.monthsIn} · {doc.phase.name}
-            </div>
+          <div>
+            <div className="label">Session Date</div>
+            <div className="value">{session.sessionDate}</div>
+          </div>
+          <div>
+            <div className="label">LIC Month</div>
+            <div className="value">Month {doc.phase.monthsIn}</div>
+          </div>
+          <div>
+            <div className="label">Phase</div>
+            <div className="value">{doc.phase.name}</div>
           </div>
         </div>
       </div>
 
-      <div className="px-8 py-6 space-y-6">
+      {/* ========== BODY ========== */}
+      <div style={{ padding: "2.5rem 3rem 2rem" }}>
+
+        {/* Case at a Glance */}
         {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
-          <section className="keep-together">
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Case at a Glance</h2>
-            <table className="w-full text-sm border border-slate-300">
+          <section className="keep-together" style={{ marginBottom: "2rem" }}>
+            <h2 className="doc-h2">Case at a Glance</h2>
+            <table className="doc-table">
               <tbody>
-                {doc.chiefConcern && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 w-40 align-top">Chief concern</td><td className="px-3 py-2 text-slate-800">{doc.chiefConcern}</td></tr>}
-                {doc.workingDx && <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Primary working diagnosis</td><td className="px-3 py-2 text-slate-800">{doc.workingDx}</td></tr>}
-                <tr className="border-b border-slate-200"><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Complexity</td><td className="px-3 py-2 text-slate-800">{doc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td></tr>
-                {doc.selectedProblems?.length > 0 && <tr><td className="bg-slate-100 px-3 py-2 font-semibold text-slate-700 align-top">Problems in focus</td><td className="px-3 py-2 text-slate-800"><ul className="list-disc ml-4">{doc.selectedProblems.map((p, i) => <li key={i}>{p}</li>)}</ul></td></tr>}
+                {doc.chiefConcern && (
+                  <tr>
+                    <td className="row-label">Chief concern</td>
+                    <td>{doc.chiefConcern}</td>
+                  </tr>
+                )}
+                {doc.workingDx && (
+                  <tr>
+                    <td className="row-label">Primary working diagnosis</td>
+                    <td>{doc.workingDx}</td>
+                  </tr>
+                )}
+                <tr>
+                  <td className="row-label">Complexity</td>
+                  <td>{doc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td>
+                </tr>
+                {doc.selectedProblems?.length > 0 && (
+                  <tr>
+                    <td className="row-label">Problems in focus</td>
+                    <td>
+                      <ul style={{ margin: 0, paddingLeft: "1.1rem", listStyle: "disc" }}>
+                        {doc.selectedProblems.map((p, i) => <li key={i} style={{ marginBottom: "0.15rem" }}>{p}</li>)}
+                      </ul>
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </section>
         )}
 
+        {/* Session Goal */}
         {s.sessionGoal?.enabled && s.sessionGoal.content && (
-          <section>
-            <div className="border-l-4 border-indigo-600 bg-indigo-50 px-4 py-3 callout-box">
-              <div className="text-xs uppercase tracking-widest text-indigo-700 font-bold mb-1">Session Goal</div>
-              <div className="text-slate-800 font-medium">{s.sessionGoal.content}</div>
+          <section style={{ marginBottom: "2rem" }}>
+            <div className="doc-callout-goal keep-together">
+              <div className="doc-meta-label" style={{ marginBottom: "0.35rem" }}>Session Goal</div>
+              <div style={{ fontSize: "0.95rem", fontWeight: 500, color: "#0F2A44" }}>{s.sessionGoal.content}</div>
             </div>
           </section>
         )}
 
+        {/* Phase-Aligned Framing */}
         {s.phaseFraming?.enabled && (
-          <section className="keep-together">
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Phase-Aligned Framing</h2>
-            <div className="text-sm text-slate-700 leading-relaxed">
-              <strong>Developmental focus:</strong> {doc.phase.focus}
-            </div>
+          <section className="keep-together" style={{ marginBottom: "2rem" }}>
+            <h2 className="doc-h2">Phase-Aligned Framing</h2>
+            <p style={{ margin: 0, fontSize: "0.9rem" }}>
+              <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Developmental focus. </span>
+              {doc.phase.focus}
+            </p>
           </section>
         )}
 
+        {/* Teaching Cases */}
         {enabledCases.map((tc, idx) => {
           const c = tc.data;
           return (
-            <section key={idx}>
-              <div className="bg-slate-800 text-white px-4 py-3 rounded-t case-header">
-                <div className="text-xs uppercase tracking-widest text-slate-300">Teaching Case {idx + 1} of {enabledCases.length}</div>
-                <h2 className="text-lg font-bold mt-0.5">{c.problem}</h2>
-              </div>
-              <div className="border border-t-0 border-slate-300 rounded-b p-4 space-y-4">
-                {c.primaryDiagnosis?.name && (
-                  <div className="keep-together">
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-1 subsection-header">Primary Diagnosis</div>
-                    <div className="text-sm text-slate-800"><span className="font-bold">{c.primaryDiagnosis.name}.</span> {c.primaryDiagnosis.briefDefinition}</div>
-                  </div>
-                )}
-                {c.differentialDiagnosis?.length > 0 && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Differential Diagnosis</div>
-                    <table className="w-full text-sm border border-slate-200">
-                      <thead><tr className="bg-slate-100"><th className="px-3 py-1.5 text-left font-semibold text-slate-700 w-1/3">Alternative Diagnosis</th><th className="px-3 py-1.5 text-left font-semibold text-slate-700">Clinical Reasoning</th></tr></thead>
-                      <tbody>{c.differentialDiagnosis.map((dd, i) => (
-                        <tr key={i} className="border-t border-slate-200"><td className="px-3 py-2 font-semibold text-slate-900 align-top">{dd.diagnosis}</td><td className="px-3 py-2 text-slate-700">{dd.reasoning}</td></tr>
-                      ))}</tbody>
-                    </table>
-                  </div>
-                )}
-                {c.keyLearningPoints?.length > 0 && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Key Learning Points</div>
-                    <ol className="space-y-2">{c.keyLearningPoints.map((lp, i) => (
-                      <li key={i} className="text-sm text-slate-800 flex gap-2">
-                        <span className="font-bold text-slate-500 flex-shrink-0 min-w-[1.5rem]">{i+1}.</span>
-                        <div><span className="font-semibold text-slate-900">{lp.point}.</span> <span className="text-slate-700">{lp.explanation}</span>{lp.citation && <span className="text-xs text-slate-500 italic ml-1">({lp.citation})</span>}</div>
-                      </li>
-                    ))}</ol>
-                  </div>
-                )}
-               {c.focusedHistoryQuestions?.length > 0 && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Focused History Questions</div>
-                    <ul className="space-y-2">{c.focusedHistoryQuestions.map((hq, i) => (
-                      <li key={i} className="text-sm text-slate-800"><div className="font-semibold">{hq.question}</div><div className="text-xs text-slate-600 italic">Rationale: {hq.rationale}</div></li>
-                    ))}</ul>
-                  </div>
-                )}
-                {c.physicalExam?.maneuver && (
-                  <div className="keep-together">
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Physical Examination</div>
-                    <div className="text-sm text-slate-800">
-                      <div className="font-semibold mb-1">{c.physicalExam.maneuver}</div>
-                      {c.physicalExam.steps?.length > 0 && <ol className="ml-4 list-decimal space-y-1 mb-2">{c.physicalExam.steps.map((st, i) => <li key={i}>{st}</li>)}</ol>}
-                      {c.physicalExam.interpretation && <div className="text-xs text-slate-600 italic">Interpretation: {c.physicalExam.interpretation}</div>}
-                    </div>
-                  </div>
-                )}
-                {c.keyLabsAndImaging?.length > 0 && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Key Labs & Imaging</div>
-                    <table className="w-full text-xs border border-slate-200">
-                      <thead><tr className="bg-slate-100"><th className="px-2 py-1.5 text-left">Study</th><th className="px-2 py-1.5 text-left">Purpose</th><th className="px-2 py-1.5 text-left">Interpretation</th><th className="px-2 py-1.5 text-left">Role</th></tr></thead>
-                      <tbody>{c.keyLabsAndImaging.map((lab, i) => (
-                        <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
-                          <td className="px-2 py-1.5 font-semibold text-slate-900 border-t align-top">{lab.study}</td>
-                          <td className="px-2 py-1.5 text-slate-700 border-t align-top">{lab.purpose}</td>
-                          <td className="px-2 py-1.5 text-slate-700 border-t align-top">{lab.interpretation}</td>
-                          <td className="px-2 py-1.5 text-slate-700 border-t align-top">{lab.role}</td>
+            <section key={idx} className="doc-case-wrap">
+              <div className="doc-case-numeral">Case {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}</div>
+              <h2 className="doc-case-title">{c.problem}</h2>
+
+              {c.primaryDiagnosis?.name && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Primary Diagnosis</div>
+                  <p style={{ margin: 0 }}>
+                    <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{c.primaryDiagnosis.name}. </span>
+                    {c.primaryDiagnosis.briefDefinition}
+                  </p>
+                </div>
+              )}
+
+              {c.differentialDiagnosis?.length > 0 && (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Differential Diagnosis</div>
+                  <table className="doc-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: "35%" }}>Alternative</th>
+                        <th>Clinical Reasoning</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {c.differentialDiagnosis.map((dd, i) => (
+                        <tr key={i}>
+                          <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{dd.diagnosis}</td>
+                          <td>{dd.reasoning}</td>
                         </tr>
-                      ))}</tbody>
-                    </table>
-                  </div>
-                )}
-                {c.treatmentApproach && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Treatment Approach</div>
-                    {c.treatmentApproach.firstLine?.length > 0 && (
-                      <div className="mb-3 keep-together">
-                        <div className="text-xs font-semibold text-slate-600 mb-1 subsection-header">First-Line Management</div>
-                        <table className="w-full text-sm border border-slate-200">
-                          <thead><tr className="bg-slate-100"><th className="px-2 py-1.5 text-left">Treatment</th><th className="px-2 py-1.5 text-left">Dosing</th><th className="px-2 py-1.5 text-left">Evidence</th></tr></thead>
-                          <tbody>{c.treatmentApproach.firstLine.map((t, i) => (
-                            <tr key={i} className="border-t"><td className="px-2 py-2 font-semibold align-top">{t.treatment}</td><td className="px-2 py-2 text-slate-700 align-top">{t.dosing}</td><td className="px-2 py-2 text-slate-600 italic align-top">{t.evidence}</td></tr>
-                          ))}</tbody>
-                        </table>
-                      </div>
-                    )}
-                   {c.treatmentApproach.additional?.length > 0 && (
-                      <div>
-                        <div className="text-xs font-semibold text-slate-600 mb-1 subsection-header">Additional Considerations</div>
-                        <ul className="text-sm text-slate-800 space-y-1 ml-4 list-disc">{c.treatmentApproach.additional.map((a, i) => <li key={i}>{a}</li>)}</ul>
-                      </div>
-                    )}
-                  </div>
-                )}
-                {c.patientContextConsiderations && (
-                  <div className="keep-together">
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Patient Context</div>
-                    <div className="text-sm text-slate-800">{c.patientContextConsiderations}</div>
-                  </div>
-                )}
-                {c.communicationTeaching?.scenario && (
-                  <div className="keep-together">
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Communication Teaching</div>
-                    <div className="text-sm text-slate-800">
-                      <div className="mb-2"><span className="font-semibold">Scenario:</span> {c.communicationTeaching.scenario}</div>
-                      {c.communicationTeaching.script && <div className="p-2 bg-slate-50 border-l-4 border-slate-400 italic">"{c.communicationTeaching.script}"</div>}
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {c.keyLearningPoints?.length > 0 && (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Key Learning Points</div>
+                  <ol style={{ margin: 0, paddingLeft: 0, listStyle: "none", counterReset: "lp" }}>
+                    {c.keyLearningPoints.map((lp, i) => (
+                      <li key={i} className="keep-together" style={{ display: "flex", gap: "0.85rem", marginBottom: "0.85rem", counterIncrement: "lp" }}>
+                        <span style={{ flexShrink: 0, fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: "0.9rem", color: "var(--doc-navy-mid)", minWidth: "1.5rem", textAlign: "right" }}>{i + 1}.</span>
+                        <div style={{ flex: 1 }}>
+                          <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{lp.point}. </span>
+                          <span>{lp.explanation}</span>
+                          {lp.citation && (
+                            <span style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", fontSize: "0.85em", color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>
+                              ({lp.citation})
+                            </span>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {c.focusedHistoryQuestions?.length > 0 && (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Focused History Questions</div>
+                  <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
+                    {c.focusedHistoryQuestions.map((hq, i) => (
+                      <li key={i} className="keep-together" style={{ marginBottom: "0.75rem", paddingLeft: "0.85rem", borderLeft: "1px solid var(--doc-hairline)" }}>
+                        <div style={{ fontWeight: 500 }}>{hq.question}</div>
+                        <div style={{ fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic", marginTop: "0.15rem" }}>{hq.rationale}</div>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {c.physicalExam?.maneuver && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Physical Examination</div>
+                  <div style={{ fontWeight: 600, color: "var(--doc-navy)", marginBottom: "0.4rem" }}>{c.physicalExam.maneuver}</div>
+                  {c.physicalExam.steps?.length > 0 && (
+                    <ol style={{ margin: "0 0 0.5rem", paddingLeft: "1.3rem" }}>
+                      {c.physicalExam.steps.map((st, i) => <li key={i} style={{ marginBottom: "0.2rem" }}>{st}</li>)}
+                    </ol>
+                  )}
+                  {c.physicalExam.interpretation && (
+                    <div style={{ fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+                      Interpretation: {c.physicalExam.interpretation}
                     </div>
+                  )}
+                </div>
+              )}
+
+              {c.keyLabsAndImaging?.length > 0 && (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Key Labs & Imaging</div>
+                  <table className="doc-table" style={{ fontSize: "0.82rem" }}>
+                    <thead>
+                      <tr>
+                        <th>Study</th>
+                        <th>Purpose</th>
+                        <th>Interpretation</th>
+                        <th>Role</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {c.keyLabsAndImaging.map((lab, i) => (
+                        <tr key={i}>
+                          <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{lab.study}</td>
+                          <td>{lab.purpose}</td>
+                          <td>{lab.interpretation}</td>
+                          <td>{lab.role}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {c.treatmentApproach && (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Treatment Approach</div>
+                  {c.treatmentApproach.firstLine?.length > 0 && (
+                    <div className="keep-together" style={{ marginBottom: "1rem" }}>
+                      <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>First-Line Management</div>
+                      <table className="doc-table">
+                        <thead>
+                          <tr>
+                            <th>Treatment</th>
+                            <th>Dosing</th>
+                            <th>Evidence</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {c.treatmentApproach.firstLine.map((t, i) => (
+                            <tr key={i}>
+                              <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{t.treatment}</td>
+                              <td>{t.dosing}</td>
+                              <td style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {c.treatmentApproach.additional?.length > 0 && (
+                    <div>
+                      <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>Additional Considerations</div>
+                      <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                        {c.treatmentApproach.additional.map((a, i) => <li key={i} style={{ marginBottom: "0.3rem" }}>{a}</li>)}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {c.patientContextConsiderations && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Patient Context</div>
+                  <p style={{ margin: 0 }}>{c.patientContextConsiderations}</p>
+                </div>
+              )}
+
+              {c.communicationTeaching?.scenario && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Communication Teaching</div>
+                  <div style={{ marginBottom: "0.5rem" }}>
+                    <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Scenario. </span>
+                    {c.communicationTeaching.scenario}
                   </div>
-                )}
-                {c.recommendedReading?.length > 0 && (
-                  <div>
-                    <div className="text-xs uppercase tracking-wide font-bold text-slate-700 mb-2 border-b border-slate-300 pb-1 subsection-header">Recommended Reading</div>
-                    <ol className="space-y-1.5 ml-4 list-decimal text-sm">{c.recommendedReading.map((r, i) => (
-                      <li key={i} className="text-slate-800"><span className="font-semibold">{r.reference}</span>{r.relevance && <div className="text-xs text-slate-600 italic">{r.relevance}</div>}</li>
-                    ))}</ol>
-                  </div>
-                )}
-                {c.quoteToDiscuss && (
-                  <div className="border-l-4 border-amber-500 bg-amber-50 px-3 py-2 callout-box">
-                    <div className="text-xs font-bold text-purple-900 mb-1 uppercase">Clinical Pearl</div>
-                    <div className="text-sm text-slate-800">{c.clinicalPearl}</div>
-                  </div>
-                )}
-                {c.quoteToDiscuss && (
-                  <div className="border-l-4 border-amber-500 bg-amber-50 px-3 py-2">
-                    <div className="text-xs font-bold text-amber-900 mb-1 uppercase">Quote to Discuss</div>
-                    <div className="italic text-sm text-slate-800">"{c.quoteToDiscuss}"</div>
-                  </div>
-                )}
-              </div>
+                  {c.communicationTeaching.script && (
+                    <div style={{
+                      padding: "0.75rem 1rem",
+                      background: "var(--doc-paper)",
+                      borderLeft: "2px solid var(--doc-navy-mid)",
+                      fontFamily: "'Source Serif 4', serif",
+                      fontStyle: "italic",
+                      fontSize: "0.92rem",
+                      lineHeight: 1.55,
+                    }}>
+                      "{c.communicationTeaching.script}"
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {c.recommendedReading?.length > 0 && (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Recommended Reading</div>
+                  <ol style={{ margin: 0, paddingLeft: "1.3rem" }}>
+                    {c.recommendedReading.map((r, i) => (
+                      <li key={i} style={{ marginBottom: "0.5rem" }}>
+                        <span style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{r.reference}</span>
+                        {r.relevance && <div style={{ fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic", marginTop: "0.1rem" }}>{r.relevance}</div>}
+                      </li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+
+              {c.clinicalPearl && (
+                <div className="doc-callout-pearl">
+                  <div className="label">Clinical Pearl</div>
+                  <div style={{ fontSize: "0.92rem", fontStyle: "italic", fontFamily: "'Source Serif 4', serif" }}>{c.clinicalPearl}</div>
+                </div>
+              )}
+
+              {c.quoteToDiscuss && (
+                <div className="doc-callout-quote">
+                  <div className="label">Patient's Voice</div>
+                  <div className="quote-text">{c.quoteToDiscuss}</div>
+                </div>
+              )}
             </section>
           );
         })}
 
+        {/* Lab Trends */}
         {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
-          <section>
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Lab & Vital Trends for Interpretation</h2>
-            <table className="w-full text-sm border border-slate-300">
-              <thead><tr className="bg-slate-800 text-white"><th className="px-3 py-2 text-left font-semibold w-1/4">Parameter</th><th className="px-3 py-2 text-left font-semibold w-1/3">Trend</th><th className="px-3 py-2 text-left font-semibold">Teaching Point</th></tr></thead>
-              <tbody>{s.labTrends.content.map((t, i) => (
-                <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
-                  <td className="px-3 py-2 font-semibold text-slate-900 border-t border-slate-200">{t.parameter}</td>
-                  <td className="px-3 py-2 text-slate-700 border-t border-slate-200">{t.trend}</td>
-                  <td className="px-3 py-2 text-slate-700 border-t border-slate-200 italic">{t.teachingPoint || "—"}</td>
+          <section style={{ marginTop: "2.5rem" }}>
+            <h2 className="doc-h2">Lab & Vital Trends for Interpretation</h2>
+            <table className="doc-table">
+              <thead>
+                <tr>
+                  <th style={{ width: "22%" }}>Parameter</th>
+                  <th style={{ width: "33%" }}>Trend</th>
+                  <th>Teaching Point</th>
                 </tr>
-              ))}</tbody>
+              </thead>
+              <tbody>
+                {s.labTrends.content.map((t, i) => (
+                  <tr key={i}>
+                    <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{t.parameter}</td>
+                    <td>{t.trend}</td>
+                    <td style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.teachingPoint || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
             </table>
           </section>
         )}
 
+        {/* Cross-Cutting Themes */}
         {s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0 && (
-          <section>
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Cross-Cutting Themes</h2>
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">{s.crossCuttingThemes.content.map((t, i) => (
-              <div key={i} className="border border-slate-300 p-3 rounded bg-slate-50"><div className="text-xs uppercase font-bold text-slate-500 mb-1">Theme {i+1}</div><div className="text-sm text-slate-800">{t}</div></div>
-            ))}</div>
+          <section style={{ marginTop: "2.5rem" }}>
+            <h2 className="doc-h2">Cross-Cutting Themes</h2>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
+              {s.crossCuttingThemes.content.map((t, i) => (
+                <div key={i} className="keep-together" style={{
+                  padding: "1rem 1.15rem",
+                  background: "var(--doc-paper)",
+                  borderTop: "2px solid var(--doc-navy-mid)",
+                }}>
+                  <div className="doc-meta-label" style={{ marginBottom: "0.35rem" }}>Theme {String(i + 1).padStart(2, "0")}</div>
+                  <div style={{ fontSize: "0.9rem" }}>{t}</div>
+                </div>
+              ))}
+            </div>
           </section>
         )}
 
+        {/* Evidence Deep-Dive */}
         {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
-          <EvidenceDeepDive content={s.synthesizedEvidence.content} allSourceImages={doc.allSourceImages} />
+          <div style={{ marginTop: "2.5rem" }}>
+            <EvidenceDeepDive content={s.synthesizedEvidence.content} allSourceImages={doc.allSourceImages} />
+          </div>
         )}
 
-        
-{/* All shelf questions consolidated at the end */}
+        {/* Practice Questions */}
         {enabledCases.some(tc => tc.data.shelfQuestions?.length > 0) && (
-          <section>
-            <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Practice Questions</h2>
-            <p className="text-sm text-slate-600 italic mb-4">Shelf-style questions covering the problems taught in this case.</p>
+          <section style={{ marginTop: "2.5rem" }}>
+            <h2 className="doc-h2">Practice Questions</h2>
+            <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+              Shelf-style questions covering the problems taught in this case.
+            </p>
             {enabledCases.map((tc, caseIdx) => {
               if (!tc.data.shelfQuestions?.length) return null;
               return (
-                <div key={caseIdx} className="mb-6">
-                  <h3 className="text-sm font-bold text-slate-800 mb-2 pb-1 border-b border-slate-200">{tc.data.problem}</h3>
-                  <div className="space-y-4">
-                   {tc.data.shelfQuestions.map((q, i) => (
-                      <div key={i} className="border border-slate-300 rounded overflow-hidden keep-together">
-                        <div className="bg-slate-100 px-3 py-1.5 text-xs font-bold text-slate-700 uppercase">Question {i+1}</div>
-                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">{q.vignette}</div>
-                        <div className="px-3 py-2 text-sm text-slate-800 border-b border-slate-200">
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4">
-                            {q.options && Object.entries(q.options).map(([letter, opt]) => (
-                              <div key={letter} className={q.correctAnswer === letter ? "font-semibold" : ""}><span className="font-bold mr-1">{letter})</span>{opt}</div>
-                            ))}
-                          </div>
-                        </div>
-                        <div className="px-3 py-2 bg-emerald-50 text-sm">
-                          <div className="text-xs font-bold text-emerald-800 uppercase mb-1">Answer: {q.correctAnswer}</div>
-                          <div className="text-slate-800">{q.explanation}</div>
-                        </div>
+                <div key={caseIdx} style={{ marginBottom: "2rem" }}>
+                  <div className="doc-subsection-label" style={{ marginBottom: "0.75rem" }}>{tc.data.problem}</div>
+                  {tc.data.shelfQuestions.map((q, i) => (
+                    <div key={i} className="doc-shelf-q keep-together">
+                      <div style={{ display: "flex", gap: "0.75rem", marginBottom: "0.6rem" }}>
+                        <span className="doc-meta-label" style={{ flexShrink: 0 }}>Q{i + 1}</span>
+                        <div style={{ flex: 1 }}>{q.vignette}</div>
                       </div>
-                    ))}
-                  </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "0.35rem 1.5rem", paddingLeft: "2.2rem", marginBottom: "0.5rem" }}>
+                        {q.options && Object.entries(q.options).map(([letter, opt]) => (
+                          <div key={letter} style={{
+                            fontSize: "0.87rem",
+                            fontWeight: q.correctAnswer === letter ? 600 : 400,
+                            color: q.correctAnswer === letter ? "var(--doc-consensus)" : "inherit",
+                          }}>
+                            <span style={{ fontWeight: 600, marginRight: "0.35rem" }}>{letter})</span>{opt}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="doc-shelf-answer" style={{ marginLeft: "2.2rem" }}>
+                        <div className="label">Answer · {q.correctAnswer}</div>
+                        <div style={{ fontSize: "0.87rem" }}>{q.explanation}</div>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               );
             })}
           </section>
         )}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Ongoing Learning Goals</h2>
-              <ul className="space-y-2">{s.longTermGoals.content.map(g => (
-                <li key={g.id} className="text-sm text-slate-800 flex gap-2"><span className="text-indigo-700 font-bold flex-shrink-0">›</span><div><div>{g.text}</div><div className="text-xs text-slate-500">Added {g.added}</div></div></li>
-              ))}</ul>
-            </section>
-          )}
-          {s.nextSessionPrep?.enabled && (
-            <section>
-              <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Prep for Next Session</h2>
-              {s.nextSessionPrep.reflectionQuestions?.length > 0 && (
-                <div className="mb-3">
-                  <div className="text-xs uppercase font-bold text-slate-600 mb-1">Reflect on</div>
-                  <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">{s.nextSessionPrep.reflectionQuestions.map((q, i) => <li key={i}>{q}</li>)}</ul>
-                </div>
-              )}
-              <div className="text-xs uppercase font-bold text-slate-600 mb-1">Come prepared to</div>
-              <ul className="space-y-1 text-sm text-slate-800 ml-4 list-disc">
-                <li>Discuss the questions above.</li>
-                <li>Bring 1 question that came up while working through this material.</li>
-                <li>Identify 1 area where you felt unsure.</li>
-              </ul>
-            </section>
-          )}
-        </div>
 
-        <div className="border-t-2 border-slate-800 pt-3 mt-6 text-xs text-slate-500 text-center space-y-1">
-          <div>Generated by LIC Teaching Document Generator · Aligned with the CU School of Medicine MEPO framework.</div>
-          <div className="italic">For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
+        {/* Long-term Goals + Next Session Prep — side by side */}
+        {(s.longTermGoals?.enabled || s.nextSessionPrep?.enabled) && (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "2rem", marginTop: "2.5rem" }}>
+            {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (
+              <section>
+                <h2 className="doc-h2">Ongoing Learning Goals</h2>
+                <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
+                  {s.longTermGoals.content.map(g => (
+                    <li key={g.id} style={{ marginBottom: "0.75rem", paddingLeft: "0.85rem", borderLeft: "2px solid var(--doc-navy-mid)" }}>
+                      <div>{g.text}</div>
+                      <div className="doc-meta-label" style={{ marginTop: "0.2rem" }}>Added {g.added}</div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {s.nextSessionPrep?.enabled && (
+              <section>
+                <h2 className="doc-h2">Prep for Next Session</h2>
+                {s.nextSessionPrep.reflectionQuestions?.length > 0 && (
+                  <div style={{ marginBottom: "1rem" }}>
+                    <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>Reflect On</div>
+                    <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                      {s.nextSessionPrep.reflectionQuestions.map((q, i) => <li key={i} style={{ marginBottom: "0.3rem" }}>{q}</li>)}
+                    </ul>
+                  </div>
+                )}
+                <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>Come Prepared To</div>
+                <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                  <li style={{ marginBottom: "0.3rem" }}>Discuss the questions above.</li>
+                  <li style={{ marginBottom: "0.3rem" }}>Bring one question that came up while working through this material.</li>
+                  <li>Identify one area where you felt unsure.</li>
+                </ul>
+              </section>
+            )}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div className="doc-footer">
+          <div>LIC Teaching Document · Aligned with the CU School of Medicine MEPO framework</div>
+          <div style={{ marginTop: "0.35rem", fontStyle: "italic" }}>For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
+          <div style={{ marginTop: "0.5rem", fontSize: "0.65rem" }}>Generated {doc.generated}</div>
         </div>
       </div>
-    </>
+    </div>
   );
 }
+
 // ============ EVIDENCE DEEP-DIVE (structured claims rendering) ============
 function EvidenceDeepDive({ content, allSourceImages = [] }) {
   const [expandedClaims, setExpandedClaims] = React.useState({});
@@ -2697,18 +3141,11 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
     return map;
   }, [content.allFigures]);
 
-  const strengthConfig = {
-    consensus: { label: "Consensus", color: "bg-emerald-100 text-emerald-800 border-emerald-300", dot: "bg-emerald-500" },
-    majority: { label: "Majority", color: "bg-sky-100 text-sky-800 border-sky-300", dot: "bg-sky-500" },
-    "single-source": { label: "Single source", color: "bg-slate-100 text-slate-700 border-slate-300", dot: "bg-slate-400" },
-    conflict: { label: "Conflict", color: "bg-amber-100 text-amber-900 border-amber-300", dot: "bg-amber-500" },
-  };
-
   if (!content.synthesized && content.singleSource) {
     return (
       <section>
-        <h2 className="text-base font-bold text-slate-900 mb-3 pb-2 border-b-2 border-slate-800 uppercase tracking-wide">Evidence Deep-Dive</h2>
-        <div className="text-sm text-slate-800 leading-relaxed prose prose-sm max-w-none" dangerouslySetInnerHTML={{ __html: content.singleSource.contentHtml || "" }} />
+        <h2 className="doc-h2">Evidence Deep-Dive</h2>
+        <div style={{ fontSize: "0.9rem" }} dangerouslySetInnerHTML={{ __html: content.singleSource.contentHtml || "" }} />
       </section>
     );
   }
@@ -2724,84 +3161,80 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
 
   return (
     <section>
-      <div className="flex items-center justify-between mb-3 pb-2 border-b-2 border-slate-800">
-        <h2 className="text-base font-bold text-slate-900 uppercase tracking-wide">Evidence Deep-Dive</h2>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", paddingBottom: "0.5rem", borderBottom: "2px solid var(--doc-navy)" }}>
+        <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: "1.0625rem", fontWeight: 600, color: "var(--doc-navy)", margin: 0 }}>Evidence Deep-Dive</h2>
         <button
           onClick={() => setShowProvenance(!showProvenance)}
-          className="no-print text-xs text-slate-500 hover:text-slate-700 underline"
-          title="Show which AI research tool surfaced each claim"
+          className="no-print"
+          style={{ fontSize: "0.7rem", color: "var(--doc-warm-gray)", textDecoration: "underline", background: "none", border: "none", cursor: "pointer" }}
         >
           {showProvenance ? "Hide" : "Show"} AI-tool provenance
         </button>
       </div>
 
-      <div className="space-y-5">
+      <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
         {orderedTopics.map((topic, ti) => (
-          <div key={ti} className="border border-slate-200 rounded overflow-hidden keep-together">
-            <div className="bg-slate-100 px-3 py-2 border-b border-slate-200">
-              <h3 className="text-sm font-bold text-slate-900 subsection-header">{topic.topic}</h3>
-            </div>
-            <div className="p-3 space-y-3">
+          <div key={ti} className="keep-together">
+            <div className="doc-subsection-label" style={{ marginBottom: "0.75rem" }}>{topic.topic}</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
               {topic.claims?.map((claim, ci) => {
-                const cfg = strengthConfig[claim.strength] || strengthConfig["single-source"];
                 const claimKey = `${ti}-${ci}`;
                 const hasDetail = claim.perSourceDetail?.length > 0;
                 const refFigures = (claim.figureRefs || []).map(id => figureMap[id]).filter(Boolean);
                 const realCitations = claim.citations || [];
                 const provenanceTools = claim.provenance || claim.sources || [];
+                const strength = claim.strength || "single-source";
+                const strengthLabels = { consensus: "Consensus", majority: "Majority", "single-source": "Single source", conflict: "Conflict" };
                 return (
-                  <div key={ci} className="text-sm keep-together">
-                    <div className="flex items-start gap-2">
-                      <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-2 ${cfg.dot}`}></div>
-                      <div className="flex-1">
-                        <div className="text-slate-800 leading-relaxed">
-                          {claim.statement}
-                          {realCitations.length > 0 && (
-                            <span className="text-xs text-slate-500 ml-1 italic">
-                              ({realCitations.join("; ")})
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 mt-1 flex-wrap no-print">
-                          <span className={`text-xs px-1.5 py-0.5 rounded border font-medium ${cfg.color}`}>{cfg.label}</span>
-                          {showProvenance && provenanceTools.length > 0 && (
-                            <span className="text-xs text-slate-500">
-                              via {provenanceTools.join(", ")}
-                            </span>
-                          )}
-                          {hasDetail && showProvenance && (
-                            <button
-                              onClick={() => toggleClaim(claimKey)}
-                              className="text-xs text-indigo-600 hover:text-indigo-800 underline"
-                            >
-                              {expandedClaims[claimKey] ? "Hide" : "Show"} per-tool detail
-                            </button>
-                          )}
-                        </div>
-                        {showProvenance && expandedClaims[claimKey] && hasDetail && (
-                          <div className="mt-2 pl-3 border-l-2 border-indigo-300 space-y-1.5 bg-indigo-50/50 py-2 pr-2 rounded-r no-print">
-                            {claim.perSourceDetail.map((psd, pi) => (
-                              <div key={pi} className="text-xs">
-                                <span className="font-semibold text-indigo-900">{psd.source}:</span>
-                                <span className="text-slate-700 ml-1">{psd.detail}</span>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {refFigures.length > 0 && (
-                          <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
-                            {refFigures.map((fig, fi) => (
-                              <figure key={fi} className="border border-slate-200 rounded overflow-hidden bg-white">
-                                <img src={fig.dataUrl} alt={fig.alt} className="w-full h-auto" style={{ maxHeight: "300px", objectFit: "contain" }} />
-                                <figcaption className="text-xs text-slate-600 px-2 py-1 bg-slate-50 border-t border-slate-200">
-                                  {fig.alt}
-                                </figcaption>
-                              </figure>
-                            ))}
-                          </div>
-                        )}
-                      </div>
+                  <div key={ci} className="keep-together" style={{ paddingLeft: "0.85rem", borderLeft: "1px solid var(--doc-hairline)" }}>
+                    <div style={{ fontSize: "0.9rem", lineHeight: 1.6 }}>
+                      {claim.statement}
+                      {realCitations.length > 0 && (
+                        <span style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", fontSize: "0.85em", color: "var(--doc-warm-gray)", marginLeft: "0.35rem" }}>
+                          ({realCitations.join("; ")})
+                        </span>
+                      )}
                     </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.85rem", marginTop: "0.4rem", flexWrap: "wrap" }} className="no-print">
+                      <span className={`doc-strength ${strength}`}>
+                        <span className="dot"></span>{strengthLabels[strength]}
+                      </span>
+                      {showProvenance && provenanceTools.length > 0 && (
+                        <span style={{ fontSize: "0.7rem", color: "var(--doc-warm-gray)" }}>
+                          via {provenanceTools.join(", ")}
+                        </span>
+                      )}
+                      {hasDetail && showProvenance && (
+                        <button
+                          onClick={() => toggleClaim(claimKey)}
+                          style={{ fontSize: "0.7rem", color: "var(--doc-navy-mid)", textDecoration: "underline", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                        >
+                          {expandedClaims[claimKey] ? "Hide" : "Show"} per-tool detail
+                        </button>
+                      )}
+                    </div>
+                    {showProvenance && expandedClaims[claimKey] && hasDetail && (
+                      <div style={{ marginTop: "0.5rem", padding: "0.6rem 0.85rem", background: "var(--doc-paper)", borderLeft: "2px solid var(--doc-navy-mid)" }} className="no-print">
+                        {claim.perSourceDetail.map((psd, pi) => (
+                          <div key={pi} style={{ fontSize: "0.78rem", marginBottom: pi < claim.perSourceDetail.length - 1 ? "0.35rem" : 0 }}>
+                            <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{psd.source}:</span>
+                            <span style={{ color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>{psd.detail}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {refFigures.length > 0 && (
+                      <div style={{ marginTop: "0.6rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "0.6rem" }}>
+                        {refFigures.map((fig, fi) => (
+                          <figure key={fi} style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white" }}>
+                            <img src={fig.dataUrl} alt={fig.alt} style={{ width: "100%", height: "auto", maxHeight: "260px", objectFit: "contain", display: "block" }} />
+                            <figcaption style={{ fontSize: "0.72rem", color: "var(--doc-warm-gray)", padding: "0.35rem 0.5rem", borderTop: "1px solid var(--doc-hairline)", fontStyle: "italic" }}>
+                              {fig.alt}
+                            </figcaption>
+                          </figure>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -2811,48 +3244,35 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
       </div>
 
       {content.keyTakeaways?.length > 0 && (
-        <div className="mt-4 border-l-4 border-indigo-500 bg-indigo-50 p-3 callout-box">
-          <div className="text-xs uppercase font-bold text-indigo-900 mb-2">Key Takeaways</div>
-          <ul className="space-y-1 ml-4 list-disc text-sm text-slate-800">
-            {content.keyTakeaways.map((t, i) => <li key={i}>{t}</li>)}
+        <div style={{ marginTop: "1.5rem", padding: "1rem 1.25rem", background: "var(--doc-paper)", borderLeft: "3px solid var(--doc-navy-mid)" }} className="keep-together">
+          <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Key Takeaways</div>
+          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+            {content.keyTakeaways.map((t, i) => <li key={i} style={{ fontSize: "0.9rem", marginBottom: "0.25rem" }}>{t}</li>)}
           </ul>
         </div>
       )}
 
       {content.crossReferenceMatrix?.length > 0 && (
-        <div className="mt-4 keep-together">
-          <div className="text-xs uppercase font-bold text-slate-700 mb-2">Topic → Primary References</div>
-          <table className="w-full text-xs border border-slate-300">
+        <div style={{ marginTop: "1.5rem" }} className="keep-together">
+          <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Topic → Primary References</div>
+          <table className="doc-table" style={{ fontSize: "0.82rem" }}>
             <thead>
-              <tr className="bg-slate-100">
-                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Topic</th>
-                <th className="px-2 py-1.5 text-left font-semibold text-slate-700 border-b border-slate-300">Primary references</th>
-                {showProvenance && <th className="px-2 py-1.5 text-left font-semibold text-slate-500 border-b border-slate-300 no-print">AI tools</th>}
+              <tr>
+                <th>Topic</th>
+                <th>Primary References</th>
+                {showProvenance && <th className="no-print">AI Tools</th>}
               </tr>
             </thead>
             <tbody>
               {content.crossReferenceMatrix.map((row, i) => (
-                <tr key={i} className={i % 2 === 0 ? "bg-white" : "bg-slate-50"}>
-                  <td className="px-2 py-1.5 font-medium text-slate-900 border-t border-slate-200 align-top">{row.topic}</td>
-                  <td className="px-2 py-1.5 text-slate-700 border-t border-slate-200 align-top">{(row.primaryReferences || row.addressedBy || []).join("; ") || "—"}</td>
-                  {showProvenance && <td className="px-2 py-1.5 text-slate-500 italic border-t border-slate-200 align-top no-print">{(row.provenanceTools || []).join(", ") || "—"}</td>}
+                <tr key={i}>
+                  <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{row.topic}</td>
+                  <td>{(row.primaryReferences || row.addressedBy || []).join("; ") || "—"}</td>
+                  {showProvenance && <td className="no-print" style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{(row.provenanceTools || []).join(", ") || "—"}</td>}
                 </tr>
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {/* Source contribution footer — small, subtle, hidden in print unless toggled */}
-      {showProvenance && content.sourceContribution?.length > 0 && (
-        <div className="mt-4 p-2 bg-slate-50 border border-slate-200 rounded text-xs text-slate-600 no-print">
-          <span className="font-semibold">Synthesized from AI tools: </span>
-          {content.sourceContribution.map((s, i) => (
-            <span key={i}>
-              {i > 0 && ", "}
-              {s.source} ({s.detailLevel} detail{s.figureCount > 0 ? `, ${s.figureCount} fig` : ""})
-            </span>
-          ))}
         </div>
       )}
     </section>
