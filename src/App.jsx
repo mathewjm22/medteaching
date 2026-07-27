@@ -4030,6 +4030,7 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
             </div>
           </div>
         </div>
+      </div>
 
       {/* Bottom sticky commit bar */}
       <div className="sticky bottom-4 mt-4 bg-white border-2 border-indigo-600 rounded-lg p-4 shadow-lg flex items-center justify-between">
