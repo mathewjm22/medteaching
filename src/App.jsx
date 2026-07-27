@@ -3625,7 +3625,8 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
               <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider">Live Preview</div>
               <div className="text-xs text-slate-400 italic">Read-only · edits happen in the left panel</div>
             </div>
-<div style={{ transform: "scale(0.72)", transformOrigin: "top left", width: "138.9%", pointerEvents: "none" }}>
+            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm" style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
+              <div style={{ transform: "scale(0.72)", transformOrigin: "top left", width: "138.9%", pointerEvents: "none" }}>
                 <DocumentContent doc={{...previewData, isPreview: true}} phase={phase} session={session} />
               </div>
             </div>
