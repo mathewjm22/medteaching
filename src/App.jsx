@@ -105,6 +105,9 @@ const [customTopics, setCustomTopics] = useState([]);
   // Goals
   const [longTermGoals, setLongTermGoals] = useState([]);
   const [newGoal, setNewGoal] = useState("");
+  const [recommendedGoals, setRecommendedGoals] = useState([]);
+  const [loadingGoalRecs, setLoadingGoalRecs] = useState(false);
+  const [goalRecError, setGoalRecError] = useState(null);
   const [sessionGoal, setSessionGoal] = useState("");
 
   // Generated content
@@ -1708,6 +1711,97 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
     setImageAttachments(prev => prev.map(i => i.id === id ? {...i, caption} : i));
   };
 
+  const generateGoalRecommendations = async () => {
+    if (!aiEnabled) {
+      setGoalRecError("Enable AI on the Setup tab first.");
+      return;
+    }
+    setLoadingGoalRecs(true);
+    setGoalRecError(null);
+
+    const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
+    const problemsText = (selectedProblems.length > 0 ? selectedProblems : (workingDx ? [workingDx] : [])).join("; ");
+    const existingGoalsText = longTermGoals.map(g => `- ${g.text}`).join("\n") || "(none yet)";
+
+    // Phase-appropriate context — what benchmark they're working toward
+    const phaseBenchmark = phase.monthsIn <= 4
+      ? "Working toward Mid-Year (February) benchmarks: organized histories on 2 patients per session, focused physical exams, appropriate differentials with justification, notes with some editing, first-draft management plans."
+      : phase.monthsIn <= 8
+      ? "Working toward End-of-Year (August) benchmarks: 3-4 patients per session, prioritized differentials from multiple sources, independent management plans for common conditions, notes usable for billing with minimal editing, presentations adjusted for audience."
+      : "Preparing for Sub-Internship readiness: independent care of common presentations, subtle diagnostic reasoning, escalation judgment, interprofessional collaboration.";
+
+    const sys = `You are a warm, thoughtful teaching attending helping a medical student in a CU Trek Longitudinal Integrated Clerkship set long-term learning goals — goals they'll work on over WEEKS or MONTHS, not a single session.
+
+Long-term goals should be:
+- SPECIFIC and observable (not "improve clinical reasoning" — instead "develop a systematic approach to chest pain differential that includes life-threats first")
+- Anchored to what the student is working toward next (their phase-appropriate benchmark)
+- Something they can practice across multiple patient encounters, not one-time achievements
+- Distinct from goals they already have (do not recommend duplicates or near-duplicates of existing goals)
+- Grounded in what this case has revealed about their developmental edge — if the case involved a complex thyroid patient with poor adherence, a goal like "build a mental checklist for uncovering medication adherence barriers" is more useful than "learn more about thyroid disease"
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "recommendations": [
+    {
+      "goal": "the specific, observable long-term learning goal — 1-2 sentences",
+      "rationale": "1 sentence on why this goal fits THIS student now — reference the case, the phase benchmark, or the MEPO progression"
+    }
+  ]
+}
+
+Generate exactly 3-4 recommendations. Each must be distinct in focus. Do NOT restate goals already listed as existing.`;
+
+    const mepoContext = activeFocus.length > 0
+      ? `Focus areas being taught today: ${activeFocus.map(f => focusLabels[f]).join(", ")}`
+      : "";
+
+    const user = `STUDENT PHASE: ${phase.name} (month ${phase.monthsIn + 1} of Foothills LIC)
+${phaseBenchmark}
+
+TODAY'S CASE CONTEXT:
+- Chief concern: ${chiefConcern || "not specified"}
+- Working diagnosis: ${workingDx || "not specified"}
+- Problems in focus: ${problemsText || "not specified"}
+- Complexity: ${session.complexity}
+${noteAnalysis?.redFlags?.length > 0 ? `- Red flags in the case: ${noteAnalysis.redFlags.join("; ")}` : ""}
+${noteAnalysis?.keyTopics?.length > 0 ? `- Key teaching topics from the note: ${noteAnalysis.keyTopics.join(", ")}` : ""}
+
+${mepoContext}
+
+EXISTING LONG-TERM GOALS THE STUDENT ALREADY HAS (do not duplicate):
+${existingGoalsText}
+
+Generate 3-4 long-term learning goal recommendations that this student should work on over the coming weeks/months, grounded in what today's case revealed and what their phase benchmark expects.`;
+
+    try {
+      const response = await callAi(sys, user, 1200);
+      const parsed = extractJson(response);
+      setRecommendedGoals(parsed.recommendations || []);
+    } catch (e) {
+      console.error("Goal recommendations failed:", e);
+      setGoalRecError(e.message);
+    }
+    setLoadingGoalRecs(false);
+  };
+
+  const acceptGoalRecommendation = (rec) => {
+    const updated = [...longTermGoals, {
+      id: Date.now(),
+      text: rec.goal,
+      added: new Date().toLocaleDateString(),
+      status: "active",
+      source: "ai-recommended",
+    }];
+    setLongTermGoals(updated);
+    storage.set("longTermGoals", JSON.stringify(updated)).catch(() => {});
+    // Remove this recommendation from the shown list
+    setRecommendedGoals(prev => prev.filter(r => r.goal !== rec.goal));
+  };
+
+  const dismissGoalRecommendation = (rec) => {
+    setRecommendedGoals(prev => prev.filter(r => r.goal !== rec.goal));
+  };
+
   const addGoal = () => {
     if (!newGoal.trim()) return;
     const updated = [...longTermGoals, { id: Date.now(), text: newGoal, added: new Date().toLocaleDateString(), status: "active" }];
@@ -2999,6 +3093,84 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                 <h2 className="text-lg font-semibold text-slate-900 mb-1">Long-Term Learning Goals</h2>
                 <p className="text-sm text-slate-500">Goals persist across sessions.</p>
               </div>
+
+              {/* AI-recommended goals panel — only shown when there's enough context */}
+              {aiEnabled && (chiefConcern || workingDx || activeFocusList.length > 0) && (
+                <div style={{ background: "linear-gradient(135deg, #fefce8 0%, #fff 100%)", border: "1px solid #fef3c7", borderRadius: "10px", padding: "1rem 1.25rem" }}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span style={{ fontSize: "1.1rem" }}>💡</span>
+                      <div>
+                        <div style={{ fontFamily: "'Inter', sans-serif", textTransform: "uppercase", letterSpacing: "0.11em", fontSize: "0.65rem", fontWeight: 600, color: "#78350f" }}>
+                          AI recommendations
+                        </div>
+                        <div className="text-xs text-slate-600 mt-0.5">
+                          Based on today's case and your phase-appropriate benchmarks
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={generateGoalRecommendations}
+                      disabled={loadingGoalRecs}
+                      className="text-xs px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg font-medium flex items-center gap-1 disabled:opacity-50"
+                    >
+                      {loadingGoalRecs
+                        ? <><Loader2 className="w-3 h-3 animate-spin" />Thinking...</>
+                        : recommendedGoals.length > 0
+                          ? <><Wand2 className="w-3 h-3" />Get new ideas</>
+                          : <><Sparkles className="w-3 h-3" />Suggest goals</>
+                      }
+                    </button>
+                  </div>
+
+                  {goalRecError && (
+                    <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2 mt-2">
+                      {goalRecError}
+                    </div>
+                  )}
+
+                  {recommendedGoals.length > 0 && (
+                    <div className="mt-3 space-y-1.5">
+                      {recommendedGoals.map((rec, i) => (
+                        <div
+                          key={i}
+                          className="group flex items-start gap-2 p-2.5 bg-white/70 hover:bg-white border border-amber-100 hover:border-amber-300 rounded-lg transition"
+                        >
+                          <button
+                            onClick={() => acceptGoalRecommendation(rec)}
+                            className="flex-shrink-0 w-6 h-6 rounded-full bg-emerald-100 hover:bg-emerald-600 text-emerald-700 hover:text-white flex items-center justify-center transition mt-0.5"
+                            title="Add this goal"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                          </button>
+                          <div className="flex-1 min-w-0">
+                            <div className="text-sm text-slate-900 leading-snug">{rec.goal}</div>
+                            {rec.rationale && (
+                              <div className="text-xs text-slate-500 italic mt-1">
+                                <span className="font-medium not-italic">Why: </span>{rec.rationale}
+                              </div>
+                            )}
+                          </div>
+                          <button
+                            onClick={() => dismissGoalRecommendation(rec)}
+                            className="flex-shrink-0 text-slate-300 hover:text-slate-600 p-0.5 opacity-0 group-hover:opacity-100 transition"
+                            title="Dismiss this suggestion"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {!loadingGoalRecs && recommendedGoals.length === 0 && !goalRecError && (
+                    <div className="text-xs text-slate-500 italic mt-2">
+                      Click "Suggest goals" to see 3-4 phase-appropriate long-term learning goals based on today's case. You can add them to your goals list with one click.
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div className="flex gap-2">
                 <input type="text" value={newGoal} onChange={e => setNewGoal(e.target.value)} onKeyDown={e => e.key === "Enter" && addGoal()} placeholder="e.g., Build systematic approach to ECG interpretation by month 6" className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
                 <button onClick={addGoal} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1 text-sm font-medium"><Plus className="w-4 h-4" />Add</button>
