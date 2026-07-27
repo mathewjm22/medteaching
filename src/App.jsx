@@ -3767,7 +3767,7 @@ function Editable({ value, onSave, multiline = false, className = "", as: Tag = 
 // ============ PREVIEW EDITOR COMPONENT ============
 function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, aiStatus, focusLabels, phase, session }) {
   const s = previewData.sections;
-
+  const [previewScale, setPreviewScale] = React.useState(0.72);
   const SectionHeader = ({ label, enabled, onToggle, count }) => (
     <div className="flex items-center justify-between bg-slate-100 px-4 py-2 border-b border-slate-200">
       <div className="flex items-center gap-2">
@@ -4001,18 +4001,35 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
         {/* RIGHT: live document preview */}
         <div className="relative">
           <div className="sticky top-24">
-            <div className="flex items-center justify-between mb-2 px-1">
+            <div className="flex items-center justify-between mb-2 px-1 gap-2 flex-wrap">
               <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider">Live Preview</div>
-              <div className="text-xs text-slate-400 italic">Read-only · edits happen in the left panel</div>
+              <div className="flex items-center gap-2">
+                <div className="flex items-center gap-0.5 bg-white border border-slate-300 rounded overflow-hidden">
+                  {[
+                    { val: 0.6, label: "60%" },
+                    { val: 0.72, label: "72%" },
+                    { val: 0.9, label: "90%" },
+                    { val: 1.0, label: "100%" },
+                  ].map(opt => (
+                    <button
+                      key={opt.val}
+                      onClick={() => setPreviewScale(opt.val)}
+                      className={`px-2 py-1 text-xs transition ${previewScale === opt.val ? "bg-indigo-600 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+                <div className="text-xs text-slate-400 italic">Read-only</div>
+              </div>
             </div>
             <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm" style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
-              <div style={{ transform: "scale(0.72)", transformOrigin: "top left", width: "138.9%", pointerEvents: "none" }}>
+              <div style={{ transform: `scale(${previewScale})`, transformOrigin: "top left", width: `${100 / previewScale}%`, pointerEvents: "none" }}>
                 <DocumentContent doc={{...previewData, isPreview: true}} phase={phase} session={session} />
               </div>
             </div>
           </div>
         </div>
-      </div>
 
       {/* Bottom sticky commit bar */}
       <div className="sticky bottom-4 mt-4 bg-white border-2 border-indigo-600 rounded-lg p-4 shadow-lg flex items-center justify-between">
@@ -4027,7 +4044,6 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 
 // ============ FINAL DOCUMENT COMPONENT ============
 function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
-  const [editMode, setEditMode] = React.useState(true);
   const [savedHtml, setSavedHtml] = React.useState(null);
   const editableRef = React.useRef(null);
 
@@ -4040,16 +4056,15 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
     if (editableRef.current) editableRef.current.focus();
   };
 
-  const saveChanges = () => {
+  const captureEdits = () => {
     if (editableRef.current) {
       setSavedHtml(editableRef.current.innerHTML);
     }
-    setEditMode(false);
   };
 
   const printDoc = () => {
     // Ensure any pending edit is captured before print
-    if (editMode && editableRef.current) {
+    if (editableRef.current) {
       setSavedHtml(editableRef.current.innerHTML);
     }
     setTimeout(() => window.print(), 100);
@@ -4059,6 +4074,8 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   // and clickable navigation. Fully offline — no external dependencies.
   const exportAsHtml = () => {
     if (!editableRef.current) return;
+    // Capture any in-progress edits into savedHtml before exporting
+    setSavedHtml(editableRef.current.innerHTML);
 
     const docHtml = editableRef.current.innerHTML;
     const student = doc.student || "Student";
@@ -4640,11 +4657,7 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  // If we've saved HTML edits, render those. Otherwise render the fresh doc.
   const renderContent = () => {
-    if (savedHtml && !editMode) {
-      return <div dangerouslySetInnerHTML={{ __html: savedHtml }} />;
-    }
     return <DocumentContent doc={doc} phase={phase} session={session} />;
   };
 
@@ -4652,23 +4665,18 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
     <>
       <div className="no-print flex gap-2 mb-4 items-center flex-wrap">
         <button onClick={printDoc} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"><Printer className="w-4 h-4" />Print / Save as PDF</button>
-        <button onClick={exportAsHtml} className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium" title="Download as a standalone interactive HTML file to give to the student">
+        <button onClick={exportAsHtml} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium" title="Download as a standalone interactive HTML file to give to the student">
           <FileText className="w-4 h-4" />Export as Interactive HTML
         </button>
         <button onClick={onEdit} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back to Preview</button>
-        {editMode ? (
-          <button onClick={saveChanges} className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm font-medium">Lock Edits</button>
-        ) : (
-          <button onClick={() => setEditMode(true)} className="px-4 py-2 bg-amber-500 text-white rounded-lg hover:bg-amber-600 text-sm font-medium">Resume Editing</button>
-        )}
         <div className="text-xs text-slate-500 italic ml-2">
-          {editMode ? "Click any text to edit. Use toolbar for bold/italic/underline." : "Editing locked — click Resume Editing to make more changes."}
+          Click any text to edit — changes save automatically. Use the toolbar for bold/italic/underline.
         </div>
       </div>
 
-      {/* Floating formatting toolbar */}
-      {editMode && (
-        <div className="no-print sticky top-32 z-20 mb-2 flex items-center gap-1 bg-slate-800 text-white rounded-lg shadow-lg px-2 py-1 w-fit flex-wrap">
+      {/* Floating formatting toolbar — always visible in FinalDocument since it's always editable */}
+      <div className="no-print sticky z-20 mb-2 flex items-center gap-1 bg-slate-800 text-white rounded-lg shadow-lg px-2 py-1 w-fit flex-wrap" style={{ top: "140px" }}>
+
           <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("bold"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded font-bold text-sm" title="Bold">B</button>
           <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("italic"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded italic text-sm" title="Italic">I</button>
           <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("underline"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded underline text-sm" title="Underline">U</button>
@@ -4709,16 +4717,16 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
           <div className="w-px h-5 bg-slate-600 mx-1"></div>
           <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("removeFormat"); }} className="px-2 py-1.5 hover:bg-slate-700 rounded text-xs" title="Clear all formatting">Clear</button>
         </div>
-      )}
 
       <div className="bg-white rounded-xl border border-slate-200 print-doc" style={{fontFamily: "Georgia, 'Times New Roman', serif"}}>
         <div
           ref={editableRef}
-          contentEditable={editMode}
+          contentEditable
           suppressContentEditableWarning
           spellCheck={false}
-          className={editMode ? "outline-none focus:outline-none" : ""}
-          style={editMode ? { boxShadow: "inset 0 0 0 2px rgba(251, 191, 36, 0.3)", borderRadius: "0.75rem" } : {}}
+          onBlur={captureEdits}
+          className="outline-none focus:outline-none"
+          style={{ boxShadow: "inset 0 0 0 2px rgba(251, 191, 36, 0.2)", borderRadius: "0.75rem" }}
         >
           {renderContent()}
         </div>
