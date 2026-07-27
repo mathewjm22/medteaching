@@ -2244,9 +2244,17 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                   )}
                 </div>
               )}
-              <button onClick={saveState} className="flex items-center gap-2 px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 rounded-lg transition" title="Save session metadata and long-term goals immediately">
-                {saved ? <Check className="w-4 h-4 text-emerald-600" /> : <Save className="w-4 h-4" />}
-                {saved ? "Saved" : "Save"}
+              <button
+                onClick={() => {
+                  if (confirm("Start a new session? Your current clinical note, sources, PDFs, and any generated content will be cleared. Long-term goals and session settings will be kept.")) {
+                    discardRestoredSession();
+                  }
+                }}
+                className="flex items-center gap-2 px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition"
+                title="Clear the current case and start fresh (long-term goals are preserved)"
+              >
+                <Plus className="w-4 h-4" />
+                New session
               </button>
             </div>
           </div>
@@ -2490,16 +2498,23 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
             </div>
 
             {noteAnalysis && (
-              <div className="p-4 bg-indigo-50 border border-indigo-200 rounded-lg space-y-3">
-                <div className="flex items-center gap-2 text-sm font-semibold text-indigo-900">
-                  <Sparkles className="w-4 h-4" />AI Analysis
-                </div>
-                {noteAnalysis.reasoning && <div className="text-sm text-indigo-800 italic">{noteAnalysis.reasoning}</div>}
-
+              <div className="p-4 bg-white border-2 border-indigo-300 rounded-lg space-y-4">
+                {/* PROBLEMS TO SELECT — the star of this panel */}
                 {activeProblems.length > 0 && (
                   <div>
-                    <div className="text-sm font-semibold text-indigo-900 mb-2">Active problems — select which to focus teaching on:</div>
-                    <div className="space-y-1.5">
+                    <div className="flex items-center gap-2 mb-3">
+                      <div className="flex items-center gap-2">
+                        <div className="w-7 h-7 rounded-full bg-indigo-600 text-white flex items-center justify-center text-sm font-bold">
+                          1
+                        </div>
+                        <h3 className="text-base font-bold text-slate-900">Select problems to teach on</h3>
+                      </div>
+                      <span className="text-xs text-slate-500 ml-auto">
+                        {selectedProblems.length} of {activeProblems.length} selected
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-600 mb-3 ml-9">Each selected problem generates its own teaching case in the final document.</p>
+                    <div className="space-y-2 ml-9">
                       {activeProblems.map((p, i) => {
                         const selected = selectedProblems.includes(p.problem);
                         return (
@@ -2509,68 +2524,80 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                               if (selected) setSelectedProblems(selectedProblems.filter(sp => sp !== p.problem));
                               else setSelectedProblems([...selectedProblems, p.problem]);
                             }}
-                            className={`w-full flex items-start gap-2 p-2 rounded-lg text-left transition ${selected ? "bg-indigo-100 border border-indigo-300" : "bg-white border border-slate-200 hover:border-indigo-200"}`}
+                            className={`w-full flex items-start gap-3 p-3 rounded-lg text-left transition ${selected ? "bg-indigo-50 border-2 border-indigo-400 shadow-sm" : "bg-slate-50 border-2 border-slate-200 hover:border-indigo-300 hover:bg-white"}`}
                           >
-                            <div className={`w-4 h-4 rounded border-2 flex-shrink-0 mt-0.5 flex items-center justify-center ${selected ? "bg-indigo-600 border-indigo-600" : "border-slate-300"}`}>
-                              {selected && <Check className="w-3 h-3 text-white" />}
+                            <div className={`w-5 h-5 rounded flex-shrink-0 mt-0.5 flex items-center justify-center transition ${selected ? "bg-indigo-600" : "bg-white border-2 border-slate-300"}`}>
+                              {selected && <Check className="w-3.5 h-3.5 text-white" />}
                             </div>
                             <div className="flex-1 min-w-0">
-                              <div className="text-sm font-medium text-slate-900">{p.problem}</div>
-                              {p.keyIssue && <div className="text-xs text-slate-600 mt-0.5">{p.keyIssue}</div>}
-                              {p.teachingValue && <div className="text-xs text-indigo-700 mt-0.5 italic">Teaching value: {p.teachingValue}</div>}
+                              <div className="text-sm font-semibold text-slate-900">{p.problem}</div>
+                              {p.keyIssue && <div className="text-xs text-slate-600 mt-1">{p.keyIssue}</div>}
+                              {p.teachingValue && <div className="text-xs text-indigo-700 mt-1 italic"><span className="font-medium not-italic">Teaching value: </span>{p.teachingValue}</div>}
                             </div>
                           </button>
                         );
                       })}
                     </div>
-                    <div className="text-xs text-slate-500 mt-2">{selectedProblems.length} of {activeProblems.length} selected.</div>
                   </div>
                 )}
 
-                {noteAnalysis.keyTopics?.length > 0 && (
-                  <div className="text-sm text-indigo-900">
-                    <strong>Key teaching topics:</strong>
-                    <div className="flex flex-wrap gap-1 mt-1">
-                      {noteAnalysis.keyTopics.map((t, i) => <span key={i} className="px-2 py-0.5 bg-white rounded-full text-xs border border-indigo-200">{t}</span>)}
-                    </div>
-                  </div>
-                )}
-
-                {patientQuotes.length > 0 && (
-                  <div className="text-sm text-indigo-900">
-                    <strong>Patient/caregiver quotes extracted ({patientQuotes.length}):</strong>
-                    <div className="mt-1 space-y-1">
-                      {patientQuotes.slice(0, 3).map((q, i) => <div key={i} className="text-xs italic text-slate-700 bg-white p-2 rounded border border-slate-200">"{q}"</div>)}
-                      {patientQuotes.length > 3 && <div className="text-xs text-slate-500">+ {patientQuotes.length - 3} more</div>}
-                    </div>
-                  </div>
-                )}
-
-                {labTrends.length > 0 && (
-                  <div className="text-sm text-indigo-900">
-                    <strong>Lab/vital trends identified ({labTrends.length}):</strong>
-                    <div className="mt-1 space-y-1">
-                      {labTrends.slice(0, 3).map((t, i) => (
-                        <div key={i} className="text-xs bg-white p-2 rounded border border-slate-200">
-                          <span className="font-medium text-slate-800">{t.parameter}:</span> <span className="text-slate-600">{t.trend}</span>
+                {/* Supporting AI details — collapsed by default */}
+                <details className="border-t border-slate-200 pt-3">
+                  <summary className="cursor-pointer text-sm font-medium text-slate-600 hover:text-slate-900 flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-indigo-500" />
+                    Show what else the AI extracted
+                  </summary>
+                  <div className="mt-3 space-y-3 pl-6">
+                    {noteAnalysis.reasoning && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1">AI's Reasoning</div>
+                        <div className="text-sm text-slate-700 italic">{noteAnalysis.reasoning}</div>
+                      </div>
+                    )}
+                    {noteAnalysis.redFlags?.length > 0 && (
+                      <div className="p-2 bg-red-50 border border-red-200 rounded">
+                        <div className="text-xs font-semibold text-red-900 uppercase tracking-wide mb-1">⚠ Red Flags / Can't-Miss</div>
+                        <div className="text-sm text-red-900">{noteAnalysis.redFlags.join("; ")}</div>
+                      </div>
+                    )}
+                    {noteAnalysis.keyTopics?.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1">Key Teaching Topics</div>
+                        <div className="flex flex-wrap gap-1">
+                          {noteAnalysis.keyTopics.map((t, i) => <span key={i} className="px-2 py-0.5 bg-indigo-50 text-indigo-800 rounded-full text-xs border border-indigo-200">{t}</span>)}
                         </div>
-                      ))}
-                    </div>
+                      </div>
+                    )}
+                    {patientQuotes.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1">Patient Quotes ({patientQuotes.length})</div>
+                        <div className="space-y-1">
+                          {patientQuotes.slice(0, 3).map((q, i) => <div key={i} className="text-xs italic text-slate-700 bg-slate-50 p-2 rounded border border-slate-200">"{q}"</div>)}
+                          {patientQuotes.length > 3 && <div className="text-xs text-slate-500 italic">+ {patientQuotes.length - 3} more</div>}
+                        </div>
+                      </div>
+                    )}
+                    {labTrends.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1">Lab & Vital Trends ({labTrends.length})</div>
+                        <div className="space-y-1">
+                          {labTrends.slice(0, 3).map((t, i) => (
+                            <div key={i} className="text-xs bg-slate-50 p-2 rounded border border-slate-200">
+                              <span className="font-medium text-slate-800">{t.parameter}:</span> <span className="text-slate-600">{t.trend}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {noteAnalysis.suggestedFocus?.length > 0 && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600 uppercase tracking-wide mb-1">Suggested Focus Areas</div>
+                        <div className="text-sm text-slate-700">{noteAnalysis.suggestedFocus.map(f => focusLabels[f] || f).join(", ")}</div>
+                        <div className="text-xs text-slate-500 mt-1 italic">Auto-selected on the next tab. You can adjust.</div>
+                      </div>
+                    )}
                   </div>
-                )}
-
-                {noteAnalysis.redFlags?.length > 0 && (
-                  <div className="text-sm text-red-900 bg-red-50 border border-red-200 rounded p-2">
-                    <strong>Red flags / can't-miss:</strong> {noteAnalysis.redFlags.join("; ")}
-                  </div>
-                )}
-
-                {noteAnalysis.suggestedFocus?.length > 0 && (
-                  <div className="text-sm text-indigo-900">
-                    <strong>Suggested focus areas:</strong> {noteAnalysis.suggestedFocus.map(f => focusLabels[f] || f).join(", ")}
-                    <div className="text-xs text-indigo-700 mt-1">Auto-selected on the Focus tab. You can adjust.</div>
-                  </div>
-                )}
+                </details>
               </div>
             )}
 
@@ -3749,8 +3776,85 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
                           </details>
                         )}
                         <details className="text-sm text-slate-600">
-                          <summary className="cursor-pointer">View all content for this case</summary>
-                          <pre className="text-xs bg-white p-2 mt-1 rounded overflow-x-auto max-h-64">{JSON.stringify(tc.data, null, 2)}</pre>
+                          <summary className="cursor-pointer font-medium hover:text-slate-900">View all sections for this case</summary>
+                          <div className="mt-2 space-y-2 text-xs bg-white p-3 rounded border border-slate-200 max-h-96 overflow-y-auto">
+                            {tc.data.illnessScript && (tc.data.illnessScript.epidemiology || tc.data.illnessScript.timeCourse) && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Illness Script</div>
+                                <div className="mt-0.5 text-slate-600">
+                                  {tc.data.illnessScript.epidemiology && <div><span className="font-medium">Epidemiology:</span> {tc.data.illnessScript.epidemiology}</div>}
+                                  {tc.data.illnessScript.timeCourse && <div className="mt-0.5"><span className="font-medium">Time course:</span> {tc.data.illnessScript.timeCourse}</div>}
+                                  {tc.data.illnessScript.keySymptoms && <div className="mt-0.5"><span className="font-medium">Key symptoms:</span> {tc.data.illnessScript.keySymptoms}</div>}
+                                </div>
+                              </div>
+                            )}
+                            {tc.data.differentialDiagnosis?.length > 0 && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Differential ({tc.data.differentialDiagnosis.length})</div>
+                                <ul className="mt-0.5 ml-3 list-disc text-slate-600">
+                                  {tc.data.differentialDiagnosis.map((dd, i) => <li key={i}>{dd.diagnosis}</li>)}
+                                </ul>
+                              </div>
+                            )}
+                            {tc.data.keyLearningPoints?.length > 0 && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Learning Points ({tc.data.keyLearningPoints.length})</div>
+                                <ol className="mt-0.5 ml-3 list-decimal text-slate-600">
+                                  {tc.data.keyLearningPoints.map((lp, i) => <li key={i}>{lp.point}</li>)}
+                                </ol>
+                              </div>
+                            )}
+                            {tc.data.focusedHistoryQuestions?.length > 0 && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>History Questions ({tc.data.focusedHistoryQuestions.length})</div>
+                                <ul className="mt-0.5 ml-3 list-disc text-slate-600">
+                                  {tc.data.focusedHistoryQuestions.map((hq, i) => <li key={i}>{hq.question}</li>)}
+                                </ul>
+                              </div>
+                            )}
+                            {tc.data.physicalExam?.maneuver && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Physical Exam</div>
+                                <div className="mt-0.5 text-slate-600">{tc.data.physicalExam.maneuver}</div>
+                              </div>
+                            )}
+                            {tc.data.keyLabsAndImaging?.length > 0 && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Labs & Imaging ({tc.data.keyLabsAndImaging.length})</div>
+                                <ul className="mt-0.5 ml-3 list-disc text-slate-600">
+                                  {tc.data.keyLabsAndImaging.map((lab, i) => <li key={i}>{lab.study}</li>)}
+                                </ul>
+                              </div>
+                            )}
+                            {tc.data.treatmentApproach?.firstLine?.length > 0 && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Treatment ({tc.data.treatmentApproach.firstLine.length} first-line)</div>
+                                <ul className="mt-0.5 ml-3 list-disc text-slate-600">
+                                  {tc.data.treatmentApproach.firstLine.map((t, i) => <li key={i}>{t.treatment}</li>)}
+                                </ul>
+                              </div>
+                            )}
+                            {tc.data.communicationTeaching?.scenario && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Communication Teaching</div>
+                                <div className="mt-0.5 text-slate-600 italic">{tc.data.communicationTeaching.scenario}</div>
+                              </div>
+                            )}
+                            {tc.data.recommendedReading?.length > 0 && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Recommended Reading ({tc.data.recommendedReading.length})</div>
+                                <ul className="mt-0.5 ml-3 list-disc text-slate-600">
+                                  {tc.data.recommendedReading.map((r, i) => <li key={i}>{r.reference}</li>)}
+                                </ul>
+                              </div>
+                            )}
+                            {tc.data.quoteToDiscuss && (
+                              <div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Patient's Voice</div>
+                                <div className="mt-0.5 text-slate-600 italic">"{tc.data.quoteToDiscuss}"</div>
+                              </div>
+                            )}
+                          </div>
                         </details>
                       </div>
                     )}
