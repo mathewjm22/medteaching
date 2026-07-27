@@ -4043,7 +4043,6 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 }
 
 // ============ FINAL DOCUMENT COMPONENT ============
-// ============ FINAL DOCUMENT COMPONENT ============
 function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   const [savedHtml, setSavedHtml] = React.useState(null);
   const editableRef = React.useRef(null);
