@@ -697,6 +697,14 @@ const analyzeNote = async () => {
 
 ${lensGuidance[teachingLens]}
 
+${lensGuidance[teachingLens]}
+
+CU DEFINITION OF PATIENT COMPLEXITY (for calibrating your teaching):
+- Common presentation = single or a few uncomplicated concerns, routine problem, minimal intervention/orders/follow-up needed, or follow-up care of a stable chronic condition.
+- Complex presentation = multiple problems that may interact and require extensive clinical decision-making, extensive test/referral/medication ordering, undifferentiated patient with unclear diagnosis, atypical presentation of a common diagnosis, patient needing urgent/emergent care, or decision-making heavily influenced by a complex social situation.
+
+This patient is: ${session.complexity === "complex" ? "COMPLEX" : "COMMON"} per the attending's judgment. ${session.complexity === "complex" ? "Complexity means the student is not yet expected to manage this level independently — care of complex patients is an Alpine/Summit (M3/M4) expectation, not an LIC-year expectation. Your teaching should reflect that. Focus on helping the student recognize the features that MAKE this complex, and on the specific reasoning threads a preceptor uses to navigate the complexity. Do not expect Sub-I-level ownership of the plan." : "Common means the student SHOULD be building toward independent care of this type of presentation. Your teaching should reinforce the pattern recognition, workup, and management approach for this presentation type — this is the bread and butter they need to own by end of the LIC year."}
+
 The note may have structured sections (Assessment, Plan, PMH, Meds, Labs, etc.), multiple active problems, direct patient/caregiver quotes, and trended lab/vital data. Extract all of this.
 
 Available focus areas: history, physicalExam, differential, workup, management, patientContext, ebm, communication
@@ -999,6 +1007,68 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
       ? "Mid-Year Level: illness scripts, multi-step reasoning, prioritized differentials with justification, beginning management plans. At or approaching February benchmarks, working toward End-of-Year (August) benchmarks."
       : "End-of-Year Level: independent management of common internal medicine concerns, 3-4 patients per session, notes usable for billing with minimal editing. At or exceeding August benchmarks, preparing for Sub-I readiness. Complex/atypical presentations may still warrant preceptor input — that is appropriate for LIC level.";
       
+    // MEPO progression targets — what the student should be moving toward for each focus area.
+    // Sourced from CU MEPO Milestones doc + Internal Medicine Benchmarks.
+    // Format: for each focus area, describe where the student is now vs. where the next benchmark expects them.
+    const buildMepoProgression = () => {
+      const isFoundational = phase.monthsIn <= 4;
+      const isMidYear = phase.monthsIn > 4 && phase.monthsIn <= 8;
+      // isEndOfYear = phase.monthsIn > 8
+
+      const progressions = {
+        history: isFoundational
+          ? "MEPO Patient Care #6 + ICS #16 — Currently using templates for comprehensive histories on medically stable patients. Teaching should help the student move toward gathering histories that are guided by an emerging differential, and toward writing notes with fewer omissions."
+          : isMidYear
+          ? "MEPO Patient Care #6 + ICS #16 — Currently obtains organized histories on 2 patients per session and starts to navigate less-straightforward encounters. Teaching should help them progress toward hypothesis-driven targeted questioning, incorporating secondary sources (chart review), and producing notes with minimal editing."
+          : "MEPO Patient Care #6 + ICS #16 — Currently obtains histories on 3-4 patients per session for common concerns. Teaching should sharpen adaptive communication for individual patient needs, hypothesis-driven refinement, and notes usable for billing with minimal editing.",
+
+        physicalExam: isFoundational
+          ? "MEPO Patient Care #7 — Currently performing focused exams with preceptor input. Teaching should help the student begin selecting exam maneuvers guided by history and preliminary differential, and identifying normal vs. abnormal findings confidently."
+          : isMidYear
+          ? "MEPO Patient Care #7 — Currently performing focused exams that reflect the working differential for common concerns. Teaching should progress them toward independent selection of specialized maneuvers and identification/description of abnormal findings with clinical relevance."
+          : "MEPO Patient Care #7 — Currently performs targeted exams for any chief concern, adapting to individual patient characteristics. Teaching should highlight subtle findings and their integration into diagnostic reasoning.",
+
+        differential: isFoundational
+          ? "MEPO Patient Care #8 — Currently constructing simple problem lists and basic differentials for common chief concerns. Teaching should help the student start building illness scripts, comparing/contrasting diagnoses, and justifying selections with history/exam features."
+          : isMidYear
+          ? "MEPO Patient Care #8 — Currently develops appropriately broad prioritized differentials for common conditions, with justification from patient record. Teaching should progress them toward gathering pertinent information from multiple sources in a hypothesis-driven fashion and recognizing when presentations fall outside typical illness scripts."
+          : "MEPO Patient Care #8 — Currently develops prioritized differentials that are neither too broad nor too narrow for any chief concern. Teaching should reinforce updating the differential as emerging information arrives, and integrating context from patient record and outside sources.",
+
+        workup: isFoundational
+          ? "MEPO Patient Care #9 — Currently interpreting common labs (CBC, BMP, LFTs, UA, TSH, CXR, ECG) with normal reference ranges provided. Teaching should help the student recognize which tests connect to which differential items, and identify critically abnormal results needing escalation."
+          : isMidYear
+          ? "MEPO Patient Care #9 — Currently recommends and interprets common labs/imaging in core specialties, taking patient factors into account. Teaching should progress them toward applying guidelines, correlating labs with differential, and knowing when a test is high-value vs. low-value."
+          : "MEPO Patient Care #9 — Currently recommends and interprets diagnostic and screening tests across specialties, including preventive care per USPSTF/guideline recommendations. Teaching should emphasize evidence-based selection, cost-consciousness, and shared decision-making around testing.",
+
+        management: isFoundational
+          ? "MEPO Patient Care #10 — Currently suggesting basic management for the primary concern of common cases, with preceptor doing the work of ordering. Teaching should help the student start naming appropriate medications with correct dose/route/frequency and identifying appropriate follow-up."
+          : isMidYear
+          ? "MEPO Patient Care #10 — Currently develops appropriate plans with preceptor support and can enter simple orders for co-signature. Teaching should progress them toward independent plans for common conditions, patient-centered plan communication, and following up on tests and referrals."
+          : "MEPO Patient Care #10 — Currently develops management plans with minimal preceptor input for common conditions, communicates plans clearly to patients, and follows through on tests/referrals. Teaching should highlight edge cases, escalation triggers, and interprofessional collaboration.",
+
+        patientContext: isFoundational
+          ? "MEPO Patient Care #13 — Currently recognizing individual social determinants of health with preceptor prompting. Teaching should help the student proactively gather SDOH information and start describing how these factors affect the patient's care plan."
+          : isMidYear
+          ? "MEPO Patient Care #13 — Currently incorporates SDOH into care plans with some guidance. Teaching should progress them toward creating individualized plans that actively mitigate SDOH barriers and incorporate family/community context."
+          : "MEPO Patient Care #13 — Currently incorporates contextual factors into plans without prompting for common presentations. Teaching should highlight interprofessional resources, community-level determinants, and structural competency in individual care.",
+
+        ebm: isFoundational
+          ? "MEPO Curiosity #24 — Currently retrieving basic information from aggregators (UpToDate, Google) when prompted. Teaching should model formulating focused clinical questions and start distinguishing types of evidence."
+          : isMidYear
+          ? "MEPO Curiosity #24 — Currently accesses medical literature when prompted and uses point-of-care resources. Teaching should progress them toward independently accessing guidelines to answer clinical questions and appraising levels of evidence."
+          : "MEPO Curiosity #24 — Currently forms clinical questions and independently accesses medical literature and national guidelines. Teaching should sharpen critical appraisal of evidence quality and application to individual patients.",
+
+        communication: isFoundational
+          ? "MEPO ICS #15 + #17 — Currently using patient-centered communication basics and following an oral presentation template. Teaching should help the student start responding to patient verbal/nonverbal cues and organize presentations to minimize editorializing."
+          : isMidYear
+          ? "MEPO ICS #15 + #17 — Currently communicates effectively with team and patients, and presents in standard format with pertinent information. Teaching should progress them toward specialized communication (shared decision-making, motivational interviewing, delivering difficult news) and adjusting presentations for audience."
+          : "MEPO ICS #15 + #17 — Currently uses patient-centered communication across most encounters and presents pertinent information adjusted for audience. Teaching should highlight advanced conversation types (goals of care, sensitive news) and refinement of presentation efficiency.",
+      };
+
+      return activeFocus.map(k => progressions[k]).filter(Boolean).join("\n\n");
+    };
+    const mepoProgression = buildMepoProgression();
+
     const focusFilters = {
       differential: activeFocus.includes("differential"),
       history: activeFocus.includes("history"),
@@ -1100,7 +1170,11 @@ STUDENT DEVELOPMENTAL CONTEXT (CU School of Medicine Trek Curriculum, Foothills 
 - Supervision expectation for common presentations: ${phase.supervisionExpectation || "phase-appropriate"}
 - Difficulty calibration for this teaching content: ${difficulty}
 
-Tailor the depth, autonomy expectations, and framing of your teaching to this developmental level. Do NOT teach at a Sub-I or resident level for a Foundational-phase student, and do NOT teach at a Foundational level for an End-of-Year student ready to transition to Acting Internships. The CU MEPO framework distinguishes what is expected at Mid-Year (February) vs End-of-Year (August) benchmarks — write teaching content that helps this student meet the next benchmark they are working toward, not the benchmark they have already passed.${lensGuidance[teachingLens]}
+SPECIFIC MEPO MILESTONE TARGETS FOR THE FOCUS AREAS OF THIS TEACHING SESSION:
+
+${mepoProgression}
+
+Every learning point you generate must move the student along the specific MEPO progression above. Do NOT teach concepts they've already mastered per their phase, and do NOT teach at a level beyond the next benchmark they're working toward. When the case gives you an opportunity to help them cross from their current level to the next benchmark, name that explicitly in the learning point (e.g., "This case is a great example of moving from template-based history to hypothesis-driven questioning — notice how our patient's...").${lensGuidance[teachingLens]}
 
 VOICE AND TONE (CRITICAL):
 - Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
@@ -1143,6 +1217,14 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 {
   "problem": "${problem}",
   "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for THIS patient"},
+  "illnessScript": {
+    "epidemiology": "1-2 sentences on who typically gets this (age, sex, risk factors, populations at higher prevalence). Reference our patient's demographics where they fit or contrast the pattern.",
+    "timeCourse": "1-2 sentences on the classic tempo of the illness — acute, subacute, chronic, episodic, progressive — and where our patient's presentation fits on that spectrum.",
+    "keySymptoms": "The classic symptom cluster (3-5 bullet-worthy items presented as a comma-separated list in a sentence). Note which of these our patient does and doesn't have.",
+    "keySigns": "The classic physical exam findings (2-4 items). Note which of these are present or absent in our patient.",
+    "keyLabsImaging": "The characteristic lab/imaging pattern (2-3 items). Note where our patient's findings fit or diverge.",
+    "naturalHistory": "1-2 sentences on what happens if untreated, and typical response to first-line treatment. Anchor to what we expect for our patient specifically."
+  },
   "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "why you considered it for OUR patient — reference her actual features, meds, or context"}],
   "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student. The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only — never displayed as citation"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
   "shelfQuestions": [{"vignette": "detailed clinical vignette 3-5 sentences (can invent a new patient for the shelf-style question)", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
@@ -1157,7 +1239,9 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "quoteToDiscuss": "if the patient said something in the note that is teachable, quote it verbatim; else empty string"
 }
 
-ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss.
+ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss.
+
+The illnessScript section is the anchor for the student's growing library of pattern recognition — this is the CU Trek curriculum's explicit expectation (MEPO Patient Care #8: "organize knowledge of clinical and basic medical science using illness scripts"). Even if this is a case with an obvious diagnosis, the illness script section formalizes the pattern so the student can retrieve it faster next time. Do NOT skip this section. Do NOT make it generic textbook material — always anchor each element to what our specific patient does or does not show.
 
 Additionally include ONLY these focus-driven optional subsections based on what the attending selected: ${includedSections || "(none — core sections only)"}. Map focus keys to subsections as follows: history → focusedHistoryQuestions, physicalExam → physicalExam, workup → keyLabsAndImaging, management → treatmentApproach, patientContext → patientContextConsiderations, communication → communicationTeaching. If a focus key isn't in the selected list above, OMIT that subsection entirely (return null or empty).
 
@@ -3726,7 +3810,56 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              {c.differentialDiagnosis?.length > 0 && (
+              {c.illnessScript && (c.illnessScript.epidemiology || c.illnessScript.timeCourse || c.illnessScript.keySymptoms) && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Illness Script</div>
+                  <p style={{ margin: "0 0 0.6rem", fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+                    The classic pattern for this diagnosis — anchored to how our patient fits or diverges. Build this into your library for faster pattern recognition next time.
+                  </p>
+                  <table className="doc-table" style={{ fontSize: "0.85rem" }}>
+                    <tbody>
+                      {c.illnessScript.epidemiology && (
+                        <tr>
+                          <td className="row-label" style={{ width: "22%" }}>Epidemiology</td>
+                          <td>{c.illnessScript.epidemiology}</td>
+                        </tr>
+                      )}
+                      {c.illnessScript.timeCourse && (
+                        <tr>
+                          <td className="row-label">Time course</td>
+                          <td>{c.illnessScript.timeCourse}</td>
+                        </tr>
+                      )}
+                      {c.illnessScript.keySymptoms && (
+                        <tr>
+                          <td className="row-label">Key symptoms</td>
+                          <td>{c.illnessScript.keySymptoms}</td>
+                        </tr>
+                      )}
+                      {c.illnessScript.keySigns && (
+                        <tr>
+                          <td className="row-label">Key signs</td>
+                          <td>{c.illnessScript.keySigns}</td>
+                        </tr>
+                      )}
+                      {c.illnessScript.keyLabsImaging && (
+                        <tr>
+                          <td className="row-label">Key labs / imaging</td>
+                          <td>{c.illnessScript.keyLabsImaging}</td>
+                        </tr>
+                      )}
+                      {c.illnessScript.naturalHistory && (
+                        <tr>
+                          <td className="row-label">Natural history</td>
+                          <td>{c.illnessScript.naturalHistory}</td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {c.differentialDiagnosis?.length > 0 && (    
                 <div style={{ marginBottom: "1.5rem" }}>
                   <div className="doc-subsection-label">Differential Diagnosis</div>
                   <table className="doc-table">
