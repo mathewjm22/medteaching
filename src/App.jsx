@@ -55,7 +55,7 @@ export default function App() {
   const [session, setSession] = useState({
     studentName: "",
     month: new Date().toLocaleString('default', { month: 'long' }),
-    licStartMonth: "August",
+    licStartMonth: "September", // CU Trek Foothills Base Camp begins in September
     sessionDate: new Date().toISOString().split('T')[0],
     encounterType: "telemedicine",
     complexity: "common",
@@ -325,27 +325,69 @@ const [customTopics, setCustomTopics] = useState([]);
     const currentIdx = months.indexOf(session.month);
     let monthsIn = currentIdx - startIdx;
     if (monthsIn < 0) monthsIn += 12;
-    if (monthsIn <= 3) return { name: "Foundational (Early LIC)", monthsIn, focus: "History-taking, physical exam basics, orientation to workflow", color: "bg-blue-50 border-blue-200 text-blue-900", pace: "1-2 patients per half-day is normal" };
-    if (monthsIn <= 7) return { name: "Developing (Mid LIC)", monthsIn, focus: "Differential diagnosis, illness scripts, targeted workup, beginning management", color: "bg-purple-50 border-purple-200 text-purple-900", pace: "2-3 patients per half-day expected" };
-    if (monthsIn <= 10) return { name: "Advancing (Late LIC)", monthsIn, focus: "Independent management, complex patients, pending orders, cross-specialty synthesis", color: "bg-emerald-50 border-emerald-200 text-emerald-900", pace: "3-4 patients per half-day; ready for advanced rotations" };
-    return { name: "End-of-Year Transition", monthsIn, focus: "Sub-I readiness, autonomous care of common conditions", color: "bg-amber-50 border-amber-200 text-amber-900", pace: "4+ patients per session" };
+
+    // Three-phase model anchored to CU Trek LIC benchmark checkpoints:
+    // Mid-Year benchmarks are formally assessed ~month 5-6 (February for Sept starters);
+    // End-of-Year benchmarks are assessed ~month 11-12 (August for Sept starters).
+    // Foothills phase of the Trek Curriculum. Students below expected level for their
+    // phase-in-year may need earlier intervention; this tool tailors teaching to the
+    // benchmark they should be working toward.
+
+    if (monthsIn <= 4) return {
+      name: "Foundational (Early Foothills)",
+      monthsIn,
+      focus: "Building the basics: gathering complete patient-centered histories using templates, performing focused physical exams, starting to construct simple problem lists and basic differentials, learning oral presentation format, orienting to clinic workflow. Illness scripts are still forming — expect slow, deliberate pattern recognition.",
+      color: "bg-blue-50 border-blue-200 text-blue-900",
+      pace: "1-2 patients per half-day session is normal at this stage. Prioritize depth over volume — pick a patient who benefits from the extra time.",
+      workingToward: "Mid-Year (February) benchmarks: independently gather organized histories on 2 patients per session, perform focused physical exams with minimal preceptor input, develop appropriate differential diagnoses with supporting justification, write notes with some editing needed, suggest management plans for the primary concern.",
+      supervisionExpectation: "Most tasks: 'Do it with the student together' or 'Let the student do it and repeat all findings.' Full independence not yet expected.",
+    };
+
+    if (monthsIn <= 8) return {
+      name: "Mid-Year Level (Approaching or At February Benchmarks)",
+      monthsIn,
+      focus: "Consolidating illness scripts and prioritized differentials, learning to justify diagnostic reasoning from patient history and record, starting to suggest management plans and simple orders, targeted hypothesis-driven data gathering, notes are more concise with fewer omissions, oral presentations follow standard format with less editorializing.",
+      color: "bg-purple-50 border-purple-200 text-purple-900",
+      pace: "2 patients per session independently — starting to navigate less-straightforward encounters. Beginning to help with basic follow-up tasks and pending orders.",
+      workingToward: "End-of-Year (August) benchmarks: independently manage 3-4 patients per session, develop age-appropriate prioritized differentials with justification from multiple sources, know when to escalate care, create management plans with minimal preceptor support, produce notes usable for billing with minimal editing, present with pertinent information adjusted for audience.",
+      supervisionExpectation: "Most tasks: 'Let the student do it and repeat all findings' progressing to 'repeat some findings or provide minimal input' for common concerns. Setbacks are normal — students may temporarily regress as they juggle new complexity.",
+    };
+
+    return {
+      name: "End-of-Year Level (August Benchmarks)",
+      monthsIn,
+      focus: "Independent care of common internal medicine concerns: comprehensive histories on 3-4 patients per session, physical exams adapted for individual patient characteristics, prioritized differentials with justification from patient record and outside sources, management plans developed with minimal preceptor support, follow-up on tests and referrals, communication of patient-centered plans to patients and families, incorporation of interprofessional team members.",
+      color: "bg-emerald-50 border-emerald-200 text-emerald-900",
+      pace: "3-4 patients per session expected. Should be handling common presentations with minimal input and recognizing when to escalate to preceptor for complex or atypical cases.",
+      workingToward: "Sub-Internship readiness. Care of patients with complex concerns is an expectation of the last two years of medical school (Alpine/Summit), not the LIC year. Focus feedback on what will help them transition into Acting Internships and residency-preparation courses.",
+      supervisionExpectation: "For common presentations: 'Let the student do it on their own and repeat some findings or provide minimal input/revisions.' Complex patients still warrant supervision — that's appropriate for LIC level.",
+    };
   };
   const phase = getPhase();
 
   const mepoMap = {
-    history: "Patient Care #6 (History)",
-    physicalExam: "Patient Care #7 (Physical Exam)",
-    differential: "Patient Care #8 (Differential Diagnosis)",
-    workup: "Patient Care #9 (Diagnostic Tests)",
-    management: "Patient Care #10 (Management Plan)",
-    patientContext: "Patient Care #13 (Socio-ecological Model)",
-    ebm: "Curiosity #24 (Evidence-Based Medicine)",
-    communication: "Interpersonal & Communication Skills #15",
+    history: "MEPO Patient Care #6 (History) + ICS #16 (Written Documentation)",
+    physicalExam: "MEPO Patient Care #7 (Physical Exam)",
+    differential: "MEPO Patient Care #8 (Differential Diagnosis)",
+    workup: "MEPO Patient Care #9 (Diagnostic Tests)",
+    management: "MEPO Patient Care #10 (Management Plan)",
+    patientContext: "MEPO Patient Care #13 (Socio-ecological Model)",
+    ebm: "MEPO Curiosity #24 (Evidence-Based Medicine)",
+    communication: "MEPO ICS #15 (Verbal & Nonverbal Communication) + ICS #17 (Oral Presentation)",
   };
 
   const focusIcons = { history: Stethoscope, physicalExam: Users, differential: Brain, workup: ClipboardList, management: Target, patientContext: Users, ebm: BookOpen, communication: Users };
-  const focusLabels = { history: "History Taking", physicalExam: "Physical Exam", differential: "Differential Diagnosis", workup: "Diagnostic Workup", management: "Management Plan", patientContext: "Patient Context / SDoH", ebm: "Evidence-Based Medicine", communication: "Communication" };
-  const sourceLabels = {
+  const focusLabels = {
+    history: "History Taking & Documentation",
+    physicalExam: "Physical Exam",
+    differential: "Differential Diagnosis",
+    workup: "Diagnostic Workup",
+    management: "Management Plan",
+    patientContext: "Patient Context / SDoH",
+    ebm: "Evidence-Based Medicine",
+    communication: "Communication & Oral Presentation",
+  };
+    const sourceLabels = {
     openevidence: "OpenEvidence",
     uptodate: "UpToDate",
     dynamed: "DynaMed",
@@ -951,11 +993,12 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
     ];
     if (problemsToTeach.length === 0) problemsToTeach.push("primary clinical problem");
 
-    const difficulty = phase.monthsIn <= 3 ? "Foundational (basic pattern recognition, single-step)"
-      : phase.monthsIn <= 7 ? "Developing (illness scripts, multi-step reasoning)"
-      : phase.monthsIn <= 10 ? "Advancing (complex vignettes, management judgment)"
-      : "Sub-I (multi-problem integration, judgment under uncertainty)";
-
+    const difficulty = phase.monthsIn <= 4
+      ? "Foundational (early Foothills LIC): basic pattern recognition, single-step reasoning, template-based history and note structure. Working toward Mid-Year (February) benchmarks."
+      : phase.monthsIn <= 8
+      ? "Mid-Year Level: illness scripts, multi-step reasoning, prioritized differentials with justification, beginning management plans. At or approaching February benchmarks, working toward End-of-Year (August) benchmarks."
+      : "End-of-Year Level: independent management of common internal medicine concerns, 3-4 patients per session, notes usable for billing with minimal editing. At or exceeding August benchmarks, preparing for Sub-I readiness. Complex/atypical presentations may still warrant preceptor input — that is appropriate for LIC level.";
+      
     const focusFilters = {
       differential: activeFocus.includes("differential"),
       history: activeFocus.includes("history"),
@@ -1047,7 +1090,17 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
       const problem = problemsToTeach[i];
       setAiStatus(prev => ({ ...prev, progress: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}` }));
 
-      const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today. Student level: ${phase.name}. Difficulty: ${difficulty}.${lensGuidance[teachingLens]}
+const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today.
+
+STUDENT DEVELOPMENTAL CONTEXT (CU School of Medicine Trek Curriculum, Foothills LIC year):
+- Current phase: ${phase.name}
+- Focus at this stage: ${phase.focus}
+- Pace expectation: ${phase.pace}
+- Working toward: ${phase.workingToward || "phase-appropriate benchmarks"}
+- Supervision expectation for common presentations: ${phase.supervisionExpectation || "phase-appropriate"}
+- Difficulty calibration for this teaching content: ${difficulty}
+
+Tailor the depth, autonomy expectations, and framing of your teaching to this developmental level. Do NOT teach at a Sub-I or resident level for a Foundational-phase student, and do NOT teach at a Foundational level for an End-of-Year student ready to transition to Acting Internships. The CU MEPO framework distinguishes what is expected at Mid-Year (February) vs End-of-Year (August) benchmarks — write teaching content that helps this student meet the next benchmark they are working toward, not the benchmark they have already passed.${lensGuidance[teachingLens]}
 
 VOICE AND TONE (CRITICAL):
 - Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
@@ -2002,17 +2055,27 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
         </div>
       </header>
 
-      <main className="max-w-6xl mx-auto px-6 py-8">
-        <div className={`no-print mb-6 p-4 rounded-lg border ${phase.color}`}>
+      <div className={`no-print mb-6 p-4 rounded-lg border ${phase.color}`}>
           <div className="flex items-start gap-3">
             <Calendar className="w-5 h-5 mt-0.5 flex-shrink-0" />
             <div className="flex-1">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold">{phase.name}</span>
-                <span className="text-xs opacity-75">Month {phase.monthsIn} of LIC</span>
+                <span className="text-xs opacity-75">Month {phase.monthsIn + 1} of Foothills LIC</span>
               </div>
               <p className="text-sm mt-1 opacity-90">{phase.focus}</p>
               <p className="text-xs mt-1 opacity-75 italic">{phase.pace}</p>
+              {phase.workingToward && (
+                <details className="mt-2 text-xs">
+                  <summary className="cursor-pointer opacity-80 hover:opacity-100 font-medium">Working toward →</summary>
+                  <div className="mt-1 pl-2 border-l-2 border-current opacity-80">{phase.workingToward}</div>
+                  {phase.supervisionExpectation && (
+                    <div className="mt-1 pl-2 border-l-2 border-current opacity-70">
+                      <strong className="opacity-90">Supervision expectation: </strong>{phase.supervisionExpectation}
+                    </div>
+                  )}
+                </details>
+              )}
             </div>
           </div>
         </div>
@@ -3547,7 +3610,7 @@ function DocumentContent({ doc, phase, session }) {
       {/* ========== COVER ========== */}
       <div className="doc-cover">
         <div>
-          <div className="cover-eyebrow">Longitudinal Integrated Clerkship · Teaching Document</div>
+          <div className="cover-eyebrow">Longitudinal Integrated Teaching Document</div>
           <h1 className="cover-title">Clinical Case Learning Document</h1>
         </div>
         <div className="cover-rule"></div>
@@ -3625,10 +3688,21 @@ function DocumentContent({ doc, phase, session }) {
         {s.phaseFraming?.enabled && (
           <section className="keep-together" style={{ marginBottom: "2rem" }}>
             <h2 className="doc-h2">Phase-Aligned Framing</h2>
-            <p style={{ margin: 0, fontSize: "0.9rem" }}>
-              <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Developmental focus. </span>
+            <p style={{ margin: 0, fontSize: "0.9rem", marginBottom: "0.5rem" }}>
+              <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Where you are. </span>
               {doc.phase.focus}
             </p>
+            {doc.phase.pace && (
+              <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic", marginBottom: "0.5rem" }}>
+                <span style={{ fontWeight: 600 }}>Pace: </span>{doc.phase.pace}
+              </p>
+            )}
+            {doc.phase.workingToward && (
+              <div style={{ marginTop: "0.75rem", padding: "0.75rem 1rem", background: "var(--doc-paper)", borderLeft: "2px solid var(--doc-navy-mid)", fontSize: "0.85rem" }}>
+                <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--doc-navy)", display: "block", marginBottom: "0.35rem" }}>Working Toward</span>
+                {doc.phase.workingToward}
+              </div>
+            )}
           </section>
         )}
 
@@ -4002,7 +4076,7 @@ function DocumentContent({ doc, phase, session }) {
 
         {/* Footer */}
         <div className="doc-footer">
-          <div>LIC Teaching Document · Aligned with the CU School of Medicine MEPO framework</div>
+          <div>Trek Foothills LIC Teaching Document · Aligned with the CU School of Medicine MEPO framework</div>
           <div style={{ marginTop: "0.35rem", fontStyle: "italic" }}>For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
           <div style={{ marginTop: "0.5rem", fontSize: "0.65rem" }}>Generated {doc.generated}</div>
         </div>
