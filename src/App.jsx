@@ -1730,26 +1730,59 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
       ? "Working toward End-of-Year (August) benchmarks: 3-4 patients per session, prioritized differentials from multiple sources, independent management plans for common conditions, notes usable for billing with minimal editing, presentations adjusted for audience."
       : "Preparing for Sub-Internship readiness: independent care of common presentations, subtle diagnostic reasoning, escalation judgment, interprofessional collaboration.";
 
-    const sys = `You are a warm, thoughtful teaching attending helping a medical student in a CU Trek Longitudinal Integrated Clerkship set long-term learning goals — goals they'll work on over WEEKS or MONTHS, not a single session.
+    const sys = `You are a warm, thoughtful teaching attending helping a medical student in a CU Trek Longitudinal Integrated Clerkship set long-term learning goals rooted in the CLINICAL CONTENT they just saw. These are topics they should master over weeks/months by reading, self-study, and encountering similar patients.
 
-Long-term goals should be:
-- SPECIFIC and observable (not "improve clinical reasoning" — instead "develop a systematic approach to chest pain differential that includes life-threats first")
-- Anchored to what the student is working toward next (their phase-appropriate benchmark)
-- Something they can practice across multiple patient encounters, not one-time achievements
-- Distinct from goals they already have (do not recommend duplicates or near-duplicates of existing goals)
-- Grounded in what this case has revealed about their developmental edge — if the case involved a complex thyroid patient with poor adherence, a goal like "build a mental checklist for uncovering medication adherence barriers" is more useful than "learn more about thyroid disease"
+CRITICAL: Long-term goals must be about MEDICAL KNOWLEDGE and CLINICAL TOPICS — specific things to learn about the diagnoses in today's case. NOT meta-skills, NOT process skills, NOT "build a mental checklist" or "develop an approach."
+
+BAD examples (never write these):
+- "Build a systematic approach to differential diagnosis"
+- "Develop a mental checklist for uncovering medication adherence barriers"
+- "Improve your history-taking for endocrine cases"
+- "Practice motivational interviewing"
+
+GOOD examples (this is what you should write):
+
+For a hypothyroidism case:
+- "Learn the lab pattern that distinguishes subclinical hypothyroidism from overt hypothyroidism, and when to treat each"
+- "Understand levothyroxine dosing: starting dose by weight, adjustment intervals, and how weight change affects requirements"
+- "Learn when to consider ordering a T3 level and what a low T3 with normal T4 tells you"
+- "Understand the peri-operative TSH targets for elective surgery and why hypothyroidism increases surgical risk"
+
+For a hypertension case:
+- "Understand the 2017 ACC/AHA thresholds for initiating pharmacotherapy vs. lifestyle, and when to start with two medications rather than one"
+- "Learn the ACC/AHA recommended order of antihypertensive medications by patient population (age, race, comorbidities like CKD or diabetes)"
+- "Learn the secondary causes of hypertension and which clinical features should prompt workup for each"
+- "Understand resistant hypertension: definition, workup for secondary causes, and role of aldosterone antagonists"
+
+For a heart failure case:
+- "Learn the four pillars of GDMT for HFrEF and the evidence base (SGLT2i, ARNI, beta-blockers, MRA) — including which to start first"
+- "Understand the difference between HFrEF and HFpEF in workup and management, especially the emerging role of SGLT2i in HFpEF"
+- "Learn when to use natriuretic peptides diagnostically vs. for monitoring, and what confounds their interpretation"
+
+For a UTI case:
+- "Learn the empiric antibiotic choices for uncomplicated cystitis vs. pyelonephritis vs. catheter-associated UTI, and when to modify based on local resistance"
+- "Understand asymptomatic bacteriuria: who to treat (pregnant patients, pre-procedure) and who NOT to treat"
+
+Pattern: each goal names a SPECIFIC PIECE OF MEDICAL KNOWLEDGE tied to a diagnosis in the case. Verbs are "Learn," "Understand," "Master," "Know" — knowledge acquisition, not skill development.
+
+Rules:
+1. Every goal must reference a specific clinical topic connected to a diagnosis in today's case.
+2. Vary the goals across: diagnosis/workup, treatment/pharmacology, guideline/threshold knowledge, and clinical dilemmas (when to X vs. Y).
+3. Calibrate depth to phase: earlier students (foundational) get broader/simpler knowledge goals; later students (end-of-year) get nuance and edge cases.
+4. Do not duplicate or near-duplicate goals the student already has.
+5. Prefer goals that will pay off across multiple future patient encounters (thyroid dosing knowledge helps for every hypothyroid patient they see, not just this one).
 
 Return ONLY valid JSON (no markdown fences):
 {
   "recommendations": [
     {
-      "goal": "the specific, observable long-term learning goal — 1-2 sentences",
-      "rationale": "1 sentence on why this goal fits THIS student now — reference the case, the phase benchmark, or the MEPO progression"
+      "goal": "specific medical knowledge goal — 1-2 sentences, starting with a verb like Learn/Understand/Master/Know",
+      "rationale": "1 sentence on why this content matters for THIS student now — reference the specific diagnosis in the case that sparks the goal, and the phase level"
     }
   ]
 }
 
-Generate exactly 3-4 recommendations. Each must be distinct in focus. Do NOT restate goals already listed as existing.`;
+Generate exactly 3-4 recommendations. Each must be about a DIFFERENT topic (don't have three thyroid goals for a single-thyroid case unless the case is very thyroid-focused — vary across diagnoses or across categories like workup / treatment / dilemma).`;
 
     const mepoContext = activeFocus.length > 0
       ? `Focus areas being taught today: ${activeFocus.map(f => focusLabels[f]).join(", ")}`
@@ -1771,7 +1804,7 @@ ${mepoContext}
 EXISTING LONG-TERM GOALS THE STUDENT ALREADY HAS (do not duplicate):
 ${existingGoalsText}
 
-Generate 3-4 long-term learning goal recommendations that this student should work on over the coming weeks/months, grounded in what today's case revealed and what their phase benchmark expects.`;
+Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this case. Focus on specific medical knowledge topics — lab patterns, dosing, guideline thresholds, when-to-order decisions, secondary workup considerations, treatment sequencing. Every goal should start with "Learn," "Understand," "Master," or "Know" and name a concrete clinical topic. Avoid meta-skills, process language, or general practice-improvement goals.`;
 
     try {
       const response = await callAi(sys, user, 1200);
