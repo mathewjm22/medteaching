@@ -2136,7 +2136,7 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
           </div>
         </div>
       </header>
-
+      <main className="max-w-6xl mx-auto px-6 py-8">
       <div className={`no-print mb-6 p-4 rounded-lg border ${phase.color}`}>
           <div className="flex items-start gap-3">
             <Calendar className="w-5 h-5 mt-0.5 flex-shrink-0" />
