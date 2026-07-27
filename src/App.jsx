@@ -2471,13 +2471,33 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">Teaching lens</label>
-              <select value={teachingLens} onChange={e => setTeachingLens(e.target.value)} className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
-                <option value="general_im">General Internal Medicine</option>
-                <option value="geriatrics">Geriatrics / Deprescribing (Beers, STOPP/START, 4Ms)</option>
-                <option value="primary_care">Primary Care / Preventive (USPSTF, chronic disease)</option>
-                <option value="complex_multimorbidity">Complex Multimorbidity (competing goals, prioritization)</option>
-              </select>
+              <div className="flex items-baseline justify-between mb-2">
+                <label className="text-sm font-semibold text-slate-800">Teaching lens</label>
+                <span className="text-xs text-slate-500">Shapes how the AI teaches this case</span>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { key: "general_im", label: "General IM", desc: "Standard internal medicine framing" },
+                  { key: "geriatrics", label: "Geriatrics", desc: "Beers, STOPP/START, 4Ms, deprescribing" },
+                  { key: "primary_care", label: "Primary Care", desc: "USPSTF, prevention, chronic disease" },
+                  { key: "complex_multimorbidity", label: "Complex Multimorbidity", desc: "Competing goals, care prioritization" },
+                ].map(lens => (
+                  <button
+                    key={lens.key}
+                    onClick={() => setTeachingLens(lens.key)}
+                    className={`text-left p-3 rounded-lg border-2 transition ${
+                      teachingLens === lens.key
+                        ? "border-indigo-500 bg-indigo-50"
+                        : "border-slate-200 bg-white hover:border-slate-300"
+                    }`}
+                  >
+                    <div className={`text-sm font-semibold ${teachingLens === lens.key ? "text-indigo-900" : "text-slate-900"}`}>
+                      {lens.label}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5">{lens.desc}</div>
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div>
@@ -2628,6 +2648,15 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
         {/* FOCUS TAB */}
         {activeTab === "focus" && (
           <div className="space-y-6">
+            {/* Session-specific learning goal — moved to top so it's not skipped */}
+            <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
+              <div>
+                <h3 className="font-semibold text-slate-900 mb-1">Session-specific learning goal</h3>
+                <p className="text-sm text-slate-500">One thing you want them to walk away with today. Anchors the whole document. Optional but recommended.</p>
+              </div>
+              <input type="text" value={sessionGoal} onChange={e => setSessionGoal(e.target.value)} placeholder="e.g., Build an illness script for iatrogenic bradycardia and defend a deprescribing plan" className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
+            </div>
+
             <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
               <div className="flex items-start justify-between flex-wrap gap-2">
                 <div>
@@ -2686,7 +2715,7 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                           <div className={`font-medium text-sm ${active ? "text-indigo-900" : "text-slate-900"}`}>{focusLabels[key]}</div>
                           {suggested && <span className="text-xs bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full flex items-center gap-0.5"><Sparkles className="w-2.5 h-2.5" />AI</span>}
                         </div>
-                        <div className="text-xs text-slate-500 mt-0.5">{mepoMap[key]}</div>
+                        <div className="text-xs text-slate-600 mt-0.5 leading-snug">{mepoMap[key]}</div>
                       </div>
                     </button>
                   );
@@ -2695,8 +2724,15 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
             </div>
 <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
               <div>
-                <h3 className="font-semibold text-slate-900 mb-1">Additional teaching topics</h3>
-                <p className="text-sm text-slate-500">Add extra topics beyond the case diagnoses — e.g., "imaging findings in acute cholecystitis" or "how to counsel about weight-loss medication side effects".</p>
+                <h3 className="font-semibold text-slate-900 mb-1">Extra topics to teach as their own cases</h3>
+                <p className="text-sm text-slate-500">Add topics beyond the case diagnoses — each becomes its own teaching case in the final document. E.g., "imaging findings in acute cholecystitis" or "how to counsel about weight-loss medication side effects".</p>
+                {(selectedProblems.length + customTopics.length) > 0 && (
+                  <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-800 rounded-full text-xs font-medium">
+                    <Sparkles className="w-3 h-3" />
+                    Will generate {selectedProblems.length + customTopics.length} teaching case{(selectedProblems.length + customTopics.length) !== 1 ? "s" : ""}
+                    {customTopics.length > 0 && ` (${selectedProblems.length} from problems + ${customTopics.length} extra)`}
+                  </div>
+                )}
               </div>
               <div className="flex gap-2">
                 <input
@@ -2741,14 +2777,7 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                 </div>
               )}
             </div>
-            <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
-              <div>
-                <h3 className="font-semibold text-slate-900 mb-1">Session-specific learning goal</h3>
-                <p className="text-sm text-slate-500">One thing you want them to walk away with today.</p>
-              </div>
-              <input type="text" value={sessionGoal} onChange={e => setSessionGoal(e.target.value)} placeholder="e.g., Build an illness script for iatrogenic bradycardia and defend a deprescribing plan" className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-            </div>
-
+            
             <div className="flex gap-2">
               <button onClick={() => setActiveTab("note")} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back</button>
               <button onClick={() => setActiveTab("sources")} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium">Continue →</button>
@@ -2769,14 +2798,37 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                 </div>
               )}
               <div className="mb-4">
-                <h2 className="text-lg font-semibold text-slate-900 mb-1">External Evidence Sources</h2>
-                <p className="text-sm text-slate-500">Prompts are customized with your selected teaching focus. Copy → paste into source → paste response back below.</p>
-                {activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim()).length + (Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length > 0 ? 1 : 0) > 1 && aiEnabled && (
-                  <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded text-xs text-purple-900 flex items-center gap-2">
-                    <Sparkles className="w-3 h-3" />
-                    Multiple sources detected — AI will synthesize them into a unified evidence summary, consolidating overlaps and flagging conflicts.
+                <div className="flex items-start justify-between gap-4 flex-wrap">
+                  <div>
+                    <h2 className="text-lg font-semibold text-slate-900 mb-1">External Evidence Sources</h2>
+                    <p className="text-sm text-slate-500">Prompts are customized with your selected teaching focus. Copy → paste into source → paste response back below.</p>
                   </div>
-                )}
+                  
+                    href="#attachments-panel"
+                    onClick={e => {
+                      e.preventDefault();
+                      document.getElementById("attachments-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
+                    }}
+                    className="text-xs px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg font-medium flex items-center gap-1 whitespace-nowrap"
+                  >
+                    <FileText className="w-3 h-3" />
+                    or attach PDFs / images ↓
+                  </a>
+                </div>
+                {(() => {
+                  const filledExternalCount = activeSources.filter(s => s !== "pubmedai" && sourceResponses[s]?.html?.trim()).length + (Object.values(sourceResponses.pubmedai || {}).filter(v => v?.html?.trim()).length > 0 ? 1 : 0);
+                  const pdfCount = pdfAttachments.filter(p => p.extractedText?.trim() && !p.error).length;
+                  const totalCount = filledExternalCount + pdfCount;
+                  if (totalCount < 2 || !aiEnabled) return null;
+                  return (
+                    <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded text-xs text-purple-900 flex items-center gap-2">
+                      <Sparkles className="w-3 h-3" />
+                      <span>
+                        {totalCount} sources detected ({filledExternalCount} pasted response{filledExternalCount !== 1 ? "s" : ""}{pdfCount > 0 ? ` + ${pdfCount} PDF${pdfCount !== 1 ? "s" : ""}` : ""}) — AI will synthesize them into a unified evidence summary, consolidating overlaps and flagging conflicts.
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
@@ -2916,7 +2968,7 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
               </div>
             </div>
 {/* ATTACHMENTS PANEL — PDFs and images */}
-            <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
+            <div id="attachments-panel" className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
               <div>
                 <h2 className="text-lg font-semibold text-slate-900 mb-1">Attachments</h2>
                 <p className="text-sm text-slate-500">Add PDFs of articles or book chapters (their text will be extracted and fed to the AI), and reference images that will appear at the end of the final document.</p>
@@ -3066,8 +3118,13 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                     />
                   </label>
                 </div>
-                <p className="text-xs text-slate-500 mb-2">Images appear at the end of the final document as reference figures. Not fed to the AI. <span className="text-slate-400">Tip: click into the drop zone below and paste (Ctrl/Cmd+V) to add from clipboard.</span></p>
-
+                <p className="text-xs text-slate-500 mb-2">
+                  Images appear at the end of the final document as reference figures. Not fed to the AI.
+                </p>
+                <div className="mb-2 flex items-center gap-2 text-xs bg-indigo-50 border border-indigo-200 rounded px-2.5 py-1.5 text-indigo-800">
+                  <span>📋</span>
+                  <span><strong>Tip:</strong> Screenshot something (Cmd+Shift+4 on Mac, Win+Shift+S on Windows), then click into the drop zone below and paste (Cmd/Ctrl+V) to add it instantly.</span>
+                </div>
                 {imageAttachments.length === 0 ? (
                   <div
                     className="text-center py-6 text-sm text-slate-500 bg-slate-50 rounded border-2 border-dashed border-slate-200 focus:border-indigo-400 focus:bg-indigo-50 transition cursor-text"
