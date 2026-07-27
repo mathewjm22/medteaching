@@ -1481,10 +1481,13 @@ I want to focus today's teaching on: ${focusText}.
       },
     };
 
+    // Switch to output tab BEFORE preview data lands so the user sees the handoff panel
+    setActiveTab("output");
+    // Small delay so the tab switch registers visually before content pops in
+    await new Promise(r => setTimeout(r, 400));
     setPreviewData(preview);
     setPreviewMode(true);
-    setActiveTab("output");
-    setAiStatus({ analyzing: false, generating: false, error: aiStatus.error });
+    setAiStatus({ analyzing: false, generating: false, error: aiStatus.error, progress: null });
   };
 
   const commitPreviewToDocument = () => {
@@ -3031,7 +3034,17 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
         {/* OUTPUT TAB - Preview/Edit Mode + Final Document */}
         {activeTab === "output" && (
           <>
-            {!previewData && !generatedDoc ? (
+            {aiStatus.generating && !previewData ? (
+              <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
+                <div style={{ display: "inline-flex", alignItems: "center", gap: "0.75rem", padding: "0.75rem 1.25rem", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: "999px", color: "#4338ca", fontSize: "0.9rem", fontWeight: 500 }}>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  <span>Preparing your teaching document...</span>
+                </div>
+                <div className="text-xs text-slate-500 mt-4 max-w-md mx-auto">
+                  Synthesizing evidence · generating case teaching · calibrating shelf questions to phase · assembling document
+                </div>
+              </div>
+            ) : !previewData && !generatedDoc ? (
               <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
                 <FileText className="w-12 h-12 text-slate-300 mx-auto mb-3" />
                 <div className="text-slate-500 mb-4">No document generated yet.</div>
