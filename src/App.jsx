@@ -2076,7 +2076,6 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
               </div>
             </div>
             <div className="flex items-center gap-2">
-              {/* Auto-save status pill */}
               {hasRestored && (
                 <div
                   className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition ${
@@ -2117,12 +2116,12 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                   )}
                 </div>
               )}
-              {/* Existing manual save button (still useful for the durable pieces) */}
               <button onClick={saveState} className="flex items-center gap-2 px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 rounded-lg transition" title="Save session metadata and long-term goals immediately">
                 {saved ? <Check className="w-4 h-4 text-emerald-600" /> : <Save className="w-4 h-4" />}
                 {saved ? "Saved" : "Save"}
               </button>
             </div>
+          </div>
         </div>
         <div className="max-w-6xl mx-auto px-6">
           <div className="flex gap-1 overflow-x-auto">
