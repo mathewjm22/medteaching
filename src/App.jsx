@@ -2830,7 +2830,7 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                   );
                 })()}
                 </div>
-              </div>
+        
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
                 {Object.keys(sources).map(key => (
