@@ -2123,7 +2123,6 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
                 {saved ? "Saved" : "Save"}
               </button>
             </div>
-          </div>
         </div>
         <div className="max-w-6xl mx-auto px-6">
           <div className="flex gap-1 overflow-x-auto">
