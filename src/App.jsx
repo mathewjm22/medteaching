@@ -2804,7 +2804,7 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                     <p className="text-sm text-slate-500">Prompts are customized with your selected teaching focus. Copy → paste into source → paste response back below.</p>
                   </div>
                   
-                    href="#attachments-panel"
+                    <a href="#attachments-panel"
                     onClick={e => {
                       e.preventDefault();
                       document.getElementById("attachments-panel")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -2829,6 +2829,7 @@ Generate 3-4 long-term learning goal recommendations that this student should wo
                     </div>
                   );
                 })()}
+                </div>
               </div>
 
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 mb-6">
