@@ -1006,7 +1006,32 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
       : phase.monthsIn <= 8
       ? "Mid-Year Level: illness scripts, multi-step reasoning, prioritized differentials with justification, beginning management plans. At or approaching February benchmarks, working toward End-of-Year (August) benchmarks."
       : "End-of-Year Level: independent management of common internal medicine concerns, 3-4 patients per session, notes usable for billing with minimal editing. At or exceeding August benchmarks, preparing for Sub-I readiness. Complex/atypical presentations may still warrant preceptor input — that is appropriate for LIC level.";
-      
+
+    // Practice question calibration by phase — matches where student is in shelf/board exam trajectory
+    const shelfDifficulty = phase.monthsIn <= 4
+      ? `INTERN-LEVEL (early LIC, still building fundamentals):
+- 3-4 sentence vignettes with clear presenting features
+- Single-step reasoning; the correct answer follows directly from pattern recognition
+- Distractors are clearly wrong to a student who knows the basics (not subtle)
+- Focus on: classic presentations, first-line diagnostic tests, first-line treatments, immediate red flags
+- Avoid: cost-effectiveness reasoning, subtle guideline nuances, atypical presentations, drug-drug interactions
+- Aim for USMLE Step 1/early Step 2 CK difficulty — the student is learning to walk`
+      : phase.monthsIn <= 8
+      ? `SECOND-YEAR RESIDENT LEVEL (mid-LIC, building clinical judgment):
+- 4-5 sentence vignettes with some contextual complexity (comorbidities, medications, social factors)
+- Multi-step reasoning: student must integrate 2-3 pieces of information to arrive at the answer
+- Distractors are plausible for the underprepared but wrong to someone who knows current guidelines
+- Focus on: guideline application, second-line vs. first-line decisions, moderate-complexity management, contraindications
+- Include: some cost/value considerations, occasional atypical presentations, drug interactions when clinically relevant
+- Aim for USMLE Step 2 CK / early PGY-2 shelf difficulty`
+      : `IM BOARD-PREP LEVEL (end-of-year LIC, preparing for shelf and Sub-I):
+- 5-7 sentence dense vignettes with realistic complexity: multi-morbidity, medications, prior workup, subtle findings
+- Multi-step synthesis: student must weigh competing considerations to arrive at the best (not just correct) answer
+- Distractors are all defensible; the correct answer requires knowing current guideline nuance, evidence quality, or specific edge cases
+- Focus on: guideline-directed nuance, cost-effectiveness, when to escalate vs. observe, atypical presentations, choosing between two reasonable options
+- Include: recent practice-changing evidence, pharmacology depth, subtle diagnostic dilemmas, decision-making under uncertainty
+- Aim for IM ABIM Certification / advanced Step 3 difficulty — the student is preparing to take care of patients independently`;
+
     // MEPO progression targets — what the student should be moving toward for each focus area.
     // Sourced from CU MEPO Milestones doc + Internal Medicine Benchmarks.
     // Format: for each focus area, describe where the student is now vs. where the next benchmark expects them.
@@ -1174,7 +1199,13 @@ SPECIFIC MEPO MILESTONE TARGETS FOR THE FOCUS AREAS OF THIS TEACHING SESSION:
 
 ${mepoProgression}
 
-Every learning point you generate must move the student along the specific MEPO progression above. Do NOT teach concepts they've already mastered per their phase, and do NOT teach at a level beyond the next benchmark they're working toward. When the case gives you an opportunity to help them cross from their current level to the next benchmark, name that explicitly in the learning point (e.g., "This case is a great example of moving from template-based history to hypothesis-driven questioning — notice how our patient's...").${lensGuidance[teachingLens]}
+Every learning point you generate must move the student along the specific MEPO progression above. Do NOT teach concepts they've already mastered per their phase, and do NOT teach at a level beyond the next benchmark they're working toward. When the case gives you an opportunity to help them cross from their current level to the next benchmark, name that explicitly in the learning point (e.g., "This case is a great example of moving from template-based history to hypothesis-driven questioning — notice how our patient's...").
+
+SHELF QUESTION CALIBRATION FOR THIS STUDENT'S PHASE:
+
+${shelfDifficulty}
+
+The three shelfQuestions you generate MUST match this difficulty level. Do not write generic-difficulty questions and hope they land — the shelf questions are one of the most useful outputs of this document, and mis-calibrated questions either bore the student (too easy) or discourage them (too hard). If in doubt, err slightly toward the harder end within the specified band.${lensGuidance[teachingLens]}
 
 VOICE AND TONE (CRITICAL):
 - Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
@@ -1227,7 +1258,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   },
   "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "why you considered it for OUR patient — reference her actual features, meds, or context"}],
   "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student. The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only — never displayed as citation"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
-  "shelfQuestions": [{"vignette": "detailed clinical vignette 3-5 sentences (can invent a new patient for the shelf-style question)", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
+  "shelfQuestions": [{"vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below — length and complexity should match that level, not a generic 'medium' difficulty. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong — calibrated depth to shelf difficulty level"}],
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to OUR patient's presentation", "steps": ["step 1", "step 2"], "interpretation": "what a positive/negative finding would tell you about THIS patient specifically"},
   "keyLabsAndImaging": [{"study": "name", "purpose": "why I ordered/would order it for OUR patient", "interpretation": "what her actual result (or what a hypothetical result) would mean in her clinical context", "role": "how it changes management for HER"}],
@@ -2136,32 +2167,78 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
           </div>
         </div>
       </header>
-      <main className="max-w-6xl mx-auto px-6 py-8">
-      <div className={`no-print mb-6 p-4 rounded-lg border ${phase.color}`}>
-          <div className="flex items-start gap-3">
-            <Calendar className="w-5 h-5 mt-0.5 flex-shrink-0" />
-            <div className="flex-1">
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold">{phase.name}</span>
-                <span className="text-xs opacity-75">Month {phase.monthsIn + 1} of Foothills LIC</span>
-              </div>
-              <p className="text-sm mt-1 opacity-90">{phase.focus}</p>
-              <p className="text-xs mt-1 opacity-75 italic">{phase.pace}</p>
-              {phase.workingToward && (
-                <details className="mt-2 text-xs">
-                  <summary className="cursor-pointer opacity-80 hover:opacity-100 font-medium">Working toward →</summary>
-                  <div className="mt-1 pl-2 border-l-2 border-current opacity-80">{phase.workingToward}</div>
-                  {phase.supervisionExpectation && (
-                    <div className="mt-1 pl-2 border-l-2 border-current opacity-70">
-                      <strong className="opacity-90">Supervision expectation: </strong>{phase.supervisionExpectation}
-                    </div>
-                  )}
-                </details>
-              )}
-            </div>
-          </div>
-        </div>
 
+      <main className="max-w-6xl mx-auto px-6 py-8 relative">
+{/* Floating "food for thought" phase sidebar — only on wide screens */}
+        <aside
+          className="no-print hidden xl:block fixed"
+          style={{
+            top: "180px",
+            right: "1rem",
+            width: "260px",
+            zIndex: 5,
+          }}
+        >
+          <div style={{
+            background: "linear-gradient(180deg, #fefce8 0%, #fff 100%)",
+            border: "1px solid #fef3c7",
+            borderRadius: "10px",
+            padding: "0.875rem 1rem",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
+            fontSize: "0.75rem",
+            color: "#4b5563",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.5rem" }}>
+              <span style={{ fontSize: "1rem" }}>💡</span>
+              <span style={{ fontFamily: "'Inter', sans-serif", textTransform: "uppercase", letterSpacing: "0.11em", fontSize: "0.62rem", fontWeight: 600, color: "#78350f" }}>
+                Food for thought
+              </span>
+            </div>
+            <div style={{ fontWeight: 600, color: "#1f2937", fontSize: "0.82rem", marginBottom: "0.25rem" }}>
+              {phase.name}
+            </div>
+            <div style={{ fontSize: "0.7rem", color: "#6b7280", marginBottom: "0.5rem" }}>
+              Month {phase.monthsIn + 1} of Foothills LIC
+            </div>
+            <div style={{ fontSize: "0.75rem", lineHeight: 1.5, color: "#4b5563", marginBottom: "0.5rem" }}>
+              {phase.focus}
+            </div>
+            <div style={{ fontSize: "0.7rem", fontStyle: "italic", color: "#6b7280", marginBottom: "0.5rem" }}>
+              {phase.pace}
+            </div>
+            {phase.workingToward && (
+              <details style={{ fontSize: "0.7rem", marginTop: "0.4rem", paddingTop: "0.4rem", borderTop: "1px solid #fef3c7" }}>
+                <summary style={{ cursor: "pointer", fontWeight: 500, color: "#78350f" }}>Working toward →</summary>
+                <div style={{ marginTop: "0.4rem", color: "#4b5563", lineHeight: 1.5 }}>{phase.workingToward}</div>
+                {phase.supervisionExpectation && (
+                  <div style={{ marginTop: "0.4rem", color: "#6b7280", fontStyle: "italic" }}>
+                    <strong style={{ fontStyle: "normal", color: "#4b5563" }}>Supervision: </strong>
+                    {phase.supervisionExpectation}
+                  </div>
+                )}
+              </details>
+            )}
+          </div>
+        </aside>
+
+        {/* Narrow-screen fallback: small collapsible chip at the top */}
+        <details className="no-print xl:hidden mb-4">
+          <summary className="cursor-pointer inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 border border-amber-200 rounded-full text-xs text-amber-900">
+            <span>💡</span>
+            <span className="font-medium">{phase.name}</span>
+            <span className="opacity-70">· Month {phase.monthsIn + 1}</span>
+          </summary>
+          <div className="mt-2 p-3 bg-amber-50 border border-amber-100 rounded text-xs text-slate-700">
+            <div>{phase.focus}</div>
+            <div className="mt-1 italic opacity-80">{phase.pace}</div>
+            {phase.workingToward && (
+              <div className="mt-2 pt-2 border-t border-amber-100">
+                <div className="font-semibold text-amber-900 mb-0.5">Working toward:</div>
+                <div>{phase.workingToward}</div>
+              </div>
+            )}
+          </div>
+        </details>
         {restoredSession && (
           <div className="no-print mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900 flex items-center gap-2">
             <Save className="w-4 h-4 flex-shrink-0 text-emerald-700" />
@@ -3548,9 +3625,8 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
               <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider">Live Preview</div>
               <div className="text-xs text-slate-400 italic">Read-only · edits happen in the left panel</div>
             </div>
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm" style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
-              <div style={{ transform: "scale(0.72)", transformOrigin: "top left", width: "138.9%", pointerEvents: "none" }}>
-                <DocumentContent doc={previewData} phase={phase} session={session} />
+<div style={{ transform: "scale(0.72)", transformOrigin: "top left", width: "138.9%", pointerEvents: "none" }}>
+                <DocumentContent doc={{...previewData, isPreview: true}} phase={phase} session={session} />
               </div>
             </div>
           </div>
@@ -4101,9 +4177,9 @@ function DocumentContent({ doc, phase, session }) {
         )}
 
         {/* Evidence Deep-Dive */}
-        {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
+{s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
           <div style={{ marginTop: "2.5rem" }}>
-            <EvidenceDeepDive content={s.synthesizedEvidence.content} allSourceImages={doc.allSourceImages} />
+            <EvidenceDeepDive content={s.synthesizedEvidence.content} allSourceImages={doc.allSourceImages} isPreview={doc.isPreview} />
           </div>
         )}
 
@@ -4217,7 +4293,7 @@ function DocumentContent({ doc, phase, session }) {
 }
 
 // ============ EVIDENCE DEEP-DIVE (structured claims rendering) ============
-function EvidenceDeepDive({ content, allSourceImages = [] }) {
+function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) {
   const [expandedClaims, setExpandedClaims] = React.useState({});
   const [showProvenance, setShowProvenance] = React.useState(false);
   const [lightboxImg, setLightboxImg] = React.useState(null);
@@ -4258,12 +4334,14 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
           {showProvenance ? "Hide" : "Show"} AI-tool provenance
         </button>
       </div>
-{content.sourceContribution?.length > 0 && (
-        <div style={{ marginBottom: "1.25rem", padding: "0.75rem 1rem", background: "var(--doc-paper)", border: "1px solid var(--doc-hairline)", borderRadius: "2px" }}>
-          <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Sources Contributing to This Synthesis</div>
+{isPreview && content.sourceContribution?.length > 0 && (
+        <div style={{ marginBottom: "1.25rem", padding: "0.75rem 1rem", background: "var(--doc-paper)", border: "1px solid var(--doc-hairline)", borderRadius: "2px", position: "relative" }}>
+          <div style={{ position: "absolute", top: "-0.6rem", left: "1rem", background: "#f59e0b", color: "white", fontSize: "0.6rem", fontFamily: "'Inter', sans-serif", textTransform: "uppercase", letterSpacing: "0.14em", fontWeight: 700, padding: "0.15rem 0.5rem", borderRadius: "3px" }}>
+            Preview only · won't appear in final document
+          </div>
+          <div className="doc-meta-label" style={{ marginBottom: "0.5rem", marginTop: "0.25rem" }}>Sources Contributing to This Synthesis</div>
           <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
             {content.sourceContribution.map((sc, i) => {
-              // Count how many claims cite this source
               const citingClaims = (content.topics || []).reduce((acc, topic) => {
                 return acc + (topic.claims || []).filter(c =>
                   (c.provenance || c.sources || []).some(p => p === sc.source)
@@ -4271,7 +4349,6 @@ function EvidenceDeepDive({ content, allSourceImages = [] }) {
               }, 0);
               const totalClaims = (content.topics || []).reduce((acc, topic) => acc + (topic.claims?.length || 0), 0);
               const pct = totalClaims > 0 ? Math.round((citingClaims / totalClaims) * 100) : 0;
-              // A source is a PDF if it has a fullCitation field OR the legacy label starts with "PDF:"
               const isPdf = !!sc.fullCitation || sc.source.startsWith("PDF:");
               return (
                 <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", fontSize: "0.82rem" }}>
