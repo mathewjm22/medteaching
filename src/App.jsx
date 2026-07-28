@@ -2233,6 +2233,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           .doc-cover { page-break-after: always; break-after: always; }
         }
           /* Preview editor: stack vertically on narrow screens */
+        /* Preview editor: stack vertically on narrow screens */
         @media (max-width: 1200px) {
           .preview-split-grid {
             grid-template-columns: minmax(0, 1fr) !important;
@@ -2241,6 +2242,77 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             position: static !important;
           }
         }
+
+        /* ========== MOBILE DOCUMENT STYLES ========== */
+        /* The final document is what students actually read on their phones,
+           so we scale down chrome (padding, cover, case banner) but keep
+           everything else legible. Tables get horizontal scroll wrappers. */
+        @media (max-width: 640px) {
+          .doc-body-mobile-padded {
+            padding: 1.25rem 1rem 1.5rem !important;
+          }
+          .doc-cover {
+            padding: 1.75rem 1.25rem 1.5rem !important;
+          }
+          .doc-cover .cover-title {
+            font-size: 1.5rem !important;
+            line-height: 1.2 !important;
+          }
+          .doc-cover .cover-eyebrow {
+            font-size: 0.6rem !important;
+            letter-spacing: 0.18em !important;
+          }
+          .doc-cover .cover-docket {
+            grid-template-columns: repeat(2, 1fr) !important;
+            gap: 0.85rem !important;
+          }
+          .doc-cover .cover-rule {
+            margin: 1.25rem 0 1rem !important;
+          }
+          .doc-case-banner {
+            margin: 0 -1rem 1.25rem !important;
+            padding: 1rem 1.25rem !important;
+          }
+          .doc-case-banner .doc-case-title {
+            font-size: 1.2rem !important;
+          }
+          .doc-h2 {
+            font-size: 1rem !important;
+          }
+          /* Tables would squish miserably on 375px screens with 3-4 cols.
+             Wrap them in a scroll container and hint that they're scrollable. */
+          .doc-table-scroll {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            margin: 0 -0.5rem;
+            padding: 0 0.5rem;
+            /* Subtle right-edge fade so users know there's more content */
+            mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+            -webkit-mask-image: linear-gradient(to right, black calc(100% - 20px), transparent);
+          }
+          .doc-table {
+            font-size: 0.82rem !important;
+            min-width: 500px; /* forces scroll instead of squish */
+          }
+          .doc-table thead th,
+          .doc-table tbody td {
+            padding: 0.5rem 0.6rem !important;
+          }
+          /* Callouts: reduce padding but keep the visual weight */
+          .doc-callout-pearl,
+          .doc-callout-quote,
+          .doc-callout-goal {
+            padding: 0.85rem 1rem !important;
+          }
+          .doc-callout-quote {
+            padding-left: 2rem !important;
+          }
+          /* Reference figures grid: force single column on mobile */
+          .doc-figures-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+</parameter>
         @page { margin: 0.55in; }
         @page :first { margin: 0; }
       `}</style>
@@ -4843,12 +4915,13 @@ function DocumentContent({ doc, phase, session }) {
       </div>
 
       {/* ========== BODY ========== */}
-      <div style={{ padding: "2.5rem 3rem 2rem" }}>
+      <div className="doc-body-mobile-padded" style={{ padding: "2.5rem 3rem 2rem" }}>
 
         {/* Case at a Glance */}
         {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
           <section className="keep-together" style={{ marginBottom: "2rem" }}>
             <h2 className="doc-h2">Case at a Glance</h2>
+            <div className="doc-table-scroll">
             <table className="doc-table">
               <tbody>
                 {doc.chiefConcern && (
@@ -4879,6 +4952,7 @@ function DocumentContent({ doc, phase, session }) {
                 )}
               </tbody>
             </table>
+            </div>
           </section>
         )}
 
@@ -4958,6 +5032,7 @@ function DocumentContent({ doc, phase, session }) {
                   <p style={{ margin: "0 0 0.6rem", fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
                     The classic pattern for this diagnosis — anchored to how our patient fits or diverges. Build this into your library for faster pattern recognition next time.
                   </p>
+                  <div className="doc-table-scroll">
                   <table className="doc-table" style={{ fontSize: "0.85rem" }}>
                     <tbody>
                       {c.illnessScript.epidemiology && (
@@ -4998,12 +5073,14 @@ function DocumentContent({ doc, phase, session }) {
                       )}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               )}
 
               {c.differentialDiagnosis?.length > 0 && (    
                 <div style={{ marginBottom: "1.5rem" }}>
                   <div className="doc-subsection-label">Differential Diagnosis</div>
+                  <div className="doc-table-scroll">
                   <table className="doc-table">
                     <thead>
                       <tr>
@@ -5020,6 +5097,7 @@ function DocumentContent({ doc, phase, session }) {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               )}
 
@@ -5079,6 +5157,7 @@ function DocumentContent({ doc, phase, session }) {
               {c.keyLabsAndImaging?.length > 0 && (
                 <div style={{ marginBottom: "1.5rem" }}>
                   <div className="doc-subsection-label">Key Labs & Imaging</div>
+                  <div className="doc-table-scroll">
                   <table className="doc-table" style={{ fontSize: "0.82rem" }}>
                     <thead>
                       <tr>
@@ -5099,15 +5178,14 @@ function DocumentContent({ doc, phase, session }) {
                       ))}
                     </tbody>
                   </table>
+                  </div>
                 </div>
               )}
 
-              {c.treatmentApproach && (
-                <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Treatment Approach</div>
-                  {c.treatmentApproach.firstLine?.length > 0 && (
+              {c.treatmentApproach.firstLine?.length > 0 && (
                     <div className="keep-together" style={{ marginBottom: "1rem" }}>
                       <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>First-Line Management</div>
+                      <div className="doc-table-scroll">
                       <table className="doc-table">
                         <thead>
                           <tr>
@@ -5126,6 +5204,7 @@ function DocumentContent({ doc, phase, session }) {
                           ))}
                         </tbody>
                       </table>
+                      </div>
                     </div>
                   )}
                   {c.treatmentApproach.additional?.length > 0 && (
@@ -5204,6 +5283,7 @@ function DocumentContent({ doc, phase, session }) {
         {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
           <section style={{ marginTop: "2.5rem" }}>
             <h2 className="doc-h2">Lab & Vital Trends for Interpretation</h2>
+            <div className="doc-table-scroll">
             <table className="doc-table">
               <thead>
                 <tr>
@@ -5222,6 +5302,7 @@ function DocumentContent({ doc, phase, session }) {
                 ))}
               </tbody>
             </table>
+            </div>
           </section>
         )}
 
@@ -5372,7 +5453,7 @@ function DocumentContent({ doc, phase, session }) {
             <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
               Figures your attending attached for you to review — clinical images, diagrams, or reference tables relevant to today's case.
             </p>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
+            <div className="doc-figures-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
               {doc.imageAttachments.map((img, i) => (
                 <figure key={img.id || i} className="keep-together" style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white", padding: "0.5rem" }}>
                   <img src={img.dataUrl} alt={img.caption || img.filename || `Figure ${i+1}`} style={{ width: "100%", height: "auto", maxHeight: "400px", objectFit: "contain", display: "block" }} />
@@ -5586,6 +5667,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
       {content.crossReferenceMatrix?.length > 0 && (
         <div style={{ marginTop: "1.5rem" }} className="keep-together">
           <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Topic → Primary References</div>
+          <div className="doc-table-scroll">
           <table className="doc-table" style={{ fontSize: "0.82rem" }}>
             <thead>
               <tr>
@@ -5604,6 +5686,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
       {lightboxImg && <ImageLightbox src={lightboxImg.dataUrl} alt={lightboxImg.alt} onClose={() => setLightboxImg(null)} />}
