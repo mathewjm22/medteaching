@@ -450,6 +450,41 @@ const [customTopics, setCustomTopics] = useState([]);
     setActiveSessionId(sessionId);
   };
 
+  // ===== Session management =====
+  // Keeps the sessionsIndex in sync with the currently-active session's state.
+  // Called after saves and on meaningful state changes.
+  const updateSessionIndexEntry = React.useCallback(async () => {
+    if (!activeSessionId) return;
+    const title = deriveSessionTitle({
+      explicitTitle: sessionTitle,
+      workingDx,
+      chiefConcern,
+      sessionDate: session.sessionDate,
+    });
+    const status = deriveSessionStatus({ clinicalNote, generatedDoc, previewData });
+    const now = new Date().toISOString();
+
+    setSessionsIndex(prev => {
+      const existing = prev.find(s => s.id === activeSessionId);
+      const entry = {
+        id: activeSessionId,
+        title,
+        workingDx: workingDx || "",
+        chiefConcern: chiefConcern || "",
+        sessionDate: session.sessionDate,
+        status,
+        updatedAt: now,
+        createdAt: existing?.createdAt || now,
+      };
+      const next = existing
+        ? prev.map(s => s.id === activeSessionId ? entry : s)
+        : [entry, ...prev];
+      // Persist the index (non-debounced — small object, worth writing eagerly)
+      storage.set("sessions_index", JSON.stringify(next)).catch(e => console.warn("[sessions_index] save failed:", e.message));
+      return next;
+    });
+  }, [activeSessionId, sessionTitle, workingDx, chiefConcern, session.sessionDate, clinicalNote, generatedDoc, previewData]);
+
   // Auto-save watchers — each runs when the relevant piece of state changes.
   // Keys are namespaced per session so multiple sessions can coexist in storage.
   // Also updates the session index metadata (title, status, updatedAt) after each write.
@@ -1954,41 +1989,6 @@ I want to focus today's teaching on: ${focusText}.
       setSaveStatus(prev => ({ state: "error", lastSavedAt: prev.lastSavedAt, error: e.message.slice(0, 80) }));
     }
   };
-
-  // ===== Session management =====
-  // Keeps the sessionsIndex in sync with the currently-active session's state.
-  // Called after saves and on meaningful state changes.
-  const updateSessionIndexEntry = React.useCallback(async () => {
-    if (!activeSessionId) return;
-    const title = deriveSessionTitle({
-      explicitTitle: sessionTitle,
-      workingDx,
-      chiefConcern,
-      sessionDate: session.sessionDate,
-    });
-    const status = deriveSessionStatus({ clinicalNote, generatedDoc, previewData });
-    const now = new Date().toISOString();
-
-    setSessionsIndex(prev => {
-      const existing = prev.find(s => s.id === activeSessionId);
-      const entry = {
-        id: activeSessionId,
-        title,
-        workingDx: workingDx || "",
-        chiefConcern: chiefConcern || "",
-        sessionDate: session.sessionDate,
-        status,
-        updatedAt: now,
-        createdAt: existing?.createdAt || now,
-      };
-      const next = existing
-        ? prev.map(s => s.id === activeSessionId ? entry : s)
-        : [entry, ...prev];
-      // Persist the index (non-debounced — small object, worth writing eagerly)
-      storage.set("sessions_index", JSON.stringify(next)).catch(e => console.warn("[sessions_index] save failed:", e.message));
-      return next;
-    });
-  }, [activeSessionId, sessionTitle, workingDx, chiefConcern, session.sessionDate, clinicalNote, generatedDoc, previewData]);
 
   // Delete a session and all its associated storage keys
   const deleteSession = async (sessionId) => {
