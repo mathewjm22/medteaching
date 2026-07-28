@@ -2912,7 +2912,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                             </button>
                             <button
                               onClick={e => { e.stopPropagation(); copyPrompt(src); }}
-                              className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === src ? "bg-emerald-600 text-white" : "bg-emerald-500 text-white hover:bg-emerald-600"}`}
+                              className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === src ? "bg-emerald-600 text-white" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
                               title="Copy the prompt to clipboard"
                             >
                               {copiedPrompt === src ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy Prompt</>}
@@ -4850,6 +4850,24 @@ function DocumentContent({ doc, phase, session }) {
               <div className="doc-case-banner">
                 <div className="doc-case-numeral">Case {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}</div>
                 <h2 className="doc-case-title">{c.problem}</h2>
+                {doc.focusAreas?.length > 0 && (() => {
+                  const focusReadable = {
+                    history: "History & Documentation",
+                    physicalExam: "Physical Exam",
+                    differential: "Differential",
+                    workup: "Workup",
+                    management: "Management",
+                    patientContext: "Patient Context",
+                    ebm: "Evidence-Based Medicine",
+                    communication: "Communication",
+                  };
+                  const labels = doc.focusAreas.map(f => focusReadable[f] || f);
+                  return (
+                    <div style={{ marginTop: "0.55rem", fontSize: "0.65rem", color: "rgba(255,255,255,0.65)", fontStyle: "italic", letterSpacing: "0.02em" }}>
+                      Taught with focus on: {labels.join(" · ")}
+                    </div>
+                  );
+                })()}
               </div>
 
               {c.primaryDiagnosis?.name && (
@@ -5205,19 +5223,31 @@ function DocumentContent({ doc, phase, session }) {
         {/* Long-term Goals + Next Session Prep — side by side */}
         {(s.longTermGoals?.enabled || s.nextSessionPrep?.enabled) && (
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "2rem", marginTop: "2.5rem" }}>
-            {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (
-              <section>
-                <h2 className="doc-h2">Ongoing Learning Goals</h2>
-                <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
-                  {s.longTermGoals.content.map(g => (
-                    <li key={g.id} style={{ marginBottom: "0.75rem", paddingLeft: "0.85rem", borderLeft: "2px solid var(--doc-navy-mid)" }}>
-                      <div>{g.text}</div>
-                      <div className="doc-meta-label" style={{ marginTop: "0.2rem" }}>Added {g.added}</div>
-                    </li>
-                  ))}
-                </ul>
-              </section>
-            )}
+            {s.longTermGoals?.enabled && s.longTermGoals.content?.length > 0 && (() => {
+              // Show 5 most recent goals; note if more exist. Assumes goals with numeric id (Date.now())
+              // sort descending; fall back to array order if IDs aren't sortable.
+              const goals = [...s.longTermGoals.content].sort((a, b) => (b.id || 0) - (a.id || 0));
+              const shown = goals.slice(0, 5);
+              const hidden = goals.length - shown.length;
+              return (
+                <section>
+                  <h2 className="doc-h2">Ongoing Learning Goals</h2>
+                  <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
+                    {shown.map(g => (
+                      <li key={g.id} style={{ marginBottom: "0.75rem", paddingLeft: "0.85rem", borderLeft: "2px solid var(--doc-navy-mid)" }}>
+                        <div>{g.text}</div>
+                        <div className="doc-meta-label" style={{ marginTop: "0.2rem" }}>Added {g.added}</div>
+                      </li>
+                    ))}
+                  </ul>
+                  {hidden > 0 && (
+                    <div style={{ marginTop: "0.75rem", fontSize: "0.78rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+                      + {hidden} additional long-term goal{hidden !== 1 ? "s" : ""} not shown here.
+                    </div>
+                  )}
+                </section>
+              );
+            })()}
             {s.nextSessionPrep?.enabled && (
               <section>
                 <h2 className="doc-h2">Prep for Next Session</h2>
@@ -5229,11 +5259,35 @@ function DocumentContent({ doc, phase, session }) {
                     </ul>
                   </div>
                 )}
-                <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>Come Prepared To</div>
+                {/* Case-specific action items derived from what's in the document */}
+                <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>Come Prepared To Discuss</div>
                 <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
-                  <li style={{ marginBottom: "0.3rem" }}>Discuss the questions above.</li>
-                  <li style={{ marginBottom: "0.3rem" }}>Bring one question that came up while working through this material.</li>
-                  <li>Identify one area where you felt unsure.</li>
+                  {(() => {
+                    const items = [];
+                    // 1. Diagnoses from teaching cases
+                    const dxNames = enabledCases.map(tc => tc.data.primaryDiagnosis?.name).filter(Boolean);
+                    if (dxNames.length > 0) {
+                      items.push(<li key="dx" style={{ marginBottom: "0.3rem" }}>Your working understanding of <strong>{dxNames.join(", ")}</strong> — be ready to walk through the differential and reasoning.</li>);
+                    }
+                    // 2. Any recommended reading from any case
+                    const readings = enabledCases.flatMap(tc => (tc.data.recommendedReading || []).map(r => r.reference)).filter(Boolean);
+                    if (readings.length > 0) {
+                      const first = readings.slice(0, 3);
+                      items.push(<li key="reading" style={{ marginBottom: "0.3rem" }}>Have skimmed: {first.join("; ")}{readings.length > 3 ? `, and ${readings.length - 3} more` : ""}.</li>);
+                    }
+                    // 3. Reflection questions handled above; here add a general "bring questions"
+                    if (s.nextSessionPrep.reflectionQuestions?.length > 0) {
+                      items.push(<li key="reflect" style={{ marginBottom: "0.3rem" }}>Any thoughts on the reflection questions above.</li>);
+                    }
+                    // 4. Something you were unsure about
+                    items.push(<li key="unsure" style={{ marginBottom: "0.3rem" }}>One thing from this case that still feels unclear — bring it as a question.</li>);
+                    // 5. If patient had a specific quote, prompt discussion of communication
+                    const hasQuote = enabledCases.some(tc => tc.data.quoteToDiscuss?.trim());
+                    if (hasQuote) {
+                      items.push(<li key="quote" style={{ marginBottom: "0.3rem" }}>How you'd respond to the patient's own words highlighted in this document.</li>);
+                    }
+                    return items;
+                  })()}
                 </ul>
               </section>
             )}
@@ -5243,6 +5297,9 @@ function DocumentContent({ doc, phase, session }) {
         {doc.imageAttachments && doc.imageAttachments.length > 0 && (
           <section style={{ marginTop: "2.5rem" }} className="keep-together">
             <h2 className="doc-h2">Reference Figures</h2>
+            <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+              Figures your attending attached for you to review — clinical images, diagrams, or reference tables relevant to today's case.
+            </p>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
               {doc.imageAttachments.map((img, i) => (
                 <figure key={img.id || i} className="keep-together" style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white", padding: "0.5rem" }}>
