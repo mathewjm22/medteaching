@@ -62,41 +62,101 @@ const deidentifyPrenote = (rawText) => {
   };
 
   // ---- STEP 1: Detect the patient's name from the prenote ----
-  // Common VA prenote patterns: "for FIRST MIDDLE LAST" or "PATIENT: FIRST LAST"
-  // or ALL CAPS name at the top of the document. We look for these signals in
-  // order of reliability.
-  let patientName = null;
+  // Real-world prenotes are messy: line breaks may or may not exist, headers
+  // vary, EHR exports use "LAST, FIRST MIDDLE" order, human summaries use
+  // "FIRST LAST" order. We collect ALL name candidates from multiple patterns
+  // and replace every one — belt-and-suspenders.
+  const candidateNames = new Set();
+
+  const addCandidate = (nameStr) => {
+    if (!nameStr) return;
+    const cleaned = nameStr.trim().replace(/\s+/g, " ");
+    if (cleaned.length < 3) return;
+    // Reject if it's just a title + initial (already-anonymized artifact)
+    if (/^(Mr|Ms|Mx|Mrs|Dr)\.?\s+[A-Z]{1,3}$/i.test(cleaned)) return;
+    if (/^[A-Z]{2,4}$/.test(cleaned)) return;
+    // Reject if any token is a common EHR header word that snuck through
+    const badWords = /^(SUMMARY|VISIT|LAST|PRIMARY|CARE|DATE|PATIENT|NOTE|HISTORY|MEDICATION|PROBLEM|ASSESSMENT|PLAN|REVIEW|EXAM|VITALS|PRENOTE|ALLERGIES|SECTION|WHAT|KNOW|ABOUT|FOR|WITH|AND|THE|MEDICAL|CHART|RECENT|UPDATES|FOLLOW|CONTINUE|NONE|ACTIVE|SIGNIFICANT|BRANCH|SERVICE|DEPLOY|EXPOSURE|CURRENT|PAST|IMAGING|LAB|PANEL|COUNT|SIGN|PROCEDURE|COMPLETE|GENERAL|BEHAVIORAL|MENTAL|MHTC|BHIP|PMHNP|DSMV|DSM|CPG|CPAP|APAP|COPD|OSA|PTSD|ADHD|TSH|LDL|HDL|GFR|BMI|BP|HR)$/i;
+    const tokens = cleaned.split(/\s+/);
+    if (tokens.some(t => badWords.test(t))) return;
+    candidateNames.add(cleaned);
+  };
+
+  // ---- Pattern set 1: Header phrases followed by names ----
+  // These are triggers that reliably precede a patient name in VA prenotes.
+  const triggers = [
+    "Summary Since Last Visit for",
+    "WHAT TO KNOW ABOUT",
+    "Patient:",
+    "PATIENT:",
+    "Name:",
+    "NAME:",
+    "for", // last-resort; less specific
+  ];
+
+  triggers.forEach(trigger => {
+    // Pattern A: LAST, FIRST [MIDDLE] — EHR comma-separated order
+    // Match: trigger + optional title + LASTNAME + comma + FIRST [MIDDLE]
+    const commaRe = new RegExp(
+      `${escapeRegex(trigger)}\\s+(?:Mr\\.?|Ms\\.?|Mx\\.?|Mrs\\.?|Dr\\.?)?\\s*([A-Z][A-Z'\\-]{2,})\\s*,\\s*([A-Z][A-Z'\\-]+(?:\\s+[A-Z][A-Z'\\-]+)?)`,
+      "g"
+    );
+    let m;
+    while ((m = commaRe.exec(text)) !== null) {
+      // Reorder to "First [Middle] Last"
+      addCandidate(`${m[2]} ${m[1]}`);
+    }
+
+    // Pattern B: FIRST [MIDDLE] LAST — natural order
+    const naturalRe = new RegExp(
+      `${escapeRegex(trigger)}\\s+(?:Mr\\.?|Ms\\.?|Mx\\.?|Mrs\\.?|Dr\\.?)?\\s*([A-Z][A-Z'\\-]{2,}(?:\\s+[A-Z][A-Z'\\-]{2,}){1,3})\\b`,
+      "g"
+    );
+    while ((m = naturalRe.exec(text)) !== null) {
+      addCandidate(m[1]);
+    }
+  });
+
+  // ---- Pattern set 2: Standalone all-caps name lines ----
+  // If the prenote has explicit line breaks, look at each line for name-like content.
+  const lines = text.split(/[\n\r]+/).slice(0, 40);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.length < 5 || trimmed.length > 60) continue;
+
+    // Comma-separated all-caps: "WHITHORN, RYAN DUANE"
+    const csvMatch = trimmed.match(/^([A-Z][A-Z'\-]{2,}),\s*([A-Z][A-Z'\-]+(?:\s+[A-Z][A-Z'\-]+)?)$/);
+    if (csvMatch) addCandidate(`${csvMatch[2]} ${csvMatch[1]}`);
+
+    // All-caps natural order: "RYAN DUANE WHITHORN"
+    const naturalMatch = trimmed.match(/^([A-Z][A-Z'\-]{2,}(?:\s+[A-Z][A-Z'\-]{2,}){1,3})$/);
+    if (naturalMatch) addCandidate(naturalMatch[1]);
+  }
+
+  // ---- Pattern set 3: Title + capitalized name anywhere ----
+  // "Mr. Whithorn", "Ms. Smith", "Dr. Smith" (but we treat Dr. differently downstream)
+  // We only match non-Dr. titles for the patient here — Dr. is preserved.
+  const titledPattern = /\b(?:Mr|Ms|Mx|Mrs)\.?\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)\b/g;
+  let tm;
+  while ((tm = titledPattern.exec(text)) !== null) {
+    addCandidate(tm[1]);
+  }
+
+  // Pick the primary candidate — longest one is usually the full name
+  const sortedCandidates = [...candidateNames].sort((a, b) => b.length - a.length);
+  let patientName = sortedCandidates[0] || null;
   let patientFirstName = null;
   let patientLastName = null;
-
-  // Pattern A: "for FIRST [MIDDLE] LAST" (most common in VA prenotes)
-  const forPattern = /(?:Summary Since Last Visit for|WHAT TO KNOW ABOUT|Patient:|PATIENT:|for)\s+([A-Z][A-Z'\-]+(?:\s+[A-Z][A-Z'\-]+){1,3})\b/;
-  const forMatch = text.match(forPattern);
-  if (forMatch) {
-    patientName = forMatch[1].trim();
+  if (patientName) {
     const parts = patientName.split(/\s+/);
     patientFirstName = parts[0];
-    patientLastName = parts[parts.length - 1]; // last token = surname
+    patientLastName = parts[parts.length - 1];
   }
 
-  // Pattern B: ALL CAPS line at the top with 2-4 name tokens (fallback)
-  if (!patientName) {
-    const lines = text.split("\n").slice(0, 30);
-    for (const line of lines) {
-      const trimmed = line.trim();
-      // Skip section headers (usually have common words)
-      if (/SECTION|HISTORY|MEDICATION|PROBLEM|NOTE|SUMMARY|ASSESSMENT|PLAN|REVIEW|EXAM|ALLERGIES|VITALS/i.test(trimmed)) continue;
-      // Match 2-4 all-caps name-like tokens
-      const nameMatch = trimmed.match(/^([A-Z][A-Z'\-]{2,}(?:\s+[A-Z][A-Z'\-]+){1,3})$/);
-      if (nameMatch) {
-        patientName = nameMatch[1];
-        const parts = patientName.split(/\s+/);
-        patientFirstName = parts[0];
-        patientLastName = parts[parts.length - 1];
-        break;
-      }
-    }
-  }
+  // DEBUG: log what we detected so you can see if it's finding the right names
+  console.log("[deidentify] Name candidates detected:", sortedCandidates);
+  if (patientName) console.log(`[deidentify] Primary: "${patientName}" (first="${patientFirstName}", last="${patientLastName}")`);
+  
 
   // ---- STEP 2: Detect sex from pronouns for title selection ----
   const maleCount = (text.match(/\b(he|him|his|himself)\b/gi) || []).length;
@@ -110,31 +170,43 @@ const deidentifyPrenote = (rawText) => {
     const initials = `${patientFirstName[0]}${patientLastName[0]}`;
     const replacement = `${title === "Mx." ? "" : title + " "}${initials}`.trim() || initials;
 
-    // Match the full name (case-insensitive) in any capitalization pattern
-    const fullNameRegex = new RegExp(
-      patientName.split(/\s+/).map(p => escapeRegex(p)).join("\\s+"),
-      "gi"
-    );
-    const fullBefore = (text.match(fullNameRegex) || []).length;
-    text = text.replace(fullNameRegex, replacement);
-    if (fullBefore > 0) addFinding("patient_name", patientName, replacement, `${fullBefore} occurrences of full name`);
+    // Step 3a: Replace EVERY candidate name we found in its full form.
+    // This handles headers that list the name in multiple orders (e.g., "Mr. RW, RYAN DUANE"
+    // where we detected both "RW" and "RYAN DUANE WATSON" as candidates).
+    sortedCandidates.forEach(candidate => {
+      const candRegex = new RegExp(
+        candidate.split(/\s+/).map(p => escapeRegex(p)).join("\\s+"),
+        "gi"
+      );
+      const before = (text.match(candRegex) || []).length;
+      if (before > 0) {
+        text = text.replace(candRegex, replacement);
+        addFinding("patient_name", candidate, replacement, `${before} occurrences`);
+      }
+    });
 
-    // Also strip stand-alone occurrences of the first name (e.g., "Duardo says he...")
-    // Only if the first name is uncommon enough to be identifying (>4 chars)
-    if (patientFirstName.length > 4) {
-      const firstNameRegex = new RegExp(`\\b${escapeRegex(patientFirstName)}\\b`, "gi");
-      const firstBefore = (text.match(firstNameRegex) || []).length;
-      text = text.replace(firstNameRegex, replacement);
-      if (firstBefore > 0) addFinding("patient_first_name", patientFirstName, replacement, `${firstBefore} occurrences`);
-    }
+    // Step 3b: Also strip each individual name TOKEN (first, middle, last).
+    // This catches standalone first-name references ("Ryan says he..."),
+    // last-name references ("Mr. Watson returns..."), AND middle-name mentions
+    // that any full-name regex above may have missed.
+    const allTokens = new Set();
+    sortedCandidates.forEach(cand => {
+      cand.split(/\s+/).forEach(tok => {
+        // Skip short tokens (already-initials, common words) and titles
+        if (tok.length < 4) return;
+        if (/^(Mr|Ms|Mx|Mrs|Dr|Jr|Sr)$/i.test(tok)) return;
+        allTokens.add(tok);
+      });
+    });
 
-    // Stand-alone last name (e.g., "Mr. Carollo returns...")
-    if (patientLastName.length > 3) {
-      const lastNameRegex = new RegExp(`\\b${escapeRegex(patientLastName)}\\b`, "gi");
-      const lastBefore = (text.match(lastNameRegex) || []).length;
-      text = text.replace(lastNameRegex, replacement);
-      if (lastBefore > 0) addFinding("patient_last_name", patientLastName, replacement, `${lastBefore} occurrences`);
-    }
+    allTokens.forEach(token => {
+      const tokRegex = new RegExp(`\\b${escapeRegex(token)}\\b`, "gi");
+      const before = (text.match(tokRegex) || []).length;
+      if (before > 0) {
+        text = text.replace(tokRegex, replacement);
+        addFinding("patient_name_token", token, replacement, `${before} standalone occurrences`);
+      }
+    });
   }
 
   // ---- STEP 4: Reduce all dates to MM/YYYY ----
@@ -184,6 +256,23 @@ const deidentifyPrenote = (rawText) => {
     addFinding("identifier", match, "[VA ID removed]");
     return "[VA ID removed]";
   });
+
+  // Unlabeled numeric identifiers sitting next to the patient's replaced name.
+  // Common EHR pattern: "Mr. RW 5723 B/p..." where 5723 is a patient identifier
+  // (last-4 of SSN, station ID, etc.) that appears adjacent to the name.
+  // Match 3-6 digit numbers immediately following our name replacement,
+  // as long as they're not followed by clinical units (BPM, mg, mmHg, etc.)
+  if (patientName && patientFirstName && patientLastName) {
+    const nameReplacementInitials = `${patientFirstName[0]}${patientLastName[0]}`;
+    const idPattern = new RegExp(
+      `(${escapeRegex(nameReplacementInitials)})\\s+(\\d{3,6})(?!\\s*(?:mg|mcg|mL|mmHg|BPM|bpm|kg|lb|cm|mm|%|/|\\.\\d))`,
+      "g"
+    );
+    text = text.replace(idPattern, (match, name, num) => {
+      addFinding("identifier", num, "[ID removed]", `unlabeled ID next to name`);
+      return `${name} [ID removed]`;
+    });
+  }
 
   // ---- STEP 8: Family member name stripping ----
   // Attending spec: use relationship not name for family members.
