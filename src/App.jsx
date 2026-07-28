@@ -81,11 +81,14 @@ export default function App() {
   // AI is enabled by default; user only toggles on/off
   const [aiEnabled, setAiEnabled] = useState(true);
 
-  // Tracks whether the browser has blocked window.open at least once.
+// Tracks whether the browser has blocked window.open at least once.
   // When true, the source panels fall back to showing the legacy separate
   // "Copy Prompt" + "Open ↗" buttons instead of the combined one, since
   // the combined button silently fails on popup-blocked browsers.
   const [popupBlocked, setPopupBlocked] = useState(false);
+
+  // Which attached image is currently open in the lightbox (null = closed)
+  const [attachmentLightbox, setAttachmentLightbox] = useState(null);
 
   // ===== Session identity =====
   // activeSessionId: which session is currently loaded in the editor.
@@ -892,8 +895,6 @@ const analyzeNote = async () => {
       };
 
       const sys = `You are a medical education assistant analyzing a clinical note for a medical student in a longitudinal integrated clerkship.
-
-${lensGuidance[teachingLens]}
 
 ${lensGuidance[teachingLens]}
 
@@ -3860,11 +3861,31 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {imageAttachments.map(img => (
                       <div key={img.id} className="p-2 bg-slate-50 rounded border border-slate-200">
-                        <div className="relative">
-                          <img src={img.dataUrl} alt={img.caption || img.filename} className="w-full h-32 object-contain bg-white rounded" />
+                        <div className="relative group">
+                          {/* Click thumbnail to open lightbox at full size */}
+                          <button
+                            onClick={() => setAttachmentLightbox({
+                              dataUrl: img.dataUrl,
+                              alt: img.caption || img.filename || "Attached image",
+                            })}
+                            className="block w-full cursor-zoom-in"
+                            title="Click to view full size"
+                          >
+                            <img
+                              src={img.dataUrl}
+                              alt={img.caption || img.filename}
+                              className="w-full h-32 object-contain bg-white rounded"
+                            />
+                            {/* Zoom hint overlay — appears on hover */}
+                            <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 rounded transition pointer-events-none">
+                              <div className="opacity-0 group-hover:opacity-100 transition bg-white/95 text-slate-800 text-xs font-medium px-2 py-1 rounded shadow flex items-center gap-1">
+                                🔍 View full size
+                              </div>
+                            </div>
+                          </button>
                           <button
                             onClick={() => removeImageAttachment(img.id)}
-                            className="absolute top-1 right-1 bg-white/95 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-full w-6 h-6 flex items-center justify-center shadow"
+                            className="absolute top-1 right-1 bg-white/95 hover:bg-red-100 text-slate-500 hover:text-red-600 rounded-full w-6 h-6 flex items-center justify-center shadow z-10"
                             title="Remove"
                           >
                             <X className="w-3.5 h-3.5" />
@@ -4069,6 +4090,13 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             sourceName={sourceLabels[promptViewerFor]}
             initialPrompt={generateSourcePrompt(promptViewerFor)}
             onClose={() => setPromptViewerFor(null)}
+          />
+        )}
+        {attachmentLightbox && (
+          <ImageLightbox
+            src={attachmentLightbox.dataUrl}
+            alt={attachmentLightbox.alt}
+            onClose={() => setAttachmentLightbox(null)}
           />
         )}
       </main>
