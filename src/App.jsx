@@ -446,18 +446,13 @@ const [customTopics, setCustomTopics] = useState([]);
     updateSessionIndexEntry();
   }, [hasRestored, activeSessionId, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, debouncedSave, updateSessionIndexEntry]);
 
-  const discardRestoredSession = async () => {
-    if (!confirm("Discard all restored work and start fresh? This will clear the current clinical note, sources, attachments, and any generated content.")) return;
-    try {
-      await storage.delete("inProgress");
-      await storage.delete("inProgress_sourceResponses");
-      await storage.delete("inProgress_pdfs");
-      await storage.delete("inProgress_images");
-      await storage.delete("inProgress_imageBytes");
-      await storage.delete("inProgress_generated");
-    } catch {}
-    // Reset all in-progress state
+  // Reset all editor state to blank defaults (without touching storage).
+  // Used by both "start new session" (which then creates a new session ID)
+  // and by loadSessionData indirectly (which sets state from stored values).
+  const resetEditorState = () => {
+    setSessionTitle("");
     setClinicalNote(""); setChiefConcern(""); setWorkingDx("");
+    setNewActiveProblem("");
     setExtractedTopics([]); setNoteAnalysis(null);
     setActiveProblems([]); setSelectedProblems([]);
     setPatientQuotes([]); setLabTrends([]);
@@ -465,6 +460,7 @@ const [customTopics, setCustomTopics] = useState([]);
     setFocusAreas({ history: false, physicalExam: false, differential: false, workup: false, management: false, patientContext: false, ebm: false, communication: false });
     setAiSuggestedFocus(null);
     setCustomTopics([]);
+    setNewCustomTopic("");
     setSources({ openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false, other: false });
     setSourceResponses({
       openevidence: { html: "", images: [] },
@@ -484,8 +480,40 @@ const [customTopics, setCustomTopics] = useState([]);
     setPreviewData(null);
     setPreviewMode(false);
     setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
-    setActiveTab("setup");
     setRestoredSession(null);
+  };
+
+  // Start a new session: create a new session ID, blank the editor, keep the old
+  // session preserved in the sessions index. Optionally prune old sessions if we're
+  // over the cap.
+  const startNewSession = async () => {
+    // No confirm needed — old session is preserved, not lost
+    resetEditorState();
+    const newId = generateSessionId();
+    setActiveSessionId(newId);
+    setActiveTab("setup");
+    // Clear the URL query param if we came in via ?session=
+    if (window.history?.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("session");
+      window.history.replaceState({}, "", url.toString());
+    }
+    // Prune sessions in the background if we're over the cap
+    await pruneOldSessions();
+  };
+
+  // Open an existing session from the Recent Sessions panel
+  const openSession = async (sessionId) => {
+    if (sessionId === activeSessionId) return; // already loaded
+    resetEditorState();
+    await loadSessionData(sessionId);
+    setActiveTab("setup");
+    // Reflect in URL so it can be bookmarked / shared
+    if (window.history?.replaceState) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("session", sessionId);
+      window.history.replaceState({}, "", url.toString());
+    }
   };
 
   // ===== Phase logic =====
@@ -1738,6 +1766,15 @@ I want to focus today's teaching on: ${focusText}.
 
     const preview = {
       generated: new Date().toLocaleString(),
+      generatedIso: new Date().toISOString(),
+      sessionId: activeSessionId,
+      sessionTitle: deriveSessionTitle({
+        explicitTitle: sessionTitle,
+        workingDx,
+        chiefConcern,
+        sessionDate: session.sessionDate,
+      }),
+      appOrigin: window.location.origin + window.location.pathname,
       student: session.studentName || "Student",
       phase, chiefConcern, workingDx,
       complexity: session.complexity, sessionGoal, extractedTopics,
@@ -2757,13 +2794,9 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                 </button>
               )}
               <button
-                onClick={() => {
-                  if (confirm("Start a new session? Your current clinical note, sources, PDFs, and any generated content will be cleared. Long-term goals and session settings will be kept.")) {
-                    discardRestoredSession();
-                  }
-                }}
+                onClick={startNewSession}
                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition flex-shrink-0"
-                title="Clear the current case and start fresh (long-term goals are preserved)"
+                title="Start a fresh session. The current session is preserved in Recent Sessions."
               >
                 <Plus className="w-4 h-4" />
                 <span className="hidden sm:inline">New session</span>
@@ -2877,13 +2910,13 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           <div className="no-print mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900 flex items-center gap-2">
             <Save className="w-4 h-4 flex-shrink-0 text-emerald-700" />
             <div className="flex-1">
-              <strong>Session restored</strong> from {new Date(restoredSession.timestamp).toLocaleString()}. Your work will continue to save automatically.
+              <strong>Session restored</strong> from {new Date(restoredSession.timestamp).toLocaleString()}. Your work continues to save automatically.
             </div>
             <button
-              onClick={discardRestoredSession}
+              onClick={startNewSession}
               className="text-xs px-2 py-1 bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100 rounded"
             >
-              Discard & start fresh
+              Start new session
             </button>
             <button
               onClick={() => setRestoredSession(null)}
@@ -2911,6 +2944,50 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
         {/* SETUP TAB */}
         {activeTab === "setup" && (
           <div className="space-y-6">
+            {/* Recent Sessions — shown when there's more than the current session */}
+            {sessionsIndex.filter(s => s.id !== activeSessionId).length > 0 && (
+              <RecentSessionsPanel
+                sessions={sessionsIndex}
+                activeSessionId={activeSessionId}
+                onOpen={openSession}
+                onDelete={async (id) => {
+                  if (!confirm("Delete this session permanently? This can't be undone.")) return;
+                  await deleteSession(id);
+                }}
+                onRename={(id, newTitle) => {
+                  setSessionsIndex(prev => {
+                    const next = prev.map(s => s.id === id ? { ...s, title: newTitle } : s);
+                    storage.set("sessions_index", JSON.stringify(next)).catch(() => {});
+                    return next;
+                  });
+                  // If this is the active session, also update the local sessionTitle state
+                  if (id === activeSessionId) setSessionTitle(newTitle);
+                }}
+              />
+            )}
+
+            {/* Session title — attending can override the auto-derived title */}
+            <div className="bg-white rounded-xl border border-slate-200 p-6">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <label className="block text-sm font-semibold text-slate-800 mb-1">Session title</label>
+                  <p className="text-xs text-slate-500 mb-2">
+                    Shown in Recent Sessions and in the exported document footer. Auto-derived from the working diagnosis if left blank.
+                  </p>
+                  <input
+                    type="text"
+                    value={sessionTitle}
+                    onChange={e => setSessionTitle(e.target.value)}
+                    placeholder={deriveSessionTitle({ workingDx, chiefConcern, sessionDate: session.sessionDate })}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                  />
+                  {activeSessionId && (
+                    <div className="mt-2 text-xs text-slate-400 font-mono">Session ID: {activeSessionId}</div>
+                  )}
+                </div>
+              </div>
+            </div>
+
             {/* AI toggle - clean, single toggle only */}
             <div className="bg-white rounded-xl border border-slate-200 p-6">
               <div className="flex items-center justify-between">
@@ -5357,6 +5434,13 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   </div>
   ${root.innerHTML}
   <script>${script}<\/script>
+  <!--
+    LIC Teaching Document Generator
+    Session ID: ${doc.sessionId || "unsaved"}
+    Session title: ${doc.sessionTitle || "(untitled)"}
+    Generated: ${doc.generatedIso || ""}
+    Reopen in app: ${doc.appOrigin || ""}?session=${doc.sessionId || ""}
+  -->
 </body>
 </html>`;
 
@@ -5365,7 +5449,17 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `teaching-document-${student.replace(/[^a-z0-9]/gi, "_")}-${sessionDate}.html`;
+    // Use the session title (sanitized) if we have one, otherwise fall back to student+date
+    const titleSlug = (doc.sessionTitle || "")
+      .replace(/·/g, "-")
+      .replace(/[^a-z0-9\s-]/gi, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .slice(0, 80);
+    const filename = titleSlug
+      ? `teaching-${titleSlug}.html`
+      : `teaching-document-${student.replace(/[^a-z0-9]/gi, "_")}-${sessionDate}.html`;
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -5480,6 +5574,146 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
         </div>
       </div>
     </>
+  );
+}
+
+// ============ RECENT SESSIONS PANEL ============
+function RecentSessionsPanel({ sessions, activeSessionId, onOpen, onDelete, onRename }) {
+  const [editingId, setEditingId] = React.useState(null);
+  const [editingTitle, setEditingTitle] = React.useState("");
+  const [expanded, setExpanded] = React.useState(false);
+
+  // Sort by most recently updated; exclude the active session (it's already loaded)
+  const otherSessions = React.useMemo(() => {
+    return [...sessions]
+      .filter(s => s.id !== activeSessionId)
+      .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+  }, [sessions, activeSessionId]);
+
+  // Collapsed by default; show first 3, expand to see all
+  const shown = expanded ? otherSessions : otherSessions.slice(0, 3);
+  const hiddenCount = otherSessions.length - shown.length;
+
+  const statusColors = {
+    empty: { bg: "bg-slate-100", text: "text-slate-500", label: "Empty" },
+    draft: { bg: "bg-amber-100", text: "text-amber-800", label: "Draft" },
+    preview: { bg: "bg-indigo-100", text: "text-indigo-800", label: "Preview" },
+    generated: { bg: "bg-emerald-100", text: "text-emerald-800", label: "Complete" },
+  };
+
+  const formatRelative = (iso) => {
+    if (!iso) return "";
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 1) return "just now";
+    if (mins < 60) return `${mins}m ago`;
+    const hrs = Math.floor(mins / 60);
+    if (hrs < 24) return `${hrs}h ago`;
+    const days = Math.floor(hrs / 24);
+    if (days < 7) return `${days}d ago`;
+    return new Date(iso).toLocaleDateString();
+  };
+
+  const startRename = (session) => {
+    setEditingId(session.id);
+    setEditingTitle(session.title);
+  };
+
+  const commitRename = () => {
+    if (editingTitle.trim() && editingId) {
+      onRename(editingId, editingTitle.trim());
+    }
+    setEditingId(null);
+    setEditingTitle("");
+  };
+
+  return (
+    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-semibold text-slate-900">Recent Sessions</h2>
+          <p className="text-xs text-slate-500 mt-0.5">
+            {otherSessions.length} previous session{otherSessions.length !== 1 ? "s" : ""} · Click to reopen
+          </p>
+        </div>
+      </div>
+      <div className="divide-y divide-slate-100">
+        {shown.map(s => {
+          const status = statusColors[s.status] || statusColors.empty;
+          const isEditing = editingId === s.id;
+          return (
+            <div key={s.id} className="group flex items-center gap-3 px-6 py-3 hover:bg-slate-50 transition">
+              <div className="flex-1 min-w-0">
+                {isEditing ? (
+                  <input
+                    type="text"
+                    value={editingTitle}
+                    onChange={e => setEditingTitle(e.target.value)}
+                    onBlur={commitRename}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") commitRename();
+                      if (e.key === "Escape") { setEditingId(null); setEditingTitle(""); }
+                    }}
+                    autoFocus
+                    className="w-full px-2 py-1 border border-indigo-300 rounded text-sm font-medium"
+                  />
+                ) : (
+                  <button
+                    onClick={() => onOpen(s.id)}
+                    className="text-left w-full min-w-0"
+                  >
+                    <div className="text-sm font-medium text-slate-900 truncate hover:text-indigo-700 transition">
+                      {s.title}
+                    </div>
+                    <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
+                      <span className={`inline-block px-1.5 py-0.5 rounded ${status.bg} ${status.text} font-medium`}>
+                        {status.label}
+                      </span>
+                      <span>Updated {formatRelative(s.updatedAt)}</span>
+                      <span className="font-mono text-slate-400 truncate">· {s.id}</span>
+                    </div>
+                  </button>
+                )}
+              </div>
+              {!isEditing && (
+                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
+                  <button
+                    onClick={() => startRename(s)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded"
+                    title="Rename"
+                  >
+                    <FileText className="w-3.5 h-3.5" />
+                  </button>
+                  <button
+                    onClick={() => onDelete(s.id)}
+                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-100 rounded"
+                    title="Delete session"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {hiddenCount > 0 && (
+        <button
+          onClick={() => setExpanded(true)}
+          className="w-full px-6 py-2.5 text-xs text-indigo-600 hover:bg-indigo-50 border-t border-slate-100 font-medium transition"
+        >
+          Show {hiddenCount} more session{hiddenCount !== 1 ? "s" : ""} ↓
+        </button>
+      )}
+      {expanded && otherSessions.length > 3 && (
+        <button
+          onClick={() => setExpanded(false)}
+          className="w-full px-6 py-2.5 text-xs text-slate-500 hover:bg-slate-50 border-t border-slate-100 font-medium transition"
+        >
+          Collapse
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -6082,7 +6316,16 @@ function DocumentContent({ doc, phase, session }) {
         <div className="doc-footer">
           <div>Trek Foothills LIC Teaching Document · Aligned with the CU School of Medicine MEPO framework</div>
           <div style={{ marginTop: "0.35rem", fontStyle: "italic" }}>For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
-          <div style={{ marginTop: "0.5rem", fontSize: "0.65rem" }}>Generated {doc.generated}</div>
+          <div style={{ marginTop: "0.5rem", fontSize: "0.65rem" }}>
+            Generated {doc.generated} · Session {doc.sessionId || "unsaved"}
+            {doc.sessionTitle && ` · "${doc.sessionTitle}"`}
+          </div>
+          <div style={{ marginTop: "0.25rem", fontSize: "0.6rem", opacity: 0.7 }}>
+            Created with LIC Teaching Document Generator
+            {doc.appOrigin && (
+              <> · <a href={`${doc.appOrigin}?session=${doc.sessionId || ""}`} style={{ color: "inherit", textDecoration: "underline" }}>{doc.appOrigin}</a></>
+            )}
+          </div>
         </div>
       </div>
     </div>
