@@ -4941,59 +4941,93 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   return (
     <>
       <div className="no-print flex gap-2 mb-4 items-center flex-wrap">
-        <button onClick={printDoc} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"><Printer className="w-4 h-4" />Print / Save as PDF</button>
-        <button onClick={exportAsHtml} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium" title="Download as a standalone interactive HTML file to give to the student">
-          <FileText className="w-4 h-4" />Export as Interactive HTML
+        <button onClick={printDoc} className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium">
+          <Printer className="w-4 h-4" />
+          <span className="hidden sm:inline">Print / Save as PDF</span>
+          <span className="sm:hidden">Print / PDF</span>
         </button>
-        <button onClick={onEdit} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back to Preview</button>
-        <div className="text-xs text-slate-500 italic ml-2">
+        <button onClick={exportAsHtml} className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium" title="Download as a standalone interactive HTML file to give to the student">
+          <FileText className="w-4 h-4" />
+          <span className="hidden sm:inline">Export as Interactive HTML</span>
+          <span className="sm:hidden">Export HTML</span>
+        </button>
+        <button onClick={onEdit} className="px-3 sm:px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">
+          <span className="hidden sm:inline">← Back to Preview</span>
+          <span className="sm:hidden">← Preview</span>
+        </button>
+        {/* Editing hint hidden on mobile — takes too much room and the yellow-tinted document already signals editability */}
+        <div className="text-xs text-slate-500 italic ml-2 hidden sm:block">
           Click any text to edit — changes save automatically. Use the toolbar for bold/italic/underline.
         </div>
       </div>
 
-      {/* Floating formatting toolbar — always visible in FinalDocument since it's always editable */}
-      <div className="no-print sticky z-20 mb-2 flex items-center gap-1 bg-slate-800 text-white rounded-lg shadow-lg px-2 py-1 w-fit flex-wrap" style={{ top: "140px" }}>
-
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("bold"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded font-bold text-sm" title="Bold">B</button>
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("italic"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded italic text-sm" title="Italic">I</button>
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("underline"); }} className="px-3 py-1.5 hover:bg-slate-700 rounded underline text-sm" title="Underline">U</button>
-          <div className="w-px h-5 bg-slate-600 mx-1"></div>
-          <span className="text-xs px-1 opacity-70">Highlight:</span>
-          {[
-            { color: "#fef08a", label: "Yellow" },
-            { color: "#bbf7d0", label: "Green" },
-            { color: "#bfdbfe", label: "Blue" },
-            { color: "#fbcfe8", label: "Pink" },
-            { color: "#fed7aa", label: "Orange" },
-          ].map(h => (
-            <button
-              key={h.color}
-              type="button"
-              onMouseDown={e => {
-                e.preventDefault();
-                document.execCommand("hiliteColor", false, h.color);
-                if (editableRef.current) editableRef.current.focus();
-              }}
-              className="w-6 h-6 rounded border border-slate-500 hover:scale-110 transition"
-              style={{ backgroundColor: h.color }}
-              title={`Highlight ${h.label}`}
-            />
-          ))}
+      {/* Floating formatting toolbar — always visible in FinalDocument since it's always editable.
+          Sticky position adjusts for mobile header height. Wraps to multiple rows if needed. */}
+      <div
+        className="formatting-toolbar no-print sticky z-20 mb-2 flex items-center gap-1 bg-slate-800 text-white rounded-lg shadow-lg px-2 py-1 flex-wrap"
+        style={{ top: "140px" }}
+      >
+        <style>{`
+          @media (max-width: 640px) {
+            .formatting-toolbar {
+              top: 96px !important;
+              gap: 0.15rem !important;
+              padding: 0.35rem 0.4rem !important;
+              width: 100%;
+            }
+            .formatting-toolbar .toolbar-btn {
+              padding: 0.4rem 0.6rem !important;
+              font-size: 0.85rem !important;
+            }
+            .formatting-toolbar .toolbar-highlight-label {
+              display: none;
+            }
+            .formatting-toolbar .toolbar-swatch {
+              width: 1.75rem !important;
+              height: 1.75rem !important;
+            }
+          }
+        `}</style>
+        <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("bold"); }} className="toolbar-btn px-3 py-1.5 hover:bg-slate-700 rounded font-bold text-sm" title="Bold">B</button>
+        <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("italic"); }} className="toolbar-btn px-3 py-1.5 hover:bg-slate-700 rounded italic text-sm" title="Italic">I</button>
+        <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("underline"); }} className="toolbar-btn px-3 py-1.5 hover:bg-slate-700 rounded underline text-sm" title="Underline">U</button>
+        <div className="w-px h-5 bg-slate-600 mx-1"></div>
+        <span className="toolbar-highlight-label text-xs px-1 opacity-70">Highlight:</span>
+        {[
+          { color: "#fef08a", label: "Yellow" },
+          { color: "#bbf7d0", label: "Green" },
+          { color: "#bfdbfe", label: "Blue" },
+          { color: "#fbcfe8", label: "Pink" },
+          { color: "#fed7aa", label: "Orange" },
+        ].map(h => (
           <button
+            key={h.color}
             type="button"
             onMouseDown={e => {
               e.preventDefault();
-              document.execCommand("hiliteColor", false, "transparent");
+              document.execCommand("hiliteColor", false, h.color);
               if (editableRef.current) editableRef.current.focus();
             }}
-            className="w-6 h-6 rounded border border-slate-500 bg-white text-slate-700 flex items-center justify-center text-xs hover:scale-110 transition"
-            title="Remove highlight"
-          >
-            <X className="w-3 h-3" />
-          </button>
-          <div className="w-px h-5 bg-slate-600 mx-1"></div>
-          <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("removeFormat"); }} className="px-2 py-1.5 hover:bg-slate-700 rounded text-xs" title="Clear all formatting">Clear</button>
-        </div>
+            className="toolbar-swatch w-6 h-6 rounded border border-slate-500 hover:scale-110 transition"
+            style={{ backgroundColor: h.color }}
+            title={`Highlight ${h.label}`}
+          />
+        ))}
+        <button
+          type="button"
+          onMouseDown={e => {
+            e.preventDefault();
+            document.execCommand("hiliteColor", false, "transparent");
+            if (editableRef.current) editableRef.current.focus();
+          }}
+          className="toolbar-swatch w-6 h-6 rounded border border-slate-500 bg-white text-slate-700 flex items-center justify-center text-xs hover:scale-110 transition"
+          title="Remove highlight"
+        >
+          <X className="w-3 h-3" />
+        </button>
+        <div className="w-px h-5 bg-slate-600 mx-1"></div>
+        <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("removeFormat"); }} className="toolbar-btn px-2 py-1.5 hover:bg-slate-700 rounded text-xs" title="Clear all formatting">Clear</button>
+      </div>
 
       <div className="bg-white rounded-xl border border-slate-200 print-doc" style={{fontFamily: "Georgia, 'Times New Roman', serif"}}>
         <div
@@ -5849,7 +5883,7 @@ function ImageLightbox({ src, alt, onClose }) {
   return (
     <div
       onClick={onClose}
-      className="no-print"
+      className="no-print image-lightbox-overlay"
       style={{
         position: "fixed",
         inset: 0,
@@ -5863,8 +5897,23 @@ function ImageLightbox({ src, alt, onClose }) {
         cursor: "zoom-out",
       }}
     >
+      <style>{`
+        @media (max-width: 640px) {
+          .image-lightbox-overlay {
+            padding: 0.5rem !important;
+          }
+          .image-lightbox-close {
+            width: 3rem !important;
+            height: 3rem !important;
+            font-size: 1.5rem !important;
+            top: 0.5rem !important;
+            right: 0.5rem !important;
+          }
+        }
+      `}</style>
       <button
         onClick={onClose}
+        className="image-lightbox-close"
         style={{
           position: "absolute",
           top: "1rem",
@@ -5880,6 +5929,7 @@ function ImageLightbox({ src, alt, onClose }) {
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
+          zIndex: 2,
         }}
         aria-label="Close"
       >
@@ -5950,7 +6000,7 @@ function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
   return (
     <div
       onClick={onClose}
-      className="no-print"
+      className="no-print prompt-viewer-overlay"
       style={{
         position: "fixed",
         inset: 0,
@@ -5962,8 +6012,40 @@ function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
         padding: "2rem",
       }}
     >
+      <style>{`
+        /* Full-screen modal on mobile — the desktop 2rem padding + centered card
+           wastes space on phones. Below 640px we edge-to-edge the modal. */
+        @media (max-width: 640px) {
+          .prompt-viewer-overlay {
+            padding: 0 !important;
+            align-items: stretch !important;
+          }
+          .prompt-viewer-panel {
+            max-width: none !important;
+            max-height: none !important;
+            height: 100vh !important;
+            border-radius: 0 !important;
+          }
+          .prompt-viewer-header {
+            padding: 0.75rem 1rem !important;
+          }
+          .prompt-viewer-header-title {
+            font-size: 1rem !important;
+          }
+          .prompt-viewer-textarea {
+            padding: 0.75rem 1rem !important;
+            font-size: 0.9rem !important;
+          }
+          .prompt-viewer-footer {
+            padding: 0.65rem 1rem !important;
+            flex-wrap: wrap;
+            gap: 0.5rem !important;
+          }
+        }
+      `}</style>
       <div
         onClick={e => e.stopPropagation()}
+        className="prompt-viewer-panel"
         style={{
           background: "white",
           borderRadius: "8px",
@@ -5976,7 +6058,7 @@ function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
           overflow: "hidden",
         }}
       >
-        <div style={{
+        <div className="prompt-viewer-header" style={{
           padding: "1rem 1.25rem",
           borderBottom: "1px solid #e5e7eb",
           display: "flex",
@@ -5987,7 +6069,7 @@ function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
         }}>
           <div>
             <div style={{ fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.15em", opacity: 0.7 }}>Prompt for</div>
-            <div style={{ fontSize: "1.1rem", fontWeight: 600, marginTop: "0.15rem" }}>{sourceName}</div>
+            <div className="prompt-viewer-header-title" style={{ fontSize: "1.1rem", fontWeight: 600, marginTop: "0.15rem" }}>{sourceName}</div>
           </div>
           <button
             onClick={onClose}
@@ -6019,6 +6101,7 @@ function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
           value={editedPrompt}
           onChange={e => setEditedPrompt(e.target.value)}
           spellCheck={false}
+          className="prompt-viewer-textarea"
           style={{
             flex: 1,
             padding: "1rem 1.25rem",
@@ -6033,7 +6116,7 @@ function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
           }}
         />
 
-        <div style={{
+        <div className="prompt-viewer-footer" style={{
           padding: "0.75rem 1.25rem",
           borderTop: "1px solid #e5e7eb",
           background: "#f8fafc",
