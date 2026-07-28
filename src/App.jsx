@@ -999,7 +999,8 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
   // ===== Generate case-specific teaching content =====
   // Generates ONE teaching case per API call with waits between,
   // to stay under Groq's tokens-per-minute rate limit.
-  const generateAiTeachingContent = async (synthesizedEvidenceParam = null) => {// Generates teaching cases. Accepts:
+  //
+  // Accepts:
   //   synthesizedEvidenceParam: the synthesized evidence (or null)
   //   cachedCases: an object keyed by problem name → previously-generated case data.
   //                Problems present here are SKIPPED (reused from cache) instead of re-called.
@@ -1008,7 +1009,7 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
   // Returns { teachingCases, crossCuttingThemes, questionsForReflection, caseResults }
   // where caseResults is [{problem, status, error?, data?}] for downstream reporting.
   const generateAiTeachingContent = async (synthesizedEvidenceParam = null, cachedCases = {}, onlyRetryFailed = false) => {
-    const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
+        const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
     if (activeFocus.length === 0) return null;
     if (!aiEnabled) return null;
 
@@ -4149,7 +4150,6 @@ function Editable({ value, onSave, multiline = false, className = "", as: Tag = 
   );
 }
 
-// ============ PREVIEW EDITOR COMPONENT ============
 // ============ PREVIEW EDITOR COMPONENT ============
 function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, generationAttempts, aiStatus, focusLabels, phase, session }) {
   const s = previewData.sections;
