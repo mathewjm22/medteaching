@@ -4,6 +4,37 @@ import { FileText, Printer, Copy, Check, Plus, X, BookOpen, Target, Stethoscope,
 // ===== Hardcoded config =====
 const WORKER_URL = "https://medteachingtool.sweet-dream-0ed6.workers.dev/";
 const DEFAULT_MODEL = "gpt-oss-120b";
+// ===== Session helpers =====
+// A session ID is short, sortable, and human-readable:
+//   s-2026-07-27-a3f2   (date + 4 random chars)
+// Sortable-by-string means date-based sorting Just Works without parsing.
+const generateSessionId = () => {
+  const date = new Date().toISOString().slice(0, 10);
+  const rand = Math.random().toString(36).slice(2, 6);
+  return `s-${date}-${rand}`;
+};
+
+// Auto-derive a session title from what we know. Attending can override.
+// Priority: explicit title → working dx + date → chief concern + date → "Untitled" + date
+const deriveSessionTitle = ({ explicitTitle, workingDx, chiefConcern, sessionDate }) => {
+  if (explicitTitle?.trim()) return explicitTitle.trim();
+  const date = sessionDate || new Date().toISOString().slice(0, 10);
+  if (workingDx?.trim()) return `${workingDx.trim()} · ${date}`;
+  if (chiefConcern?.trim()) {
+    const short = chiefConcern.length > 40 ? chiefConcern.slice(0, 40).trim() + "…" : chiefConcern.trim();
+    return `${short} · ${date}`;
+  }
+  return `Untitled session · ${date}`;
+};
+
+// Session status derived from state — used to render badges in the session list
+const deriveSessionStatus = ({ clinicalNote, generatedDoc, previewData }) => {
+  if (generatedDoc) return "generated";
+  if (previewData) return "preview";
+  if (clinicalNote?.trim()) return "draft";
+  return "empty";
+};
+
 // ===== Storage adapter =====
 // Wraps localStorage in an async API matching the shape we use throughout.
 // Falls back to no-op if storage is unavailable (private browsing, disabled, etc.)
@@ -55,6 +86,19 @@ export default function App() {
   // "Copy Prompt" + "Open ↗" buttons instead of the combined one, since
   // the combined button silently fails on popup-blocked browsers.
   const [popupBlocked, setPopupBlocked] = useState(false);
+
+  // ===== Session identity =====
+  // activeSessionId: which session is currently loaded in the editor.
+  // sessionsIndex: array of session metadata objects for the "Recent sessions" panel.
+  // sessionTitle: explicit attending-set title (overrides auto-derived).
+  // Session IDs are set on first meaningful save; before that, we operate in a "pending" state.
+  const [activeSessionId, setActiveSessionId] = useState(null);
+  const [sessionsIndex, setSessionsIndex] = useState([]); // [{id, title, workingDx, sessionDate, status, updatedAt, createdAt}]
+  const [sessionTitle, setSessionTitle] = useState("");
+
+  // Cap on how many sessions we keep in storage. Prevents localStorage overflow.
+  // Oldest sessions get pruned when a new one would push us over.
+  const MAX_SESSIONS = 20;
   const [aiStatus, setAiStatus] = useState({ analyzing: false, generating: false, error: null, progress: null });
 
   // Per-unit generation tracking. Persists across "Generate" clicks so we can
@@ -190,8 +234,7 @@ const [customTopics, setCustomTopics] = useState([]);
   };
 
 
-  // Load persisted state
-  // Load persisted state (both durable state and in-progress session)
+  // Load persisted state (durable + a specific session's in-progress data)
   useEffect(() => {
     (async () => {
       const safeGet = async (key) => {
@@ -204,93 +247,204 @@ const [customTopics, setCustomTopics] = useState([]);
       // Durable state (across all sessions)
       const g = await safeGet("longTermGoals");
       if (g) setLongTermGoals(g);
-      const s = await safeGet("session");
-      if (s) setSession(s);
+      const durSession = await safeGet("session");
+      if (durSession) setSession(durSession);
 
-      // In-progress session state
-      const inProgress = await safeGet("inProgress");
-      if (inProgress && inProgress.timestamp) {
-        // Restore everything we saved
-        if (inProgress.clinicalNote) setClinicalNote(inProgress.clinicalNote);
-        if (inProgress.chiefConcern) setChiefConcern(inProgress.chiefConcern);
-        if (inProgress.workingDx) setWorkingDx(inProgress.workingDx);
-        if (inProgress.extractedTopics) setExtractedTopics(inProgress.extractedTopics);
-        if (inProgress.noteAnalysis) setNoteAnalysis(inProgress.noteAnalysis);
-        if (inProgress.activeProblems) setActiveProblems(inProgress.activeProblems);
-        if (inProgress.selectedProblems) setSelectedProblems(inProgress.selectedProblems);
-        if (inProgress.patientQuotes) setPatientQuotes(inProgress.patientQuotes);
-        if (inProgress.labTrends) setLabTrends(inProgress.labTrends);
-        if (inProgress.teachingLens) setTeachingLens(inProgress.teachingLens);
-        if (inProgress.focusAreas) setFocusAreas(inProgress.focusAreas);
-        if (inProgress.aiSuggestedFocus) setAiSuggestedFocus(inProgress.aiSuggestedFocus);
-        if (inProgress.customTopics) setCustomTopics(inProgress.customTopics);
-        if (inProgress.sources) setSources(inProgress.sources);
-        if (inProgress.sessionGoal) setSessionGoal(inProgress.sessionGoal);
-        if (inProgress.aiEnabled !== undefined) setAiEnabled(inProgress.aiEnabled);
-        setRestoredSession({ timestamp: inProgress.timestamp });
+      // Load the sessions index
+      let index = await safeGet("sessions_index") || [];
+
+      // ONE-TIME MIGRATION: if legacy "inProgress" key exists and no sessions index does,
+      // migrate the old single-slot data into a new session so nothing is lost.
+      const legacyInProgress = await safeGet("inProgress");
+      if (legacyInProgress?.timestamp && index.length === 0) {
+        console.log("[migration] Migrating legacy single-slot session into new format");
+        const migratedId = generateSessionId();
+        const legacySources = await safeGet("inProgress_sourceResponses");
+        const legacyPdfs = await safeGet("inProgress_pdfs");
+        const legacyImages = await safeGet("inProgress_images");
+        const legacyBytes = await safeGet("inProgress_imageBytes");
+        const legacyGen = await safeGet("inProgress_generated");
+
+        try {
+          await storage.set(`session:${migratedId}:inProgress`, JSON.stringify(legacyInProgress));
+          if (legacySources) await storage.set(`session:${migratedId}:sourceResponses`, JSON.stringify(legacySources));
+          if (legacyPdfs) await storage.set(`session:${migratedId}:pdfs`, JSON.stringify(legacyPdfs));
+          if (legacyImages) await storage.set(`session:${migratedId}:images`, JSON.stringify(legacyImages));
+          if (legacyBytes !== null) await storage.set(`session:${migratedId}:imageBytes`, JSON.stringify(legacyBytes));
+          if (legacyGen) await storage.set(`session:${migratedId}:generated`, JSON.stringify(legacyGen));
+
+          const migratedTitle = deriveSessionTitle({
+            workingDx: legacyInProgress.workingDx,
+            chiefConcern: legacyInProgress.chiefConcern,
+            sessionDate: durSession?.sessionDate,
+          });
+          const migratedStatus = deriveSessionStatus({
+            clinicalNote: legacyInProgress.clinicalNote,
+            generatedDoc: legacyGen?.generatedDoc,
+            previewData: legacyGen?.previewData,
+          });
+          index = [{
+            id: migratedId,
+            title: migratedTitle,
+            workingDx: legacyInProgress.workingDx || "",
+            chiefConcern: legacyInProgress.chiefConcern || "",
+            sessionDate: durSession?.sessionDate,
+            status: migratedStatus,
+            updatedAt: legacyInProgress.timestamp,
+            createdAt: legacyInProgress.timestamp,
+          }];
+          await storage.set("sessions_index", JSON.stringify(index));
+
+          // Delete legacy keys so they don't get re-migrated on next load
+          await storage.delete("inProgress").catch(() => {});
+          await storage.delete("inProgress_sourceResponses").catch(() => {});
+          await storage.delete("inProgress_pdfs").catch(() => {});
+          await storage.delete("inProgress_images").catch(() => {});
+          await storage.delete("inProgress_imageBytes").catch(() => {});
+          await storage.delete("inProgress_generated").catch(() => {});
+        } catch (e) {
+          console.warn("[migration] Failed:", e.message);
+        }
       }
-      // Load bulky items separately (each has its own storage key due to 5MB per-key cap)
-      const sr = await safeGet("inProgress_sourceResponses");
-      if (sr) setSourceResponses(sr);
-      const pdfs = await safeGet("inProgress_pdfs");
-      if (pdfs) setPdfAttachments(pdfs);
-      const imgs = await safeGet("inProgress_images");
-      if (imgs) setImageAttachments(imgs);
-      const bytes = await safeGet("inProgress_imageBytes");
-      if (bytes !== null) setSessionImageBytes(bytes);
-      const gen = await safeGet("inProgress_generated");
-      if (gen) {
-        if (gen.aiTeachingContent) setAiTeachingContent(gen.aiTeachingContent);
-        if (gen.synthesizedEvidence) setSynthesizedEvidence(gen.synthesizedEvidence);
-        if (gen.generatedDoc) setGeneratedDoc(gen.generatedDoc);
-        if (gen.previewData) setPreviewData(gen.previewData);
-        if (gen.generationAttempts) setGenerationAttempts(gen.generationAttempts);
+
+      setSessionsIndex(index);
+
+      // Decide which session to load. Priority:
+      // 1. URL ?session= param
+      // 2. Most recently updated session in the index
+      // 3. Create a new empty session
+      const urlParams = new URLSearchParams(window.location.search);
+      const urlSessionId = urlParams.get("session");
+      let idToLoad = null;
+      if (urlSessionId && index.some(s => s.id === urlSessionId)) {
+        idToLoad = urlSessionId;
+      } else if (index.length > 0) {
+        const mostRecent = [...index].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))[0];
+        idToLoad = mostRecent.id;
+      }
+
+      if (idToLoad) {
+        await loadSessionData(idToLoad, safeGet);
+      } else {
+        // No sessions exist yet — create a fresh one so auto-save has a slot
+        const newId = generateSessionId();
+        setActiveSessionId(newId);
       }
 
       // Mark load complete — from now on, changes will trigger auto-save
       setHasRestored(true);
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-save watchers — each runs when the relevant piece of state changes
+  // Load a specific session's data into state. Extracted so it can be called
+  // both from the initial load and from the "Recent sessions" panel.
+  const loadSessionData = async (sessionId, safeGetFn = null) => {
+    const safeGet = safeGetFn || (async (key) => {
+      try {
+        const r = await storage.get(key);
+        return r?.value ? JSON.parse(r.value) : null;
+      } catch { return null; }
+    });
+
+    const inProgress = await safeGet(`session:${sessionId}:inProgress`);
+    if (inProgress) {
+      if (inProgress.sessionTitle) setSessionTitle(inProgress.sessionTitle);
+      setClinicalNote(inProgress.clinicalNote || "");
+      setChiefConcern(inProgress.chiefConcern || "");
+      setWorkingDx(inProgress.workingDx || "");
+      setExtractedTopics(inProgress.extractedTopics || []);
+      setNoteAnalysis(inProgress.noteAnalysis || null);
+      setActiveProblems(inProgress.activeProblems || []);
+      setSelectedProblems(inProgress.selectedProblems || []);
+      setPatientQuotes(inProgress.patientQuotes || []);
+      setLabTrends(inProgress.labTrends || []);
+      setTeachingLens(inProgress.teachingLens || "general_im");
+      setFocusAreas(inProgress.focusAreas || { history: false, physicalExam: false, differential: false, workup: false, management: false, patientContext: false, ebm: false, communication: false });
+      setAiSuggestedFocus(inProgress.aiSuggestedFocus || null);
+      setCustomTopics(inProgress.customTopics || []);
+      setSources(inProgress.sources || { openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false, other: false });
+      setSessionGoal(inProgress.sessionGoal || "");
+      if (inProgress.aiEnabled !== undefined) setAiEnabled(inProgress.aiEnabled);
+      setRestoredSession({ timestamp: inProgress.timestamp });
+    }
+    const sr = await safeGet(`session:${sessionId}:sourceResponses`);
+    setSourceResponses(sr || {
+      openevidence: { html: "", images: [] },
+      uptodate: { html: "", images: [] },
+      dynamed: { html: "", images: [] },
+      doxgpt: { html: "", images: [] },
+      other: { html: "", images: [] },
+      pubmedai: {},
+    });
+    const pdfs = await safeGet(`session:${sessionId}:pdfs`);
+    setPdfAttachments(pdfs || []);
+    const imgs = await safeGet(`session:${sessionId}:images`);
+    setImageAttachments(imgs || []);
+    const bytes = await safeGet(`session:${sessionId}:imageBytes`);
+    setSessionImageBytes(bytes !== null ? bytes : 0);
+    const gen = await safeGet(`session:${sessionId}:generated`);
+    if (gen) {
+      setAiTeachingContent(gen.aiTeachingContent || null);
+      setSynthesizedEvidence(gen.synthesizedEvidence || null);
+      setGeneratedDoc(gen.generatedDoc || null);
+      setPreviewData(gen.previewData || null);
+      setGenerationAttempts(gen.generationAttempts || { synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
+    } else {
+      setAiTeachingContent(null);
+      setSynthesizedEvidence(null);
+      setGeneratedDoc(null);
+      setPreviewData(null);
+      setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
+    }
+
+    setActiveSessionId(sessionId);
+  };
+
+  // Auto-save watchers — each runs when the relevant piece of state changes.
+  // Keys are namespaced per session so multiple sessions can coexist in storage.
+  // Also updates the session index metadata (title, status, updatedAt) after each write.
   useEffect(() => {
-    if (!hasRestored) return;
-    debouncedSave("inProgress", {
+    if (!hasRestored || !activeSessionId) return;
+    debouncedSave(`session:${activeSessionId}:inProgress`, {
       timestamp: new Date().toISOString(),
+      sessionTitle,
       clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
       activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
       focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
     });
-  }, [hasRestored, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
+    updateSessionIndexEntry();
+  }, [hasRestored, activeSessionId, sessionTitle, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
       activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
-      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled, debouncedSave]);
+      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled, debouncedSave, updateSessionIndexEntry]);
 
   useEffect(() => {
-    if (!hasRestored) return;
-    debouncedSave("inProgress_sourceResponses", sourceResponses);
-  }, [hasRestored, sourceResponses, debouncedSave]);
+    if (!hasRestored || !activeSessionId) return;
+    debouncedSave(`session:${activeSessionId}:sourceResponses`, sourceResponses);
+  }, [hasRestored, activeSessionId, sourceResponses, debouncedSave]);
 
   useEffect(() => {
-    if (!hasRestored) return;
-    debouncedSave("inProgress_pdfs", pdfAttachments);
-  }, [hasRestored, pdfAttachments, debouncedSave]);
+    if (!hasRestored || !activeSessionId) return;
+    debouncedSave(`session:${activeSessionId}:pdfs`, pdfAttachments);
+  }, [hasRestored, activeSessionId, pdfAttachments, debouncedSave]);
 
   useEffect(() => {
-    if (!hasRestored) return;
-    debouncedSave("inProgress_images", imageAttachments);
-  }, [hasRestored, imageAttachments, debouncedSave]);
+    if (!hasRestored || !activeSessionId) return;
+    debouncedSave(`session:${activeSessionId}:images`, imageAttachments);
+  }, [hasRestored, activeSessionId, imageAttachments, debouncedSave]);
 
   useEffect(() => {
-    if (!hasRestored) return;
-    debouncedSave("inProgress_imageBytes", sessionImageBytes);
-  }, [hasRestored, sessionImageBytes, debouncedSave]);
+    if (!hasRestored || !activeSessionId) return;
+    debouncedSave(`session:${activeSessionId}:imageBytes`, sessionImageBytes);
+  }, [hasRestored, activeSessionId, sessionImageBytes, debouncedSave]);
 
   useEffect(() => {
-    if (!hasRestored) return;
-    debouncedSave("inProgress_generated", {
+    if (!hasRestored || !activeSessionId) return;
+    debouncedSave(`session:${activeSessionId}:generated`, {
       aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts,
     });
-  }, [hasRestored, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, debouncedSave]);
+    updateSessionIndexEntry();
+  }, [hasRestored, activeSessionId, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, debouncedSave, updateSessionIndexEntry]);
 
   const discardRestoredSession = async () => {
     if (!confirm("Discard all restored work and start fresh? This will clear the current clinical note, sources, attachments, and any generated content.")) return;
@@ -1683,29 +1837,103 @@ I want to focus today's teaching on: ${focusText}.
 
     setSaveStatus(prev => ({ ...prev, state: "saving", error: null }));
 
+    if (!activeSessionId) {
+      console.warn("[saveNow] No active session — nothing to save");
+      setSaveStatus({ state: "idle", lastSavedAt: null, error: null });
+      return;
+    }
+
     const slices = [
       ["session", session],
       ["longTermGoals", longTermGoals],
-      ["inProgress", {
+      [`session:${activeSessionId}:inProgress`, {
         timestamp: new Date().toISOString(),
+        sessionTitle,
         clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
         activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
         focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
       }],
-      ["inProgress_sourceResponses", sourceResponses],
-      ["inProgress_pdfs", pdfAttachments],
-      ["inProgress_images", imageAttachments],
-      ["inProgress_imageBytes", sessionImageBytes],
-      ["inProgress_generated", { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
+      [`session:${activeSessionId}:sourceResponses`, sourceResponses],
+      [`session:${activeSessionId}:pdfs`, pdfAttachments],
+      [`session:${activeSessionId}:images`, imageAttachments],
+      [`session:${activeSessionId}:imageBytes`, sessionImageBytes],
+      [`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
     ];
 
     try {
       await Promise.all(slices.map(([key, value]) => storage.set(key, JSON.stringify(value))));
       setSaveStatus({ state: "saved", lastSavedAt: Date.now(), error: null });
+      // After a save, refresh the session index entry for this session
+      await updateSessionIndexEntry();
     } catch (e) {
       console.warn("[saveNow] Failed:", e.message);
       setSaveStatus(prev => ({ state: "error", lastSavedAt: prev.lastSavedAt, error: e.message.slice(0, 80) }));
     }
+  };
+
+  // ===== Session management =====
+  // Keeps the sessionsIndex in sync with the currently-active session's state.
+  // Called after saves and on meaningful state changes.
+  const updateSessionIndexEntry = React.useCallback(async () => {
+    if (!activeSessionId) return;
+    const title = deriveSessionTitle({
+      explicitTitle: sessionTitle,
+      workingDx,
+      chiefConcern,
+      sessionDate: session.sessionDate,
+    });
+    const status = deriveSessionStatus({ clinicalNote, generatedDoc, previewData });
+    const now = new Date().toISOString();
+
+    setSessionsIndex(prev => {
+      const existing = prev.find(s => s.id === activeSessionId);
+      const entry = {
+        id: activeSessionId,
+        title,
+        workingDx: workingDx || "",
+        chiefConcern: chiefConcern || "",
+        sessionDate: session.sessionDate,
+        status,
+        updatedAt: now,
+        createdAt: existing?.createdAt || now,
+      };
+      const next = existing
+        ? prev.map(s => s.id === activeSessionId ? entry : s)
+        : [entry, ...prev];
+      // Persist the index (non-debounced — small object, worth writing eagerly)
+      storage.set("sessions_index", JSON.stringify(next)).catch(e => console.warn("[sessions_index] save failed:", e.message));
+      return next;
+    });
+  }, [activeSessionId, sessionTitle, workingDx, chiefConcern, session.sessionDate, clinicalNote, generatedDoc, previewData]);
+
+  // Delete a session and all its associated storage keys
+  const deleteSession = async (sessionId) => {
+    const keysToDelete = [
+      `session:${sessionId}:inProgress`,
+      `session:${sessionId}:sourceResponses`,
+      `session:${sessionId}:pdfs`,
+      `session:${sessionId}:images`,
+      `session:${sessionId}:imageBytes`,
+      `session:${sessionId}:generated`,
+    ];
+    await Promise.all(keysToDelete.map(k => storage.delete(k).catch(() => {})));
+    setSessionsIndex(prev => {
+      const next = prev.filter(s => s.id !== sessionId);
+      storage.set("sessions_index", JSON.stringify(next)).catch(() => {});
+      return next;
+    });
+  };
+
+  // Prune the oldest sessions if we're over MAX_SESSIONS.
+  // Returns the list of pruned session IDs (for logging / notification).
+  const pruneOldSessions = async () => {
+    const sorted = [...sessionsIndex].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+    if (sorted.length <= MAX_SESSIONS) return [];
+    const toPrune = sorted.slice(MAX_SESSIONS).filter(s => s.id !== activeSessionId);
+    for (const s of toPrune) {
+      await deleteSession(s.id);
+    }
+    return toPrune.map(s => s.id);
   };
 
   const addPdfAttachments = async (files) => {
