@@ -90,6 +90,52 @@ export default function App() {
   // Which attached image is currently open in the lightbox (null = closed)
   const [attachmentLightbox, setAttachmentLightbox] = useState(null);
 
+  // ===== Theme (dark/light UI) =====
+  // theme: "system" | "light" | "dark". "system" tracks OS preference.
+  // resolvedTheme: "light" | "dark" — what's actually applied.
+  // Persisted to storage so it survives reload. The generated document stays
+  // light-on-cream regardless — dark mode only affects the app chrome.
+  const [theme, setTheme] = useState("system");
+  const [resolvedTheme, setResolvedTheme] = useState("light");
+
+  // Load persisted theme choice on mount
+  useEffect(() => {
+    (async () => {
+      try {
+        const stored = await storage.get("theme");
+        if (stored?.value && ["system", "light", "dark"].includes(stored.value)) {
+          setTheme(stored.value);
+        }
+      } catch {}
+    })();
+  }, []);
+
+  // Resolve the effective theme whenever `theme` or the system preference changes
+  useEffect(() => {
+    const mq = window.matchMedia("(prefers-color-scheme: dark)");
+    const resolve = () => {
+      if (theme === "system") setResolvedTheme(mq.matches ? "dark" : "light");
+      else setResolvedTheme(theme);
+    };
+    resolve();
+    // Watch for OS preference changes (only matters when theme === "system")
+    const handler = () => { if (theme === "system") resolve(); };
+    mq.addEventListener?.("change", handler);
+    return () => mq.removeEventListener?.("change", handler);
+  }, [theme]);
+
+  // Apply the resolved theme to the <html> element so CSS variables cascade correctly
+  useEffect(() => {
+    document.documentElement.dataset.theme = resolvedTheme;
+  }, [resolvedTheme]);
+
+  const cycleTheme = () => {
+    // Cycle: system → light → dark → system
+    const next = theme === "system" ? "light" : theme === "light" ? "dark" : "system";
+    setTheme(next);
+    storage.set("theme", next).catch(() => {});
+  };
+
   // ===== Session identity =====
   // activeSessionId: which session is currently loaded in the editor.
   // sessionsIndex: array of session metadata objects for the "Recent sessions" panel.
@@ -2309,7 +2355,127 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           --doc-single: #8B7355;
           --doc-conflict: #B85C2E;
           --doc-hairline: #D8D3CA;
+
+          /* ===== App chrome (dark-mode-aware) =====
+             These override Tailwind's slate palette for the app UI.
+             The document itself keeps its own tokens above and is unaffected. */
+          --app-bg: #f8fafc;         /* slate-50 */
+          --app-surface: #ffffff;
+          --app-surface-alt: #f1f5f9; /* slate-100 */
+          --app-border: #e2e8f0;      /* slate-200 */
+          --app-border-strong: #cbd5e1; /* slate-300 */
+          --app-text: #0f172a;        /* slate-900 */
+          --app-text-muted: #64748b;  /* slate-500 */
+          --app-text-subtle: #94a3b8; /* slate-400 */
+          --app-input-bg: #ffffff;
         }
+
+        /* Dark theme: applied via data-theme="dark" on <html>.
+           Only affects app chrome — the .doc-body / .doc-cover / print styles
+           keep their light appearance because they use their own --doc-* tokens. */
+        :root[data-theme="dark"] {
+          --app-bg: #0b1220;
+          --app-surface: #131c2e;
+          --app-surface-alt: #1a2338;
+          --app-border: #263149;
+          --app-border-strong: #33405d;
+          --app-text: #e2e8f0;
+          --app-text-muted: #94a3b8;
+          --app-text-subtle: #64748b;
+          --app-input-bg: #1a2338;
+        }
+
+        /* Retint Tailwind's slate/white utilities via CSS-only overrides.
+           This lets the existing utility-class markup respond to dark mode
+           without rewriting hundreds of classNames. */
+        :root[data-theme="dark"] body {
+          background: var(--app-bg);
+        }
+        :root[data-theme="dark"] .bg-slate-50 { background-color: var(--app-bg) !important; }
+        :root[data-theme="dark"] .bg-slate-100 { background-color: var(--app-surface-alt) !important; }
+        :root[data-theme="dark"] .bg-white { background-color: var(--app-surface) !important; }
+        :root[data-theme="dark"] .border-slate-100 { border-color: var(--app-border) !important; }
+        :root[data-theme="dark"] .border-slate-200 { border-color: var(--app-border) !important; }
+        :root[data-theme="dark"] .border-slate-300 { border-color: var(--app-border-strong) !important; }
+        :root[data-theme="dark"] .text-slate-900 { color: var(--app-text) !important; }
+        :root[data-theme="dark"] .text-slate-800 { color: var(--app-text) !important; }
+        :root[data-theme="dark"] .text-slate-700 { color: #cbd5e1 !important; }
+        :root[data-theme="dark"] .text-slate-600 { color: #94a3b8 !important; }
+        :root[data-theme="dark"] .text-slate-500 { color: var(--app-text-muted) !important; }
+        :root[data-theme="dark"] .text-slate-400 { color: var(--app-text-subtle) !important; }
+        :root[data-theme="dark"] .hover\\:bg-slate-100:hover { background-color: var(--app-surface-alt) !important; }
+        :root[data-theme="dark"] .hover\\:bg-slate-200:hover { background-color: #2a3654 !important; }
+        :root[data-theme="dark"] .hover\\:bg-white:hover { background-color: var(--app-surface-alt) !important; }
+        :root[data-theme="dark"] .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--app-border) !important; }
+
+        /* Inputs and textareas — force dark surface + light text */
+        :root[data-theme="dark"] input[type="text"],
+        :root[data-theme="dark"] input[type="date"],
+        :root[data-theme="dark"] input[type="email"],
+        :root[data-theme="dark"] textarea,
+        :root[data-theme="dark"] select {
+          background-color: var(--app-input-bg) !important;
+          color: var(--app-text) !important;
+          border-color: var(--app-border-strong) !important;
+        }
+        :root[data-theme="dark"] input::placeholder,
+        :root[data-theme="dark"] textarea::placeholder {
+          color: var(--app-text-subtle) !important;
+        }
+
+        /* Tint tinted panels (indigo/amber/emerald/purple/red backgrounds).
+           These are used all over the app for status messages and callouts.
+           In dark mode we shift them to darker versions of the same hues. */
+        :root[data-theme="dark"] .bg-indigo-50 { background-color: rgba(79, 70, 229, 0.15) !important; }
+        :root[data-theme="dark"] .bg-indigo-100 { background-color: rgba(79, 70, 229, 0.25) !important; }
+        :root[data-theme="dark"] .border-indigo-200 { border-color: rgba(79, 70, 229, 0.45) !important; }
+        :root[data-theme="dark"] .border-indigo-300 { border-color: rgba(79, 70, 229, 0.6) !important; }
+        :root[data-theme="dark"] .text-indigo-700 { color: #a5b4fc !important; }
+        :root[data-theme="dark"] .text-indigo-800 { color: #c7d2fe !important; }
+        :root[data-theme="dark"] .text-indigo-900 { color: #e0e7ff !important; }
+
+        :root[data-theme="dark"] .bg-amber-50 { background-color: rgba(245, 158, 11, 0.12) !important; }
+        :root[data-theme="dark"] .bg-amber-100 { background-color: rgba(245, 158, 11, 0.22) !important; }
+        :root[data-theme="dark"] .border-amber-100 { border-color: rgba(245, 158, 11, 0.35) !important; }
+        :root[data-theme="dark"] .border-amber-200 { border-color: rgba(245, 158, 11, 0.45) !important; }
+        :root[data-theme="dark"] .border-amber-300 { border-color: rgba(245, 158, 11, 0.6) !important; }
+        :root[data-theme="dark"] .text-amber-700 { color: #fcd34d !important; }
+        :root[data-theme="dark"] .text-amber-800 { color: #fde68a !important; }
+        :root[data-theme="dark"] .text-amber-900 { color: #fef3c7 !important; }
+
+        :root[data-theme="dark"] .bg-emerald-50 { background-color: rgba(16, 185, 129, 0.14) !important; }
+        :root[data-theme="dark"] .bg-emerald-100 { background-color: rgba(16, 185, 129, 0.22) !important; }
+        :root[data-theme="dark"] .border-emerald-200 { border-color: rgba(16, 185, 129, 0.45) !important; }
+        :root[data-theme="dark"] .border-emerald-300 { border-color: rgba(16, 185, 129, 0.6) !important; }
+        :root[data-theme="dark"] .text-emerald-700 { color: #6ee7b7 !important; }
+        :root[data-theme="dark"] .text-emerald-800 { color: #a7f3d0 !important; }
+        :root[data-theme="dark"] .text-emerald-900 { color: #d1fae5 !important; }
+
+        :root[data-theme="dark"] .bg-purple-50 { background-color: rgba(147, 51, 234, 0.14) !important; }
+        :root[data-theme="dark"] .bg-purple-100 { background-color: rgba(147, 51, 234, 0.22) !important; }
+        :root[data-theme="dark"] .border-purple-200 { border-color: rgba(147, 51, 234, 0.45) !important; }
+        :root[data-theme="dark"] .text-purple-700 { color: #d8b4fe !important; }
+
+        :root[data-theme="dark"] .bg-red-50 { background-color: rgba(220, 38, 38, 0.15) !important; }
+        :root[data-theme="dark"] .border-red-200 { border-color: rgba(220, 38, 38, 0.45) !important; }
+        :root[data-theme="dark"] .text-red-600 { color: #fca5a5 !important; }
+        :root[data-theme="dark"] .text-red-700 { color: #fca5a5 !important; }
+        :root[data-theme="dark"] .text-red-800 { color: #fecaca !important; }
+        :root[data-theme="dark"] .text-red-900 { color: #fee2e2 !important; }
+
+        /* Preview scaled document — keep it on white regardless of theme.
+           This is the mini-preview shown in the PreviewEditor split view. */
+        :root[data-theme="dark"] .preview-split-grid > div:last-child .bg-white {
+          background: #ffffff !important;
+          color: #1a1a1a !important;
+        }
+
+        /* The final generated document sits inside .doc-body — that class already
+           forces its own colors via the --doc-* tokens above, so it stays light
+           in dark mode. This is intentional (matches print/export appearance). */
+        .doc-body { color-scheme: light; }
+
+        /* ========== APP TYPOGRAPHY & LAYOUT (rest of original styles) ========== */
 
         /* ========== DOCUMENT TYPOGRAPHY ========== */
         .doc-body {
@@ -2742,6 +2908,38 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
               </div>
             </div>
             <div className="flex items-center gap-2">
+              {/* Theme toggle — cycles system → light → dark → system.
+                  Icon matches the CURRENT resolved theme; tooltip explains the mode. */}
+              <button
+                onClick={cycleTheme}
+                className="p-2 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-100 transition flex-shrink-0"
+                title={
+                  theme === "system"
+                    ? `Auto (currently ${resolvedTheme}) — click for light mode`
+                    : theme === "light"
+                    ? "Light mode — click for dark mode"
+                    : "Dark mode — click for auto"
+                }
+                aria-label="Toggle theme"
+              >
+                {theme === "system" ? (
+                  // Half-and-half icon indicates "auto"
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 3a9 9 0 100 18 9 9 0 000-18zm0 2v14a7 7 0 000-14z"/>
+                  </svg>
+                ) : resolvedTheme === "dark" ? (
+                  // Moon
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>
+                  </svg>
+                ) : (
+                  // Sun
+                  <svg className="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <circle cx="12" cy="12" r="4"/>
+                    <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/>
+                  </svg>
+                )}
+              </button>
               {hasRestored && (
                 <button
                   onClick={saveNow}
