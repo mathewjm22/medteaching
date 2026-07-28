@@ -1195,7 +1195,30 @@ const analyzeNote = async () => {
         complex_multimorbidity: "This is a complex multi-morbid patient. Emphasize: problem prioritization, medication reconciliation, care coordination, competing treatment goals."
       };
 
-      const sys = `You are a medical education assistant analyzing a clinical note for a medical student in a longitudinal integrated clerkship.
+      const isPreVisit = sessionMode === "pre";
+
+      // Base intro — same for both modes
+      const modeIntro = isPreVisit
+        ? `You are a medical education assistant analyzing a PRENOTE (chart summary) for an UPCOMING patient visit. The medical student will see this patient soon and needs prep. Your extraction should support ANTICIPATORY teaching — what to think about going in, what to ask about, what to look for, what problems are prep-worthy.`
+        : `You are a medical education assistant analyzing a clinical note from a COMPLETED patient encounter for retrospective teaching. Extract what actually happened so the student can learn from what was observed.`;
+
+      const modeGuidance = isPreVisit
+        ? `PRE-VISIT NOTE GUIDANCE:
+- The prenote likely contains: PMH with a list of active problems, medications, recent labs, preventive care due, family/social history, and possibly notes from prior visits.
+- There will NOT be patient quotes from THIS visit (the visit hasn't happened yet) — leave patientQuotes empty.
+- labTrends should reflect chronic disease monitoring patterns visible in the chart (e.g., "TSH trending 15 → 5.78 → 2.74 over 2 years, now normalized after dose adjustment"), NOT visit-specific findings.
+- activeProblems should extract EVERY chronic condition worth reviewing before the visit, not just the ones addressed at a hypothetical last visit.
+- teachingValue should focus on what makes THIS problem teachable BEFORE seeing the patient (e.g., "student can practice medication reconciliation reasoning" or "chance to teach the workup for undifferentiated fatigue").
+- keyIssue should be the anticipated clinical dilemma for the upcoming visit (e.g., "TSH normalized but on a lower dose than started — is this stable or drifting?").
+- redFlags should be things to ACTIVELY SCREEN FOR in the upcoming encounter (e.g., "post-stroke: screen for recurrent neuro symptoms, medication non-adherence"), not concerning features already observed.
+- suggestedFocus should reflect what SKILLS the student can practice in this specific upcoming encounter given the chart context.`
+        : `POST-VISIT NOTE GUIDANCE:
+- The note may have structured sections (Assessment, Plan, PMH, Meds, Labs, etc.), multiple active problems, direct patient/caregiver quotes, and trended lab/vital data. Extract all of this.
+- patientQuotes: direct quotes verbatim from the note if any exist.
+- labTrends: findings from this specific visit or recent trends that were discussed.
+- redFlags: concerning features actually observed in this encounter.`;
+
+      const sys = `${modeIntro}
 
 ${lensGuidance[teachingLens]}
 
@@ -1205,31 +1228,32 @@ CU DEFINITION OF PATIENT COMPLEXITY (for calibrating your teaching):
 
 This patient is: ${session.complexity === "complex" ? "COMPLEX" : "COMMON"} per the attending's judgment. ${session.complexity === "complex" ? "Complexity means the student is not yet expected to manage this level independently — care of complex patients is an Alpine/Summit (M3/M4) expectation, not an LIC-year expectation. Your teaching should reflect that. Focus on helping the student recognize the features that MAKE this complex, and on the specific reasoning threads a preceptor uses to navigate the complexity. Do not expect Sub-I-level ownership of the plan." : "Common means the student SHOULD be building toward independent care of this type of presentation. Your teaching should reinforce the pattern recognition, workup, and management approach for this presentation type — this is the bread and butter they need to own by end of the LIC year."}
 
-The note may have structured sections (Assessment, Plan, PMH, Meds, Labs, etc.), multiple active problems, direct patient/caregiver quotes, and trended lab/vital data. Extract all of this.
+${modeGuidance}
 
 Available focus areas: history, physicalExam, differential, workup, management, patientContext, ebm, communication
 
 Return ONLY valid JSON (no markdown fences):
 {
-  "chiefConcern": "brief chief concern or reason for visit",
-  "workingDiagnosis": "primary/most teachable diagnosis, or 'multiple active problems' if truly multi-focal",
+  "chiefConcern": "${isPreVisit ? 'anticipated reason for the upcoming visit if stated in prenote, else the primary chronic issue driving the visit' : 'brief chief concern or reason for visit'}",
+  "workingDiagnosis": "${isPreVisit ? 'primary problem the visit will center on, or the most teachable chronic condition, or \\'annual follow-up of multiple stable conditions\\' if truly multi-focal' : 'primary/most teachable diagnosis, or \\'multiple active problems\\' if truly multi-focal'}",
   "activeProblems": [
-    {"problem": "problem name", "icdContext": "ICD if in note", "teachingValue": "brief note on why teachable", "keyIssue": "the core clinical question or dilemma"}
+    {"problem": "problem name", "icdContext": "ICD if in note", "teachingValue": "${isPreVisit ? 'why this problem is worth prepping the student on BEFORE the visit' : 'brief note on why teachable'}", "keyIssue": "${isPreVisit ? 'the anticipated clinical dilemma for the upcoming visit' : 'the core clinical question or dilemma'}"}
   ],
   "otherDiagnoses": ["list of other active problems as strings"],
   "keyTopics": ["specific clinical topics worth teaching - be specific"],
   "suggestedFocus": ["3-5 focus area keys from the list above"],
   "reasoning": "2-3 sentence explanation",
   "complexity": "common" or "complex",
-  "redFlags": ["concerning features, can't-miss diagnoses, iatrogenic risks"],
-  "patientQuotes": ["direct quotes verbatim from the note"],
+  "redFlags": ["${isPreVisit ? 'things to actively screen for during the upcoming visit' : 'concerning features, can\\'t-miss diagnoses, iatrogenic risks'}"],
+  "patientQuotes": [${isPreVisit ? '' : '"direct quotes verbatim from the note"'}],
   "labTrends": [
-    {"parameter": "lab name", "trend": "brief description", "teachingPoint": "what this teaches"}
+    {"parameter": "lab name", "trend": "${isPreVisit ? 'longitudinal chronic-disease monitoring pattern visible in chart' : 'brief description'}", "teachingPoint": "what this teaches"}
   ]
 }`;
+
       const extractedForAnalysis = extractEssentialNote(clinicalNote);
-      console.log(`[analyzeNote] Note: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
-      const user = `Clinical note (de-identified):\n\n${extractedForAnalysis}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
+      console.log(`[analyzeNote] ${isPreVisit ? "Prenote" : "Note"}: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
+      const user = `${isPreVisit ? "Prenote / chart summary" : "Clinical note"} (de-identified):\n\n${extractedForAnalysis}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
       const response = await callAi(sys, user, 4000);
       const parsed = extractJson(response);
 
@@ -1712,24 +1736,39 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
 
       setAiStatus(prev => ({ ...prev, progress: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}${isTangential ? " (tangential)" : ""}` }));
 
-const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today.
+const isPreVisit = sessionMode === "pre";
+
+const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student ${isPreVisit ? "BEFORE a patient visit you're both about to do together." : "about a patient you saw together today."}
+
+DOCUMENT PURPOSE: ${isPreVisit ? "PRE-VISIT PREP" : "POST-VISIT DEBRIEF"}
+${isPreVisit
+  ? `This is a PREP DOCUMENT for a visit that has not happened yet. The student will read this BEFORE going into the room. Everything must be framed as ANTICIPATORY — what to think about, what to ask, what to look for, what to be ready to discuss with the patient.
+
+Voice rules for pre-visit mode:
+- Write in the future/anticipatory tense: "Before you go in, think about...", "When you take the history, focus on...", "If she reports X, that would push you toward..."
+- Do NOT write "our patient today" as if the visit already happened. The visit is UPCOMING.
+- Reference chart facts (her longstanding hypothyroidism, her recent labs, her medication list) but frame them as "what you know going in" not "what you observed."
+- Anchor teaching to what the student can actively PRACTICE in this specific upcoming encounter given the chart context.
+- If the chart shows a trajectory (labs improving/worsening, med dose changes, missed appointments), name the pattern and tell the student what to look for that would confirm or refute the trajectory continuing.`
+  : `This is a DEBRIEF DOCUMENT for a visit that has already happened. Frame everything retrospectively — what was observed, what was decided, what to learn from what you saw together.`
+}
 
 TEACHING CASE TYPE FOR THIS SPECIFIC OUTPUT: ${isTangential ? "TANGENTIAL TOPIC" : "PATIENT DIAGNOSIS"}
 
 ${isTangential
-  ? `This is a TANGENTIAL TOPIC — a subject the encounter reminded the attending they wanted to teach, but the patient DOES NOT have this condition. Frame the entire teaching case as "an aside" or "a related topic worth knowing." Do NOT invent that our patient has this problem. Do NOT reference her clinical features as if they are examples of this topic. Do NOT force patient-specific framing. Instead:
-- Open the primaryDiagnosis definition as a general clinical topic ("This is worth reviewing because it comes up alongside cases like the one we just saw...")
-- The illnessScript should describe the classic pattern in general — NOT anchored to "our patient"
-- The differentialDiagnosis should be general (what would make you consider this diagnosis when you encounter it in another patient) — NOT tied to features of today's patient
-- keyLearningPoints should still be substantive and teaching-focused, but framed as "here's what you should know about this topic" rather than "notice how our patient..."
-- focusedHistoryQuestions, physicalExam, keyLabsAndImaging, treatmentApproach: general clinical approach, NOT "for our patient"
+  ? `This is a TANGENTIAL TOPIC — a subject the ${isPreVisit ? "upcoming visit made the attending realize is worth prepping the student on" : "encounter reminded the attending they wanted to teach"}, but the patient DOES NOT have this condition. Frame the entire teaching case as "an aside" or "a related topic worth knowing." Do NOT invent that ${isPreVisit ? "the patient" : "our patient"} has this problem. Do NOT reference ${isPreVisit ? "her" : "her"} clinical features as if they are examples of this topic. Do NOT force patient-specific framing. Instead:
+- Open the primaryDiagnosis definition as a general clinical topic ("This is worth reviewing because it comes up alongside cases like the one ${isPreVisit ? "we're about to see" : "we just saw"}...")
+- The illnessScript should describe the classic pattern in general — NOT anchored to ${isPreVisit ? "the patient" : "our patient"}
+- The differentialDiagnosis should be general (what would make you consider this diagnosis when you encounter it in another patient) — NOT tied to features of ${isPreVisit ? "the upcoming patient" : "today's patient"}
+- keyLearningPoints should still be substantive and teaching-focused, but framed as "here's what you should know about this topic" rather than "notice how ${isPreVisit ? "the patient" : "our patient"}..."
+- focusedHistoryQuestions, physicalExam, keyLabsAndImaging, treatmentApproach: general clinical approach, NOT "for ${isPreVisit ? "the patient" : "our patient"}"
 - patientContextConsiderations: general context factors that come up with this topic in typical practice, NOT this patient's specific SDoH
-- communicationTeaching: a generic scenario that WOULD arise with a patient who had this condition, framed hypothetically ("If you had a patient with X, you might say...")
+- communicationTeaching: a generic scenario that WOULD arise with a patient who had this condition, framed hypothetically
 - quoteToDiscuss: leave empty string — no patient quote applies since this isn't her problem
-- clinicalPearl: a general teaching pearl framed for the student's future practice, not tied to today's encounter
+- clinicalPearl: a general teaching pearl framed for the student's future practice
 
-Think of this as: "We saw a patient with hypothyroidism today. As an aside, since we were talking about labs, let me also teach you about interpreting thyroid antibodies — even though our patient's antibodies weren't checked."`
-  : `This is a PATIENT DIAGNOSIS — the patient we saw today actually has this problem. Frame the ENTIRE teaching case around THIS specific patient, her presentation, her labs, her context. Every section should reference her actual features (her age range, her meds, her quotes, her decisions the attending made about HER care). This is the primary teaching mode described below.`}
+Think of this as: "${isPreVisit ? "We're about to see a patient with hypothyroidism. As an aside, since we'll be reviewing labs, let me also teach you about interpreting thyroid antibodies — even though the patient's antibodies aren't in the chart." : "We saw a patient with hypothyroidism today. As an aside, since we were talking about labs, let me also teach you about interpreting thyroid antibodies — even though our patient's antibodies weren't checked."}"`
+  : `This is a PATIENT DIAGNOSIS — the patient ${isPreVisit ? "you're about to see" : "we saw today"} actually has this problem. Frame the ENTIRE teaching case around THIS specific patient, her presentation, her labs, her context. Every section should reference her actual features (her age range, her meds, her ${isPreVisit ? "chart-documented history" : "quotes"}, ${isPreVisit ? "what you know from her records going into the visit" : "her decisions the attending made about HER care"}). This is the primary teaching mode described below.`}
 
 STUDENT DEVELOPMENTAL CONTEXT (CU School of Medicine Trek Curriculum, Foothills LIC year):
 - Current phase: ${phase.name}
@@ -1752,13 +1791,19 @@ ${shelfDifficulty}
 The three shelfQuestions you generate MUST match this difficulty level. Do not write generic-difficulty questions and hope they land — the shelf questions are one of the most useful outputs of this document, and mis-calibrated questions either bore the student (too easy) or discourage them (too hard). If in doubt, err slightly toward the harder end within the specified band.${lensGuidance[teachingLens]}
 
 VOICE AND TONE (CRITICAL):
-- Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
+${isPreVisit ? `- Write directly TO the student in second person, but ANTICIPATORY: "Before you go in, think about...", "When you take her history, ask about...", "If her BP is X, that changes...", "You'll want to be ready to..."
+- Reference specifics from the chart — her age range, her longstanding problems, her medications, her recent labs, her missed appointments — as "what you know going in."
+- Every learning point should START with something specific about what you know from the chart, THEN pivot to what the student should think about or do in the upcoming visit.
+- Sound like a thoughtful attending huddling with the student before rounds, not a textbook chapter.
+- Include anticipatory reasoning ("I'll want to know if she's actually taking her levothyroxine because her TSH pattern suggests possible non-adherence rather than dose failure — so listen carefully to how she describes her morning routine").
+- When the chart shows a trajectory or a concerning trend, name it explicitly and tell the student what to look for that would confirm or refute it.
+- Reference her life context and social situation from the chart when relevant, but frame it as "what to be aware of going in" not "what she told us."` : `- Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
 - Reference the specific patient by their pronoun and clinical story throughout — not "the patient" abstractly, but "our patient today with her 45-lb weight loss on Zepbound and 6-month lapse in levothyroxine"
 - Every learning point should START with what you observed together in this specific encounter, THEN pivot to the teaching principle
 - Sound like a thoughtful attending debriefing a case over coffee, not a textbook chapter
 - Include the WHY behind clinical decisions ("I held off on the GYN referral today because...")
 - Reference the patient's own words, concerns, life context, and social situation when relevant
-- When possible, tie teaching to what YOU as the attending noticed, decided, or would want the student to walk away thinking about
+- When possible, tie teaching to what YOU as the attending noticed, decided, or would want the student to walk away thinking about`}
 
 CITATION RULES — READ CAREFULLY:
 
@@ -1778,40 +1823,47 @@ When a claim in the structured evidence has a figure reference like [refs: fig-o
 If the structured evidence contains a "conflict" claim, address it explicitly in your teaching as a clinical equipoise teaching opportunity — cite BOTH real references that disagree.
 
 EXAMPLES OF GOOD vs. BAD VOICE AND CITATIONS:
-- BAD (textbook + tool citation): "TSH >10 indicates severe hypothyroidism requiring treatment (per OpenEvidence)."
+${isPreVisit ? `- BAD (textbook + tool citation): "TSH >10 indicates severe hypothyroidism requiring treatment (per OpenEvidence)."
+- GOOD (attending prep + real citation): "You'll see in her chart that her TSH was 15 two years ago, dropped to 5.78 after a dose change, and is now 2.74. That's the pattern of a patient whose thyroid axis is finally in range — but the question I want you to hold going in is: is she stable, or drifting? Ask specifically about her morning routine and whether she's taking the levothyroxine on an empty stomach (ATA 2014 guidelines)."
+
+- BAD: "Menorrhagia can be caused by hypothyroidism (OpenEvidence and DoxGPT)."
+- GOOD (pre-visit): "Her chart flags her menorrhagia workup as pending a GYN referral. Before you assume that's the right call, remember: uncontrolled hypothyroidism is one of the most common reversible causes of menorrhagia. Given her TSH history, I want you to ask her about her bleeding pattern in relation to her thyroid dose changes — the timing may tell us whether her thyroid needs more attention before we send her to GYN (ACOG Practice Bulletin 128; ATA 2014)."
+
+- BAD: "The patient should be counseled on adherence (per OpenEvidence)."
+- GOOD (pre-visit): "Her chart shows a pattern of missed refills that has previously been documented as adherence issues, but the record also notes a name mismatch on refill records. Before you assume non-adherence, plan to ask 'have you been able to get your medications?' rather than 'are you taking them?' — that phrasing surfaces system-level barriers rather than assigning blame (VA/DoD Clinical Practice Guidelines 2022)."` : `- BAD (textbook + tool citation): "TSH >10 indicates severe hypothyroidism requiring treatment (per OpenEvidence)."
 - GOOD (attending + real citation): "Our patient's TSH of 13.8 after six months off her levothyroxine tells us just how quickly the thyroid axis decompensates — she's essentially back to where she started at diagnosis. This is why I emphasized to her that adherence matters more than dose adjustments right now (ATA 2014 guidelines)."
 
 - BAD: "Menorrhagia can be caused by hypothyroidism (OpenEvidence and DoxGPT)."
 - GOOD: "You'll remember she described her periods as 'outrageously heavy' every two weeks. Before you jump to a GYN referral, consider: uncontrolled hypothyroidism is one of the most common reversible causes of menorrhagia we see. That's why I want to treat her thyroid first — if we fix that, we may fix her bleeding without a hysterectomy (ACOG Practice Bulletin 128; ATA 2014)."
 
 - BAD: "The patient should be counseled on adherence (per OpenEvidence)."
-- GOOD: "System-level barriers like a name mismatch on refill records — exactly what happened to our patient — are increasingly recognized as a driver of apparent 'non-adherence.' Asking 'have you been able to get your medications?' rather than 'are you taking them?' surfaces these barriers (VA/DoD Clinical Practice Guidelines 2022)."
+- GOOD: "System-level barriers like a name mismatch on refill records — exactly what happened to our patient — are increasingly recognized as a driver of apparent 'non-adherence.' Asking 'have you been able to get your medications?' rather than 'are you taking them?' surfaces these barriers (VA/DoD Clinical Practice Guidelines 2022)."`}
 
 Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES: (1) Use straight quotes " and ' — NEVER smart/curly quotes. (2) When you need an apostrophe or quote inside a string value, use single quote ' — never backslash-escape (\\"). Example: "vignette": "The patient's mother says 'take a look'" — NOT "vignette": "The patient\\'s mother says \\"take a look\\"". (3) Never include line breaks inside string values.
 
 {
   "problem": "${problem}",
-  "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for THIS patient"},
+  "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for ${isPreVisit ? "the upcoming visit with THIS patient" : "THIS patient"}"},
   "illnessScript": {
-    "epidemiology": "1-2 sentences on who typically gets this (age, sex, risk factors, populations at higher prevalence). Reference our patient's demographics where they fit or contrast the pattern.",
-    "timeCourse": "1-2 sentences on the classic tempo of the illness — acute, subacute, chronic, episodic, progressive — and where our patient's presentation fits on that spectrum.",
-    "keySymptoms": "The classic symptom cluster (3-5 bullet-worthy items presented as a comma-separated list in a sentence). Note which of these our patient does and doesn't have.",
-    "keySigns": "The classic physical exam findings (2-4 items). Note which of these are present or absent in our patient.",
-    "keyLabsImaging": "The characteristic lab/imaging pattern (2-3 items). Note where our patient's findings fit or diverge.",
-    "naturalHistory": "1-2 sentences on what happens if untreated, and typical response to first-line treatment. Anchor to what we expect for our patient specifically."
+    "epidemiology": "1-2 sentences on who typically gets this. Reference ${isPreVisit ? "the patient's chart-documented demographics" : "our patient's demographics"} where they fit or contrast the pattern.",
+    "timeCourse": "1-2 sentences on the classic tempo of the illness. ${isPreVisit ? "Note where the patient's chart-documented trajectory fits on that spectrum." : "Note where our patient's presentation fits on that spectrum."}",
+    "keySymptoms": "The classic symptom cluster (3-5 items in a sentence). ${isPreVisit ? "Note which of these the chart documents and which the student should specifically ask about in the upcoming visit." : "Note which of these our patient does and doesn't have."}",
+    "keySigns": "The classic physical exam findings (2-4 items). ${isPreVisit ? "Note which of these the student should specifically look for during the upcoming exam." : "Note which of these are present or absent in our patient."}",
+    "keyLabsImaging": "The characteristic lab/imaging pattern (2-3 items). ${isPreVisit ? "Reference the patient's known lab pattern from the chart and note what to watch for." : "Note where our patient's findings fit or diverge."}",
+    "naturalHistory": "1-2 sentences on what happens if untreated, and typical response to first-line treatment. ${isPreVisit ? "Anchor to what the chart trajectory suggests to expect going forward." : "Anchor to what we expect for our patient specifically."}"
   },
-  "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "why you considered it for OUR patient — reference her actual features, meds, or context"}],
-  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with something specific about our patient's presentation, THEN teach the concept — written TO the student. The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only — never displayed as citation"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
-  "shelfQuestions": [{"vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below — length and complexity should match that level, not a generic 'medium' difficulty. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong — calibrated depth to shelf difficulty level"}],
-  "focusedHistoryQuestions": [{"question": "the question", "rationale": "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}],
-  "physicalExam": {"maneuver": "exam maneuver relevant to OUR patient's presentation", "steps": ["step 1", "step 2"], "interpretation": "what a positive/negative finding would tell you about THIS patient specifically"},
-  "keyLabsAndImaging": [{"study": "name", "purpose": "why I ordered/would order it for OUR patient", "interpretation": "what her actual result (or what a hypothetical result) would mean in her clinical context", "role": "how it changes management for HER"}],
-  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "real trial/guideline citation (e.g. 'ATA 2022', 'SPRINT trial') — NEVER a tool name — plus 1 sentence explaining WHY this fits our patient", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["patient-specific considerations, not generic bullet points"]},
-  "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation — reference her actual story (job, family, MST, name issue, whatever's relevant)",
-  "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "why I want you to read this after seeing OUR patient today"}],
-  "communicationTeaching": {"scenario": "a specific conversation that came up (or could have come up) in OUR visit today", "script": "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"},
-  "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away remembering from OUR encounter today",
-  "quoteToDiscuss": "if the patient said something in the note that is teachable, quote it verbatim; else empty string"
+  "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "${isPreVisit ? "why you should hold this in mind going into the visit — reference the patient's chart features, meds, or context" : "why you considered it for OUR patient — reference her actual features, meds, or context"}"}],
+  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with ${isPreVisit ? "something specific from the chart" : "something specific about our patient's presentation"}, THEN ${isPreVisit ? "tell the student what to think about or do in the upcoming visit" : "teach the concept"} — written TO the student. The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
+  "shelfQuestions": [{"vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
+  "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
+  "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
+  "keyLabsAndImaging": [{"study": "name", "purpose": "${isPreVisit ? "why you might order it — or, if the chart shows it's already been done, what to look for in the result" : "why I ordered/would order it for OUR patient"}", "interpretation": "${isPreVisit ? "what the actual (or expected) result means clinically" : "what her actual result (or what a hypothetical result) would mean in her clinical context"}", "role": "${isPreVisit ? "how the result should change your plan" : "how it changes management for HER"}"}],
+  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "real trial/guideline citation — plus 1 sentence explaining WHY this ${isPreVisit ? "would fit this patient given what the chart shows" : "fits our patient"}", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations to bring up in the visit" : "patient-specific considerations, not generic bullet points"}"]},
+  "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
+  "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
+  "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
+  "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away ${isPreVisit ? "thinking about as they go into the visit" : "remembering from OUR encounter today"}",
+  "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}"
 }
 
 ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss.
@@ -1822,17 +1874,23 @@ Additionally include ONLY these focus-driven optional subsections based on what 
 
 Provide substantive teaching content — 2-3 sentences per learning point, thorough differential reasoning tied to case features, complete treatment rationale, and detailed shelf question explanations.
 
-REMEMBER: This student was IN the room with you for this encounter. Write like you're reflecting on the visit with them afterward, not writing a UWorld question. Reference specifics from the note — the patient's history, quotes, labs, medications, decisions you made — as much as possible.`;
+REMEMBER: ${isPreVisit
+  ? "This student is about to walk into a room with you to see this patient. Write like you're huddling with them BEFORE the visit — anticipating what to look for, what to ask, what might come up. Reference specifics from the chart (history, labs, medications, trajectories) as much as possible, but always in an anticipatory frame."
+  : "This student was IN the room with you for this encounter. Write like you're reflecting on the visit with them afterward, not writing a UWorld question. Reference specifics from the note — the patient's history, quotes, labs, medications, decisions you made — as much as possible."
+}`;
       const user = `Focus ${isTangential ? "TANGENTIAL topic" : "PATIENT DIAGNOSIS"} for this teaching case: ${problem}
 
-Chief concern of today's encounter: ${chiefConcern}
+${isPreVisit ? "Anticipated chief concern for the upcoming visit" : "Chief concern of today's encounter"}: ${chiefConcern}
 
-Full clinical note from today's encounter (for context — ${isTangential ? "the tangential topic is NOT one of the patient's problems; the note is background only" : "this patient actually has the focus problem above"}):
+${isPreVisit ? "Prenote / chart summary" : "Full clinical note"} (for context — ${isTangential ? "the tangential topic is NOT one of the patient's problems; the chart is background only" : `this patient ${isPreVisit ? "has this problem in their chart" : "actually has the focus problem above"}`}):
 ${notePayload}${evidenceContext}
 
 ${isTangential
-  ? `Write your teaching case as an ASIDE — a related topic the encounter sparked, but our patient does not have this condition. Frame everything as general clinical knowledge the student should have for future encounters. Do NOT invent patient-specific features for this topic. Do NOT write "our patient" in a way that implies she has this condition. It's fine (encouraged, even) to acknowledge WHY this topic is worth teaching alongside today's case ("Since we were on the topic of X with our patient today, let's also talk about Y — you'll see it soon enough").`
-  : `Write your teaching case as if you and the student just walked out of this patient's room together. Ground every teaching point in what you both observed in this specific patient. Use her actual clinical features, medications, quotes, and story — not abstract examples.`
+  ? `Write your teaching case as an ASIDE — a related topic ${isPreVisit ? "the upcoming visit makes worth prepping" : "the encounter sparked"}, but the patient does not have this condition. Frame everything as general clinical knowledge the student should have for future encounters. Do NOT invent patient-specific features for this topic. Do NOT write "our patient" or "the patient" in a way that implies she has this condition.`
+  : (isPreVisit
+    ? `Write your teaching case as if you're huddling with the student BEFORE this patient's visit. Ground every teaching point in what the chart tells you and frame everything as anticipatory: what to think about, what to ask, what to look for, what to be ready to discuss. Use her chart-documented features, medications, trajectories, and context — not abstract examples.`
+    : `Write your teaching case as if you and the student just walked out of this patient's room together. Ground every teaching point in what you both observed in this specific patient. Use her actual clinical features, medications, quotes, and story — not abstract examples.`
+  )
 }`;
       try {
         const response = await callAi(sys, user, 8000);
