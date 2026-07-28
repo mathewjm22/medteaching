@@ -326,7 +326,7 @@ export default function App() {
     storage.set("theme", next).catch(() => {});
   };
 
-  // ===== Session identity =====
+ // ===== Session identity =====
   // activeSessionId: which session is currently loaded in the editor.
   // sessionsIndex: array of session metadata objects for the "Recent sessions" panel.
   // sessionTitle: explicit attending-set title (overrides auto-derived).
@@ -334,6 +334,25 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState(null);
   const [sessionsIndex, setSessionsIndex] = useState([]); // [{id, title, workingDx, sessionDate, status, updatedAt, createdAt}]
   const [sessionTitle, setSessionTitle] = useState("");
+
+  // ===== Session mode =====
+  // "post" (default) = existing behavior: attending pastes clinical note AFTER visit,
+  //                    AI teaches retrospectively with "our patient today" framing.
+  // "pre" = new pre-visit mode: attending pastes prenote/chart summary BEFORE visit,
+  //         AI generates in-room reference doc + anticipatory teaching prep.
+  //
+  // linkedSessionId reserved for future merge feature (Phase 3): links a "post"
+  // session back to its originating "pre" session so we can render prediction-vs-reality.
+  const [sessionMode, setSessionMode] = useState("post");
+  const [linkedSessionId, setLinkedSessionId] = useState(null);
+
+  // De-identification review state.
+  // rawPrenote: what the attending pasted before de-identification.
+  // deidPreview: { deidentified, findings } from deidentifyPrenote()
+  // showDeidReviewer: controls the review modal.
+  const [rawPrenote, setRawPrenote] = useState("");
+  const [deidPreview, setDeidPreview] = useState(null);
+  const [showDeidReviewer, setShowDeidReviewer] = useState(false);
 
   // Cap on how many sessions we keep in storage. Prevents localStorage overflow.
   // Oldest sessions get pruned when a new one would push us over.
@@ -589,6 +608,8 @@ const [customTopics, setCustomTopics] = useState([]);
     const inProgress = await safeGet(`session:${sessionId}:inProgress`);
     if (inProgress) {
       if (inProgress.sessionTitle) setSessionTitle(inProgress.sessionTitle);
+      setSessionMode(inProgress.sessionMode || "post"); // legacy sessions default to post
+      setLinkedSessionId(inProgress.linkedSessionId || null);
       setClinicalNote(inProgress.clinicalNote || "");
       setChiefConcern(inProgress.chiefConcern || "");
       setWorkingDx(inProgress.workingDx || "");
@@ -659,6 +680,8 @@ const [customTopics, setCustomTopics] = useState([]);
       const entry = {
         id: activeSessionId,
         title,
+        mode: sessionMode,
+        linkedSessionId: linkedSessionId || null,
         workingDx: workingDx || "",
         chiefConcern: chiefConcern || "",
         sessionDate: session.sessionDate,
@@ -673,7 +696,7 @@ const [customTopics, setCustomTopics] = useState([]);
       storage.set("sessions_index", JSON.stringify(next)).catch(e => console.warn("[sessions_index] save failed:", e.message));
       return next;
     });
-  }, [activeSessionId, sessionTitle, workingDx, chiefConcern, session.sessionDate, clinicalNote, generatedDoc, previewData]);
+  }, [activeSessionId, sessionTitle, sessionMode, linkedSessionId, workingDx, chiefConcern, session.sessionDate, clinicalNote, generatedDoc, previewData]);
 
   // Auto-save watchers — each runs when the relevant piece of state changes.
   // Keys are namespaced per session so multiple sessions can coexist in storage.
@@ -683,12 +706,14 @@ const [customTopics, setCustomTopics] = useState([]);
     debouncedSave(`session:${activeSessionId}:inProgress`, {
       timestamp: new Date().toISOString(),
       sessionTitle,
+      sessionMode,
+      linkedSessionId,
       clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
       activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
       focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
     });
     updateSessionIndexEntry();
-  }, [hasRestored, activeSessionId, sessionTitle, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
+  }, [hasRestored, activeSessionId, sessionTitle, sessionMode, linkedSessionId, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
       activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
       focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled, debouncedSave, updateSessionIndexEntry]);
 
@@ -725,6 +750,11 @@ const [customTopics, setCustomTopics] = useState([]);
   // and by loadSessionData indirectly (which sets state from stored values).
   const resetEditorState = () => {
     setSessionTitle("");
+    setSessionMode("post");
+    setLinkedSessionId(null);
+    setRawPrenote("");
+    setDeidPreview(null);
+    setShowDeidReviewer(false);
     setClinicalNote(""); setChiefConcern(""); setWorkingDx("");
     setNewActiveProblem("");
     setExtractedTopics([]); setNoteAnalysis(null);
@@ -2168,6 +2198,8 @@ I want to focus today's teaching on: ${focusText}.
       [`session:${activeSessionId}:inProgress`, {
         timestamp: new Date().toISOString(),
         sessionTitle,
+        sessionMode,
+        linkedSessionId,
         clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
         activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
         focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
@@ -3536,6 +3568,73 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
         {/* SETUP TAB */}
         {activeTab === "setup" && (
           <div className="space-y-6">
+            {/* Session mode toggle — pre-visit prep vs. post-visit teaching.
+                Placed at the very top because it changes the meaning of every
+                subsequent step. Once problems have been selected or a note pasted,
+                switching modes mid-session would be confusing, but we allow it
+                (with the understanding that the attending starts over). */}
+            <div className="bg-white rounded-xl border border-slate-200 p-6">
+              <div className="mb-3">
+                <h2 className="text-lg font-semibold text-slate-900">Session type</h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  When are you creating this document — before you see the patient, or after?
+                </p>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <button
+                  onClick={() => setSessionMode("post")}
+                  className={`text-left p-4 rounded-lg border-2 transition ${
+                    sessionMode === "post"
+                      ? "border-indigo-500 bg-indigo-50"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sessionMode === "post" ? "border-indigo-600 bg-indigo-600" : "border-slate-300 bg-white"}`}>
+                      {sessionMode === "post" && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    </div>
+                    <div className={`font-semibold text-sm ${sessionMode === "post" ? "text-indigo-900" : "text-slate-900"}`}>
+                      Post-visit teaching
+                    </div>
+                  </div>
+                  <div className="text-xs text-slate-600 ml-6">
+                    Paste the clinical note from an encounter you already saw. Generates a debrief teaching document anchored to what happened.
+                  </div>
+                </button>
+                <button
+                  onClick={() => setSessionMode("pre")}
+                  className={`text-left p-4 rounded-lg border-2 transition ${
+                    sessionMode === "pre"
+                      ? "border-indigo-500 bg-indigo-50"
+                      : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sessionMode === "pre" ? "border-indigo-600 bg-indigo-600" : "border-slate-300 bg-white"}`}>
+                      {sessionMode === "pre" && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                    </div>
+                    <div className={`font-semibold text-sm ${sessionMode === "pre" ? "text-indigo-900" : "text-slate-900"}`}>
+                      Pre-visit prep
+                    </div>
+                    <span className="text-[10px] uppercase tracking-wider bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium">
+                      New
+                    </span>
+                  </div>
+                  <div className="text-xs text-slate-600 ml-6">
+                    Paste a prenote before the visit. Generates an in-room reference doc for the student + anticipatory teaching prep.
+                  </div>
+                </button>
+              </div>
+              {sessionMode === "pre" && (
+                <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <strong>PHI-safe workflow:</strong> When you paste the prenote in Step 2, you'll first review a de-identified version. Only the de-identified text is stored and sent to the AI. Your original paste is never saved.
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Recent Sessions — shown when there's more than the current session */}
             {sessionsIndex.filter(s => s.id !== activeSessionId).length > 0 && (
               <RecentSessionsPanel
@@ -3659,14 +3758,30 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
         {activeTab === "note" && (
           <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6">
             <div>
-              <h2 className="text-lg font-semibold text-slate-900 mb-1">Clinical Note & Encounter</h2>
-              <p className="text-sm text-slate-500">Paste your clinical note. {aiEnabled && "AI will extract chief concern, working diagnosis, active problems, quotes, and lab trends automatically."}</p>
+              <h2 className="text-lg font-semibold text-slate-900 mb-1">
+                {sessionMode === "pre" ? "Prenote / Chart Summary" : "Clinical Note & Encounter"}
+              </h2>
+              <p className="text-sm text-slate-500">
+                {sessionMode === "pre"
+                  ? "Paste the prenote or chart summary for the upcoming visit. You'll review an automatically de-identified version before it's saved."
+                  : `Paste your clinical note. ${aiEnabled ? "AI will extract chief concern, working diagnosis, active problems, quotes, and lab trends automatically." : ""}`
+                }
+              </p>
             </div>
 
-            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex gap-2 text-sm text-amber-900">
-              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
-              <div>De-identify before pasting — no names, DOB, MRN, addresses, exact dates. Use ages in ranges (e.g., "80s").</div>
-            </div>
+            {sessionMode === "pre" ? (
+              <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-3 flex gap-2 text-sm text-indigo-900">
+                <Sparkles className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <div>
+                  <strong>PHI-safe workflow.</strong> Paste your raw prenote below (with real names, dates, MRNs — that's fine). Click "Review de-identified version" and confirm what will be saved. Your original paste is never stored.
+                </div>
+              </div>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex gap-2 text-sm text-amber-900">
+                <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                <div>De-identify before pasting — no names, DOB, MRN, addresses, exact dates. Use ages in ranges (e.g., "80s").</div>
+              </div>
+            )}
 
             <div>
               <div className="flex items-baseline justify-between mb-2">
@@ -3698,22 +3813,101 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
               </div>
             </div>
 
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">De-identified clinical note</label>
-              <textarea value={clinicalNote} onChange={e => setClinicalNote(e.target.value)} rows={14} placeholder="Paste the SOAP note or H&P here (de-identified)..." className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm" />
-              <div className="flex items-center justify-between mt-1">
-                <div className="text-xs text-slate-500">{clinicalNote.length} characters</div>
-                {aiEnabled && (
-                  <button
-                    onClick={analyzeNote}
-                    disabled={!clinicalNote.trim() || aiStatus.analyzing}
-                    className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium disabled:opacity-50"
-                  >
-                    {aiStatus.analyzing ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing...</> : <><Wand2 className="w-4 h-4" />Analyze note & auto-fill</>}
-                  </button>
+            {sessionMode === "pre" ? (
+              /* PRE-VISIT: two-stage flow. Attending pastes raw into rawPrenote,
+                 then clicks Review to open the de-identification modal.
+                 On confirm, the reviewed version becomes clinicalNote.
+                 If clinicalNote already exists (already reviewed), show that with a re-review option. */
+              <>
+                {!clinicalNote ? (
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Raw prenote (will be de-identified before saving)</label>
+                    <textarea
+                      value={rawPrenote}
+                      onChange={e => setRawPrenote(e.target.value)}
+                      rows={14}
+                      placeholder="Paste the raw prenote here — names, dates, MRNs are OK. You'll review the de-identified version in the next step."
+                      className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
+                    />
+                    <div className="flex items-center justify-between mt-1">
+                      <div className="text-xs text-slate-500">
+                        {rawPrenote.length} characters
+                        {rawPrenote.length > 0 && <span className="ml-2 text-amber-700">· not yet saved</span>}
+                      </div>
+                      <button
+                        onClick={() => {
+                          const result = deidentifyPrenote(rawPrenote);
+                          setDeidPreview(result);
+                          setShowDeidReviewer(true);
+                        }}
+                        disabled={!rawPrenote.trim()}
+                        className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium disabled:opacity-50"
+                      >
+                        <Sparkles className="w-4 h-4" />
+                        Review de-identified version →
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="text-sm font-medium text-slate-700">
+                        De-identified prenote <span className="text-xs text-emerald-700 font-normal">· ready for AI processing</span>
+                      </label>
+                      <button
+                        onClick={() => {
+                          // Let the attending re-run de-identification if they realize
+                          // something slipped through. Uses the current clinicalNote as the raw input
+                          // (which is safe because it's already been de-identified once).
+                          const result = deidentifyPrenote(clinicalNote);
+                          setDeidPreview(result);
+                          setShowDeidReviewer(true);
+                        }}
+                        className="text-xs text-indigo-700 hover:text-indigo-900 underline"
+                      >
+                        Review / re-edit
+                      </button>
+                    </div>
+                    <textarea
+                      value={clinicalNote}
+                      onChange={e => setClinicalNote(e.target.value)}
+                      rows={14}
+                      className="w-full px-3 py-2 border border-emerald-300 bg-emerald-50/30 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm"
+                    />
+                    <div className="flex items-center justify-between mt-1">
+                      <div className="text-xs text-slate-500">{clinicalNote.length} characters</div>
+                      {aiEnabled && (
+                        <button
+                          onClick={analyzeNote}
+                          disabled={!clinicalNote.trim() || aiStatus.analyzing}
+                          className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium disabled:opacity-50"
+                        >
+                          {aiStatus.analyzing ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing...</> : <><Wand2 className="w-4 h-4" />Analyze prenote & auto-fill</>}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 )}
+              </>
+            ) : (
+              /* POST-VISIT: unchanged behavior — attending pastes an already-deidentified note directly */
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1">De-identified clinical note</label>
+                <textarea value={clinicalNote} onChange={e => setClinicalNote(e.target.value)} rows={14} placeholder="Paste the SOAP note or H&P here (de-identified)..." className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm" />
+                <div className="flex items-center justify-between mt-1">
+                  <div className="text-xs text-slate-500">{clinicalNote.length} characters</div>
+                  {aiEnabled && (
+                    <button
+                      onClick={analyzeNote}
+                      disabled={!clinicalNote.trim() || aiStatus.analyzing}
+                      className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium disabled:opacity-50"
+                    >
+                      {aiStatus.analyzing ? <><Loader2 className="w-4 h-4 animate-spin" />Analyzing...</> : <><Wand2 className="w-4 h-4" />Analyze note & auto-fill</>}
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
             {noteAnalysis && (
               <div className="p-4 bg-white border-2 border-indigo-300 rounded-lg space-y-4">
@@ -4741,6 +4935,24 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             src={attachmentLightbox.dataUrl}
             alt={attachmentLightbox.alt}
             onClose={() => setAttachmentLightbox(null)}
+          />
+        )}
+        {showDeidReviewer && deidPreview && (
+          <DeidentificationReviewer
+            rawText={rawPrenote || clinicalNote}
+            initialResult={deidPreview}
+            onCancel={() => {
+              setShowDeidReviewer(false);
+              // Keep rawPrenote around in case they want to try again
+            }}
+            onConfirm={(finalText) => {
+              // Adopt the confirmed de-identified text as the working clinical note.
+              // Discard rawPrenote so the original PHI-containing paste never persists.
+              setClinicalNote(finalText);
+              setRawPrenote("");
+              setDeidPreview(null);
+              setShowDeidReviewer(false);
+            }}
           />
         )}
       </main>
@@ -6249,6 +6461,206 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   );
 }
 
+// ============ DE-IDENTIFICATION REVIEWER MODAL ============
+// Full-screen modal for reviewing regex-de-identified prenote text before
+// it becomes the working clinical note. Shows a side-by-side diff of the
+// original vs. de-identified, category counts of what was changed, and an
+// editable "final version" the attending can further refine by hand.
+//
+// The attending MUST explicitly click "Use this de-identified version"
+// before the text is accepted — no accidental confirmations.
+function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel }) {
+  // Working copy the attending can further edit before confirming
+  const [editedText, setEditedText] = React.useState(initialResult.deidentified);
+  const [showOriginal, setShowOriginal] = React.useState(false);
+
+  React.useEffect(() => {
+    const handleKey = (e) => { if (e.key === "Escape") onCancel(); };
+    document.addEventListener("keydown", handleKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", handleKey);
+      document.body.style.overflow = "";
+    };
+  }, [onCancel]);
+
+  // Group findings by category for the summary panel
+  const grouped = React.useMemo(() => {
+    const g = {};
+    (initialResult.findings || []).forEach(f => {
+      if (!g[f.category]) g[f.category] = [];
+      g[f.category].push(f);
+    });
+    return g;
+  }, [initialResult.findings]);
+
+  const categoryLabels = {
+    patient_name: { label: "Patient name occurrences", color: "bg-red-100 text-red-800 border-red-200" },
+    patient_first_name: { label: "First name mentions", color: "bg-red-100 text-red-800 border-red-200" },
+    patient_last_name: { label: "Last name mentions", color: "bg-red-100 text-red-800 border-red-200" },
+    date: { label: "Dates reduced to MM/YYYY", color: "bg-amber-100 text-amber-800 border-amber-200" },
+    address: { label: "Addresses removed", color: "bg-red-100 text-red-800 border-red-200" },
+    phone: { label: "Phone numbers removed", color: "bg-red-100 text-red-800 border-red-200" },
+    identifier: { label: "IDs / MRNs removed", color: "bg-red-100 text-red-800 border-red-200" },
+    family_name: { label: "Family member names removed", color: "bg-red-100 text-red-800 border-red-200" },
+    family_location: { label: "Family locations removed", color: "bg-red-100 text-red-800 border-red-200" },
+    location: { label: "City/State references removed", color: "bg-red-100 text-red-800 border-red-200" },
+  };
+
+  const totalChanges = (initialResult.findings || []).length;
+  const hasBeenEdited = editedText !== initialResult.deidentified;
+
+  return (
+    <div
+      onClick={onCancel}
+      className="no-print"
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(15, 42, 68, 0.75)",
+        zIndex: 9999,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: "1.5rem",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        className="bg-white rounded-lg shadow-2xl flex flex-col overflow-hidden w-full"
+        style={{ maxWidth: "1100px", maxHeight: "90vh" }}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 border-b border-slate-200 bg-gradient-to-r from-slate-800 to-slate-900 text-white flex items-start justify-between gap-3">
+          <div className="flex-1 min-w-0">
+            <div className="text-xs uppercase tracking-wider opacity-70 mb-1">Step 1 of 2 · PHI review</div>
+            <h2 className="text-lg font-semibold">Review de-identified prenote</h2>
+            <p className="text-xs opacity-80 mt-1">
+              {totalChanges} automatic {totalChanges === 1 ? "change" : "changes"} made. Review, edit if needed, then confirm to use this version. The original paste will be discarded.
+            </p>
+          </div>
+          <button
+            onClick={onCancel}
+            className="text-white/70 hover:text-white p-1"
+            aria-label="Cancel"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        {/* Summary of what was changed */}
+        <div className="px-5 py-3 border-b border-slate-200 bg-slate-50">
+          {totalChanges === 0 ? (
+            <div className="text-sm text-amber-800 bg-amber-100 border border-amber-200 rounded p-2 flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+              <div>
+                <strong>No PHI patterns detected.</strong> This is unusual — either the prenote was already de-identified, or the automatic detector missed something. Review the text carefully and edit manually if needed.
+              </div>
+            </div>
+          ) : (
+            <div className="flex flex-wrap gap-1.5">
+              {Object.entries(grouped).map(([cat, items]) => {
+                const meta = categoryLabels[cat] || { label: cat, color: "bg-slate-100 text-slate-700 border-slate-200" };
+                return (
+                  <span
+                    key={cat}
+                    className={`inline-flex items-center gap-1 px-2 py-1 rounded text-xs font-medium border ${meta.color}`}
+                    title={items.map(i => `${i.original} → ${i.replacement}`).join("\n")}
+                  >
+                    {meta.label}
+                    <span className="opacity-75">· {items.length}</span>
+                  </span>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Body: split view of original vs. editable de-identified */}
+        <div className="flex-1 overflow-hidden flex flex-col lg:flex-row min-h-0">
+          {/* Left: original (collapsible on narrow screens) */}
+          <div className={`${showOriginal ? "flex" : "hidden lg:flex"} flex-1 flex-col border-r border-slate-200 min-h-0`}>
+            <div className="px-4 py-2 bg-red-50 border-b border-red-200 flex items-center justify-between">
+              <div className="text-xs font-semibold text-red-900 uppercase tracking-wider">Original (contains PHI — will not be sent)</div>
+              <button
+                onClick={() => setShowOriginal(false)}
+                className="text-xs text-red-700 hover:text-red-900 lg:hidden"
+              >
+                Hide
+              </button>
+            </div>
+            <textarea
+              value={rawText}
+              readOnly
+              className="flex-1 p-3 font-mono text-xs bg-red-50/30 text-slate-700 resize-none outline-none min-h-0"
+              style={{ minHeight: "200px" }}
+            />
+          </div>
+
+          {/* Right: editable de-identified */}
+          <div className="flex-1 flex flex-col min-h-0">
+            <div className="px-4 py-2 bg-emerald-50 border-b border-emerald-200 flex items-center justify-between">
+              <div className="text-xs font-semibold text-emerald-900 uppercase tracking-wider flex items-center gap-2">
+                De-identified (editable)
+                {hasBeenEdited && <span className="text-[10px] normal-case tracking-normal text-emerald-700 italic">· manually edited</span>}
+              </div>
+              <div className="flex items-center gap-2">
+                {!showOriginal && (
+                  <button
+                    onClick={() => setShowOriginal(true)}
+                    className="text-xs text-emerald-700 hover:text-emerald-900 lg:hidden"
+                  >
+                    Show original
+                  </button>
+                )}
+                {hasBeenEdited && (
+                  <button
+                    onClick={() => setEditedText(initialResult.deidentified)}
+                    className="text-xs text-slate-600 hover:text-slate-900 underline"
+                    title="Revert to the automatic de-identification result"
+                  >
+                    Reset to auto
+                  </button>
+                )}
+              </div>
+            </div>
+            <textarea
+              value={editedText}
+              onChange={e => setEditedText(e.target.value)}
+              className="flex-1 p-3 font-mono text-xs bg-white text-slate-900 resize-none outline-none min-h-0"
+              style={{ minHeight: "200px" }}
+              placeholder="De-identified text will appear here..."
+            />
+          </div>
+        </div>
+
+        {/* Footer with actions */}
+        <div className="px-5 py-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 flex-wrap">
+          <div className="text-xs text-slate-600 flex-1 min-w-0">
+            <strong className="text-slate-800">Reminder:</strong> Automatic de-identification catches most PHI but is not perfect. Review the right panel carefully. Anything you see there will be sent to the AI and stored in your browser.
+          </div>
+          <div className="flex gap-2 flex-shrink-0">
+            <button
+              onClick={onCancel}
+              className="px-4 py-2 bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-lg text-sm font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => onConfirm(editedText)}
+              disabled={!editedText.trim()}
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-1.5"
+            >
+              <Check className="w-4 h-4" />
+              Use this de-identified version
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ============ RECENT SESSIONS PANEL ============
 function RecentSessionsPanel({ sessions, activeSessionId, onOpen, onDelete, onRename }) {
   const [editingId, setEditingId] = React.useState(null);
@@ -6271,6 +6683,11 @@ function RecentSessionsPanel({ sessions, activeSessionId, onOpen, onDelete, onRe
     draft: { bg: "bg-amber-100", text: "text-amber-800", label: "Draft" },
     preview: { bg: "bg-indigo-100", text: "text-indigo-800", label: "Preview" },
     generated: { bg: "bg-emerald-100", text: "text-emerald-800", label: "Complete" },
+  };
+
+  const modeBadge = (mode) => {
+    if (mode === "pre") return { bg: "bg-purple-100", text: "text-purple-800", label: "Pre-visit" };
+    return { bg: "bg-slate-100", text: "text-slate-700", label: "Post-visit" };
   };
 
   const formatRelative = (iso) => {
@@ -6338,6 +6755,14 @@ function RecentSessionsPanel({ sessions, activeSessionId, onOpen, onDelete, onRe
                       {s.title}
                     </div>
                     <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
+                      {s.mode && (() => {
+                        const m = modeBadge(s.mode);
+                        return (
+                          <span className={`inline-block px-1.5 py-0.5 rounded ${m.bg} ${m.text} font-medium`}>
+                            {m.label}
+                          </span>
+                        );
+                      })()}
                       <span className={`inline-block px-1.5 py-0.5 rounded ${status.bg} ${status.text} font-medium`}>
                         {status.label}
                       </span>
