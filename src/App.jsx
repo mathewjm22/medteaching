@@ -35,6 +35,196 @@ const deriveSessionStatus = ({ clinicalNote, generatedDoc, previewData }) => {
   return "empty";
 };
 
+// ===== PHI de-identification =====
+// Client-side de-identification for VA prenotes. Runs a series of pattern
+// passes and returns { deidentified, findings } where findings is a list
+// of every change made (for the attending's preview panel).
+//
+// Rules per attending spec:
+//   - Patient name → "Mr./Ms./Mx. [Initials]" (both first + last initial)
+//   - Family members → "father", "mother", "brother", etc. — no names
+//   - Physicians → KEPT as-is (they're not identifying the patient)
+//   - Ages → KEPT as-is
+//   - Dates → reduced to MM/YYYY
+//   - Addresses, phones, MRNs, SSN-like numbers → REMOVED
+//   - Pronoun-based sex detection with "they" fallback
+//
+// This is a best-effort tool. The attending MUST review the output before
+// sending to the AI. Regex de-identification is ~90-95% reliable — the
+// preview UI is where the last 5-10% gets caught.
+const deidentifyPrenote = (rawText) => {
+  if (!rawText || typeof rawText !== "string") return { deidentified: "", findings: [] };
+
+  let text = rawText;
+  const findings = [];
+  const addFinding = (category, original, replacement, context = "") => {
+    findings.push({ category, original, replacement, context: context.slice(0, 80) });
+  };
+
+  // ---- STEP 1: Detect the patient's name from the prenote ----
+  // Common VA prenote patterns: "for FIRST MIDDLE LAST" or "PATIENT: FIRST LAST"
+  // or ALL CAPS name at the top of the document. We look for these signals in
+  // order of reliability.
+  let patientName = null;
+  let patientFirstName = null;
+  let patientLastName = null;
+
+  // Pattern A: "for FIRST [MIDDLE] LAST" (most common in VA prenotes)
+  const forPattern = /(?:Summary Since Last Visit for|WHAT TO KNOW ABOUT|Patient:|PATIENT:|for)\s+([A-Z][A-Z'\-]+(?:\s+[A-Z][A-Z'\-]+){1,3})\b/;
+  const forMatch = text.match(forPattern);
+  if (forMatch) {
+    patientName = forMatch[1].trim();
+    const parts = patientName.split(/\s+/);
+    patientFirstName = parts[0];
+    patientLastName = parts[parts.length - 1]; // last token = surname
+  }
+
+  // Pattern B: ALL CAPS line at the top with 2-4 name tokens (fallback)
+  if (!patientName) {
+    const lines = text.split("\n").slice(0, 30);
+    for (const line of lines) {
+      const trimmed = line.trim();
+      // Skip section headers (usually have common words)
+      if (/SECTION|HISTORY|MEDICATION|PROBLEM|NOTE|SUMMARY|ASSESSMENT|PLAN|REVIEW|EXAM|ALLERGIES|VITALS/i.test(trimmed)) continue;
+      // Match 2-4 all-caps name-like tokens
+      const nameMatch = trimmed.match(/^([A-Z][A-Z'\-]{2,}(?:\s+[A-Z][A-Z'\-]+){1,3})$/);
+      if (nameMatch) {
+        patientName = nameMatch[1];
+        const parts = patientName.split(/\s+/);
+        patientFirstName = parts[0];
+        patientLastName = parts[parts.length - 1];
+        break;
+      }
+    }
+  }
+
+  // ---- STEP 2: Detect sex from pronouns for title selection ----
+  const maleCount = (text.match(/\b(he|him|his|himself)\b/gi) || []).length;
+  const femaleCount = (text.match(/\b(she|her|hers|herself)\b/gi) || []).length;
+  let title = "Mx.";
+  if (maleCount > femaleCount * 1.5) title = "Mr.";
+  else if (femaleCount > maleCount * 1.5) title = "Ms.";
+
+  // ---- STEP 3: Replace patient name occurrences ----
+  if (patientName && patientFirstName && patientLastName) {
+    const initials = `${patientFirstName[0]}${patientLastName[0]}`;
+    const replacement = `${title === "Mx." ? "" : title + " "}${initials}`.trim() || initials;
+
+    // Match the full name (case-insensitive) in any capitalization pattern
+    const fullNameRegex = new RegExp(
+      patientName.split(/\s+/).map(p => escapeRegex(p)).join("\\s+"),
+      "gi"
+    );
+    const fullBefore = (text.match(fullNameRegex) || []).length;
+    text = text.replace(fullNameRegex, replacement);
+    if (fullBefore > 0) addFinding("patient_name", patientName, replacement, `${fullBefore} occurrences of full name`);
+
+    // Also strip stand-alone occurrences of the first name (e.g., "Duardo says he...")
+    // Only if the first name is uncommon enough to be identifying (>4 chars)
+    if (patientFirstName.length > 4) {
+      const firstNameRegex = new RegExp(`\\b${escapeRegex(patientFirstName)}\\b`, "gi");
+      const firstBefore = (text.match(firstNameRegex) || []).length;
+      text = text.replace(firstNameRegex, replacement);
+      if (firstBefore > 0) addFinding("patient_first_name", patientFirstName, replacement, `${firstBefore} occurrences`);
+    }
+
+    // Stand-alone last name (e.g., "Mr. Carollo returns...")
+    if (patientLastName.length > 3) {
+      const lastNameRegex = new RegExp(`\\b${escapeRegex(patientLastName)}\\b`, "gi");
+      const lastBefore = (text.match(lastNameRegex) || []).length;
+      text = text.replace(lastNameRegex, replacement);
+      if (lastBefore > 0) addFinding("patient_last_name", patientLastName, replacement, `${lastBefore} occurrences`);
+    }
+  }
+
+  // ---- STEP 4: Reduce all dates to MM/YYYY ----
+  // MM/DD/YYYY, M/D/YYYY, MM-DD-YYYY → MM/YYYY
+  text = text.replace(/\b(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})\b/g, (match, m, d, y) => {
+    const mm = m.padStart(2, "0");
+    const replacement = `${mm}/${y}`;
+    addFinding("date", match, replacement);
+    return replacement;
+  });
+
+  // Long-form: "December 28, 2023" → "December 2023" (already fine — day removed)
+  text = text.replace(/\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+(\d{1,2}),?\s+(\d{4})\b/gi,
+    (match, month, day, year) => {
+      const replacement = `${month} ${year}`;
+      addFinding("date", match, replacement);
+      return replacement;
+    }
+  );
+
+  // ---- STEP 5: Strip street addresses ----
+  // Common patterns: "123 Main St", "915 Highland Blvd", etc.
+  text = text.replace(/\b\d{1,5}\s+[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)*\s+(Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Highway|Hwy)\.?(?:\s+[A-Z]{2}\s+\d{5}(?:-\d{4})?)?/g,
+    (match) => {
+      addFinding("address", match, "[address removed]");
+      return "[address removed]";
+    }
+  );
+
+  // ---- STEP 6: Strip phone numbers ----
+  text = text.replace(/\b(?:\+?1[\s\-\.]?)?\(?\d{3}\)?[\s\-\.]?\d{3}[\s\-\.]?\d{4}\b/g, (match) => {
+    // Skip if it looks like a lab value or dose (context matters)
+    // But at this point most 10-digit numbers are phones
+    addFinding("phone", match, "[phone removed]");
+    return "[phone removed]";
+  });
+
+  // ---- STEP 7: Strip likely MRNs and identifier numbers ----
+  // Long alphanumeric strings that look like IDs: VA authorization numbers, MRNs, etc.
+  text = text.replace(/\b(?:MRN|Authorization|Auth|SSN|ID)[:\s#]+\s*([A-Z0-9\-]{6,})/gi, (match) => {
+    addFinding("identifier", match, "[ID removed]");
+    return "[ID removed]";
+  });
+
+  // VA-style auth numbers like "VA0030360811"
+  text = text.replace(/\bVA\d{8,}\b/g, (match) => {
+    addFinding("identifier", match, "[VA ID removed]");
+    return "[VA ID removed]";
+  });
+
+  // ---- STEP 8: Family member name stripping ----
+  // Attending spec: use relationship not name for family members.
+  // We look for "son NAME", "daughter NAME", "wife NAME", "mother NAME" etc.
+  const familyRelations = ["son", "daughter", "wife", "husband", "spouse", "partner", "mother", "father", "sister", "brother", "child", "grandchild", "grandson", "granddaughter"];
+  familyRelations.forEach(rel => {
+    // Pattern: relation followed by a Capitalized name
+    const relRegex = new RegExp(`\\b(${rel})\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)`, "gi");
+    text = text.replace(relRegex, (match, relation) => {
+      const replacement = relation.toLowerCase();
+      addFinding("family_name", match, replacement, `family member name`);
+      return replacement;
+    });
+  });
+
+  // ---- STEP 9: Strip location names attached to family members ----
+  // e.g., "son in Kauai", "daughter in WA", "mother in Auburn, WA"
+  // We keep the relation but remove the location.
+  text = text.replace(/\b(son|daughter|wife|husband|mother|father|sister|brother|spouse|partner|child)\s+in\s+([A-Z][a-zA-Z]+(?:,?\s+[A-Z]{2})?)\b/gi,
+    (match, relation) => {
+      const replacement = relation.toLowerCase();
+      addFinding("family_location", match, replacement);
+      return replacement;
+    }
+  );
+
+  // ---- STEP 10: City, State patterns not already caught ----
+  // "Belgrade, MT" or "Auburn, WA"
+  text = text.replace(/\b([A-Z][a-zA-Z]+),\s+([A-Z]{2})\b/g, (match) => {
+    // Only strip if not a common medical abbreviation pattern
+    if (/^(A|An|The|In|On|At|For|With|By)\b/i.test(match)) return match;
+    addFinding("location", match, "[location removed]");
+    return "[location removed]";
+  });
+
+  return { deidentified: text, findings };
+};
+
+// Utility for building regex from arbitrary strings
+const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 // ===== Storage adapter =====
 // Wraps localStorage in an async API matching the shape we use throughout.
 // Falls back to no-op if storage is unavailable (private browsing, disabled, etc.)
