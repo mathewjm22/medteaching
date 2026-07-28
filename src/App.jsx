@@ -1235,7 +1235,7 @@ Available focus areas: history, physicalExam, differential, workup, management, 
 Return ONLY valid JSON (no markdown fences):
 {
   "chiefConcern": "${isPreVisit ? 'anticipated reason for the upcoming visit if stated in prenote, else the primary chronic issue driving the visit' : 'brief chief concern or reason for visit'}",
-  "workingDiagnosis": "${isPreVisit ? 'primary problem the visit will center on, or the most teachable chronic condition, or \\'annual follow-up of multiple stable conditions\\' if truly multi-focal' : 'primary/most teachable diagnosis, or \\'multiple active problems\\' if truly multi-focal'}",
+"workingDiagnosis": "${isPreVisit ? `primary problem the visit will center on, or the most teachable chronic condition, or "annual follow-up of multiple stable conditions" if truly multi-focal` : `primary/most teachable diagnosis, or "multiple active problems" if truly multi-focal`}",
   "activeProblems": [
     {"problem": "problem name", "icdContext": "ICD if in note", "teachingValue": "${isPreVisit ? 'why this problem is worth prepping the student on BEFORE the visit' : 'brief note on why teachable'}", "keyIssue": "${isPreVisit ? 'the anticipated clinical dilemma for the upcoming visit' : 'the core clinical question or dilemma'}"}
   ],
@@ -1244,7 +1244,7 @@ Return ONLY valid JSON (no markdown fences):
   "suggestedFocus": ["3-5 focus area keys from the list above"],
   "reasoning": "2-3 sentence explanation",
   "complexity": "common" or "complex",
-  "redFlags": ["${isPreVisit ? 'things to actively screen for during the upcoming visit' : 'concerning features, can\\'t-miss diagnoses, iatrogenic risks'}"],
+"redFlags": ["${isPreVisit ? `things to actively screen for during the upcoming visit` : `concerning features, can't-miss diagnoses, iatrogenic risks`}"],
   "patientQuotes": [${isPreVisit ? '' : '"direct quotes verbatim from the note"'}],
   "labTrends": [
     {"parameter": "lab name", "trend": "${isPreVisit ? 'longitudinal chronic-disease monitoring pattern visible in chart' : 'brief description'}", "teachingPoint": "what this teaches"}
