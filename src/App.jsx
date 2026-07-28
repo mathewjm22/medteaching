@@ -2368,6 +2368,16 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           --app-text-muted: #64748b;  /* slate-500 */
           --app-text-subtle: #94a3b8; /* slate-400 */
           --app-input-bg: #ffffff;
+
+          /* Floating developmental-phase card */
+          --fft-bg: linear-gradient(180deg, #fefce8 0%, #ffffff 100%);
+          --fft-border: #fef3c7;
+          --fft-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+          --fft-title: #1f2937;
+          --fft-body: #4b5563;
+          --fft-muted: #6b7280;
+          --fft-accent: #78350f;
+          --fft-divider: #fef3c7;
         }
 
         /* Dark theme: applied via data-theme="dark" on <html>.
@@ -2383,6 +2393,16 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           --app-text-muted: #94a3b8;
           --app-text-subtle: #64748b;
           --app-input-bg: #1a2338;
+
+          /* Warm, low-glare treatment for the floating phase card */
+          --fft-bg: linear-gradient(180deg, #252319 0%, #171f2d 100%);
+          --fft-border: rgba(245, 158, 11, 0.36);
+          --fft-shadow: 0 10px 28px rgba(0, 0, 0, 0.28);
+          --fft-title: #f8fafc;
+          --fft-body: #cbd5e1;
+          --fft-muted: #94a3b8;
+          --fft-accent: #fbbf24;
+          --fft-divider: rgba(245, 158, 11, 0.28);
         }
 
         /* Retint Tailwind's slate/white utilities via CSS-only overrides.
@@ -2455,6 +2475,33 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
         :root[data-theme="dark"] .bg-purple-100 { background-color: rgba(147, 51, 234, 0.22) !important; }
         :root[data-theme="dark"] .border-purple-200 { border-color: rgba(147, 51, 234, 0.45) !important; }
         :root[data-theme="dark"] .text-purple-700 { color: #d8b4fe !important; }
+        :root[data-theme="dark"] .text-purple-900 { color: #f3e8ff !important; }
+
+        /* The multi-source notice intentionally stays light in dark mode so its
+           compact text remains easy to scan against a pale lavender surface. */
+        .source-detection-banner {
+          background-color: #faf5ff;
+          border: 1px solid #e9d5ff;
+          color: #581c87;
+        }
+        .source-detection-banner svg {
+          color: #7e22ce;
+          flex: 0 0 auto;
+        }
+        :root[data-theme="dark"] .source-detection-banner {
+          background-color: #ede9fe;
+          border-color: #c4b5fd;
+          color: #3b0764;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+        }
+        :root[data-theme="dark"] .source-detection-banner svg {
+          color: #6d28d9;
+        }
+
+        .food-for-thought-card {
+          transition: background 160ms ease, border-color 160ms ease,
+            color 160ms ease, box-shadow 160ms ease;
+        }
 
         :root[data-theme="dark"] .bg-red-50 { background-color: rgba(220, 38, 38, 0.15) !important; }
         :root[data-theme="dark"] .border-red-200 { border-color: rgba(220, 38, 38, 0.45) !important; }
@@ -3045,40 +3092,43 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             zIndex: 5,
           }}
         >
-          <div style={{
-            background: "linear-gradient(180deg, #fefce8 0%, #fff 100%)",
-            border: "1px solid #fef3c7",
-            borderRadius: "10px",
-            padding: "0.875rem 1rem",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.04)",
-            fontSize: "0.75rem",
-            color: "#4b5563",
-          }}>
+          <div
+            className="food-for-thought-card"
+            style={{
+              background: "var(--fft-bg)",
+              border: "1px solid var(--fft-border)",
+              borderRadius: "10px",
+              padding: "0.875rem 1rem",
+              boxShadow: "var(--fft-shadow)",
+              fontSize: "0.75rem",
+              color: "var(--fft-body)",
+            }}
+          >
             <div style={{ display: "flex", alignItems: "center", gap: "0.4rem", marginBottom: "0.5rem" }}>
               <span style={{ fontSize: "1rem" }}>💡</span>
-              <span style={{ fontFamily: "'Inter', sans-serif", textTransform: "uppercase", letterSpacing: "0.11em", fontSize: "0.62rem", fontWeight: 600, color: "#78350f" }}>
+              <span style={{ fontFamily: "'Inter', sans-serif", textTransform: "uppercase", letterSpacing: "0.11em", fontSize: "0.62rem", fontWeight: 600, color: "var(--fft-accent)" }}>
                 Food for thought
               </span>
             </div>
-            <div style={{ fontWeight: 600, color: "#1f2937", fontSize: "0.82rem", marginBottom: "0.25rem" }}>
+            <div style={{ fontWeight: 600, color: "var(--fft-title)", fontSize: "0.82rem", marginBottom: "0.25rem" }}>
               {phase.name}
             </div>
-            <div style={{ fontSize: "0.7rem", color: "#6b7280", marginBottom: "0.5rem" }}>
+            <div style={{ fontSize: "0.7rem", color: "var(--fft-muted)", marginBottom: "0.5rem" }}>
               Month {phase.monthsIn + 1} of Foothills LIC
             </div>
-            <div style={{ fontSize: "0.75rem", lineHeight: 1.5, color: "#4b5563", marginBottom: "0.5rem" }}>
+            <div style={{ fontSize: "0.75rem", lineHeight: 1.5, color: "var(--fft-body)", marginBottom: "0.5rem" }}>
               {phase.focus}
             </div>
-            <div style={{ fontSize: "0.7rem", fontStyle: "italic", color: "#6b7280", marginBottom: "0.5rem" }}>
+            <div style={{ fontSize: "0.7rem", fontStyle: "italic", color: "var(--fft-muted)", marginBottom: "0.5rem" }}>
               {phase.pace}
             </div>
             {phase.workingToward && (
-              <details style={{ fontSize: "0.7rem", marginTop: "0.4rem", paddingTop: "0.4rem", borderTop: "1px solid #fef3c7" }}>
-                <summary style={{ cursor: "pointer", fontWeight: 500, color: "#78350f" }}>Working toward →</summary>
-                <div style={{ marginTop: "0.4rem", color: "#4b5563", lineHeight: 1.5 }}>{phase.workingToward}</div>
+              <details style={{ fontSize: "0.7rem", marginTop: "0.4rem", paddingTop: "0.4rem", borderTop: "1px solid var(--fft-divider)" }}>
+                <summary style={{ cursor: "pointer", fontWeight: 500, color: "var(--fft-accent)" }}>Working toward →</summary>
+                <div style={{ marginTop: "0.4rem", color: "var(--fft-body)", lineHeight: 1.5 }}>{phase.workingToward}</div>
                 {phase.supervisionExpectation && (
-                  <div style={{ marginTop: "0.4rem", color: "#6b7280", fontStyle: "italic" }}>
-                    <strong style={{ fontStyle: "normal", color: "#4b5563" }}>Supervision: </strong>
+                  <div style={{ marginTop: "0.4rem", color: "var(--fft-muted)", fontStyle: "italic" }}>
+                    <strong style={{ fontStyle: "normal", color: "var(--fft-body)" }}>Supervision: </strong>
                     {phase.supervisionExpectation}
                   </div>
                 )}
@@ -3699,7 +3749,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   const totalCount = filledExternalCount + pdfCount;
                   if (totalCount < 2 || !aiEnabled) return null;
                   return (
-                    <div className="mt-2 p-2 bg-purple-50 border border-purple-200 rounded text-xs text-purple-900 flex items-center gap-2">
+                    <div className="source-detection-banner mt-2 p-2 rounded text-xs flex items-center gap-2">
                       <Sparkles className="w-3 h-3" />
                       <span>
                         {totalCount} sources detected ({filledExternalCount} pasted response{filledExternalCount !== 1 ? "s" : ""}{pdfCount > 0 ? ` + ${pdfCount} PDF${pdfCount !== 1 ? "s" : ""}` : ""}) — AI will synthesize them into a unified evidence summary, consolidating overlaps and flagging conflicts.
