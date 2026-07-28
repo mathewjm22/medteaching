@@ -71,7 +71,6 @@ export default function App() {
     lastRunAt: null,
     errors: [],
   });
-</parameter>
 
   // Session metadata
   const [session, setSession] = useState({
@@ -1012,7 +1011,6 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
     const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
     if (activeFocus.length === 0) return null;
     if (!aiEnabled) return null;
-</parameter>
 
     const lensGuidance = {
       general_im: "",
@@ -1228,7 +1226,6 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
       }
 
       setAiStatus(prev => ({ ...prev, progress: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}${isTangential ? " (tangential)" : ""}` }));
-</parameter>
 
 const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today.
 
@@ -2457,7 +2454,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             grid-template-columns: 1fr !important;
           }
         }
-</parameter>
+
         @page { margin: 0.55in; }
         @page :first { margin: 0; }
       `}</style>
