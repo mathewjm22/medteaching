@@ -2926,14 +2926,41 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                       </div>
                       <div className="flex items-center gap-2 ml-3 flex-shrink-0">
                         {src !== "pubmedai" && (
+                          <button
+                            onClick={e => { e.stopPropagation(); setPromptViewerFor(src); }}
+                            className="text-xs px-3 py-1.5 bg-slate-600 text-white hover:bg-slate-700 rounded transition flex items-center gap-1"
+                            title="Open prompt in a popup for review"
+                          >
+                            <FileText className="w-3 h-3" />View Prompt
+                          </button>
+                        )}
+                        {/* Combined Copy + Open button — one click copies the prompt AND opens the site.
+                            Falls back to just "Copy" if the source has no URL (e.g. "Other"). */}
+                        {src !== "pubmedai" && (
+                          <button
+                            onClick={e => {
+                              e.stopPropagation();
+                              copyPrompt(src);
+                              if (sourceUrls[src]) {
+                                window.open(sourceUrls[src], "_blank", "noreferrer");
+                              }
+                            }}
+                            className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === src ? "bg-emerald-600 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"}`}
+                            title={sourceUrls[src] ? `Copy prompt and open ${sourceLabels[src]} in a new tab — then paste with Cmd/Ctrl+V` : "Copy prompt to clipboard"}
+                          >
+                            {copiedPrompt === src
+                              ? <><Check className="w-3 h-3" />Copied — paste in new tab</>
+                              : sourceUrls[src]
+                                ? <><Copy className="w-3 h-3" />Copy & Open {sourceLabels[src].split(" ")[0]} ↗</>
+                                : <><Copy className="w-3 h-3" />Copy Prompt</>
+                            }
+                          </button>
+                        )}
+                        {/* --- LEGACY SEPARATE BUTTONS (kept for quick reactivation) ---
+                            To re-enable: change `false &&` to `true &&` (or just remove `false &&`) below,
+                            and delete or comment out the combined button above. */}
+                        {false && src !== "pubmedai" && (
                           <>
-                            <button
-                              onClick={e => { e.stopPropagation(); setPromptViewerFor(src); }}
-                              className="text-xs px-3 py-1.5 bg-slate-600 text-white hover:bg-slate-700 rounded transition flex items-center gap-1"
-                              title="Open prompt in a popup for review"
-                            >
-                              <FileText className="w-3 h-3" />View Prompt
-                            </button>
                             <button
                               onClick={e => { e.stopPropagation(); copyPrompt(src); }}
                               className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === src ? "bg-emerald-600 text-white" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
@@ -2941,18 +2968,17 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                             >
                               {copiedPrompt === src ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy Prompt</>}
                             </button>
+                            {sourceUrls[src] && (
+                              <a href={sourceUrls[src]}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1"
+                                onClick={e => e.stopPropagation()}
+                              >
+                                Open {sourceLabels[src].split(" ")[0]} ↗
+                              </a>
+                            )}
                           </>
-                        )}
-                        {sourceUrls[src] && (
-                          
-                            <a href={sourceUrls[src]}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1"
-                            onClick={e => e.stopPropagation()}
-                          >
-                            Open {sourceLabels[src].split(" ")[0]} ↗
-                          </a>
                         )}
                       </div>
                     </div>
