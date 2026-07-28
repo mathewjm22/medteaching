@@ -75,6 +75,7 @@ export default function App() {
   const [noteAnalysis, setNoteAnalysis] = useState(null);
   const [activeProblems, setActiveProblems] = useState([]);
   const [selectedProblems, setSelectedProblems] = useState([]);
+  const [newActiveProblem, setNewActiveProblem] = useState("");
   const [patientQuotes, setPatientQuotes] = useState([]);
   const [labTrends, setLabTrends] = useState([]);
   const [teachingLens, setTeachingLens] = useState("general_im");
@@ -993,11 +994,17 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
       complex_multimorbidity: " Weave in problem prioritization, competing goals, care coordination."
     };
 
+    // Build a labeled list so we can pass the "kind" of each teaching item to the AI.
+    // kind: "patient-diagnosis" = actually present in this patient; frame around HER story.
+    // kind: "tangential" = topic the encounter sparked but the patient doesn't have; frame as an aside.
     const problemsToTeach = [
-      ...(selectedProblems.length > 0 ? selectedProblems : (workingDx ? [workingDx] : [])),
-      ...customTopics,
+      ...(selectedProblems.length > 0
+        ? selectedProblems.map(p => ({ name: p, kind: "patient-diagnosis" }))
+        : (workingDx ? [{ name: workingDx, kind: "patient-diagnosis" }] : [])
+      ),
+      ...customTopics.map(t => ({ name: t, kind: "tangential" })),
     ];
-    if (problemsToTeach.length === 0) problemsToTeach.push("primary clinical problem");
+    if (problemsToTeach.length === 0) problemsToTeach.push({ name: "primary clinical problem", kind: "patient-diagnosis" });
 
     const difficulty = phase.monthsIn <= 4
       ? "Foundational (early Foothills LIC): basic pattern recognition, single-step reasoning, template-based history and note structure. Working toward Mid-Year (February) benchmarks."
@@ -1180,10 +1187,28 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
 
     // Generate one teaching case per API call, with waits between
     for (let i = 0; i < problemsToTeach.length; i++) {
-      const problem = problemsToTeach[i];
-      setAiStatus(prev => ({ ...prev, progress: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}` }));
+      const { name: problem, kind } = problemsToTeach[i];
+      const isTangential = kind === "tangential";
+      setAiStatus(prev => ({ ...prev, progress: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}${isTangential ? " (tangential)" : ""}` }));
 
 const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today.
+
+TEACHING CASE TYPE FOR THIS SPECIFIC OUTPUT: ${isTangential ? "TANGENTIAL TOPIC" : "PATIENT DIAGNOSIS"}
+
+${isTangential
+  ? `This is a TANGENTIAL TOPIC — a subject the encounter reminded the attending they wanted to teach, but the patient DOES NOT have this condition. Frame the entire teaching case as "an aside" or "a related topic worth knowing." Do NOT invent that our patient has this problem. Do NOT reference her clinical features as if they are examples of this topic. Do NOT force patient-specific framing. Instead:
+- Open the primaryDiagnosis definition as a general clinical topic ("This is worth reviewing because it comes up alongside cases like the one we just saw...")
+- The illnessScript should describe the classic pattern in general — NOT anchored to "our patient"
+- The differentialDiagnosis should be general (what would make you consider this diagnosis when you encounter it in another patient) — NOT tied to features of today's patient
+- keyLearningPoints should still be substantive and teaching-focused, but framed as "here's what you should know about this topic" rather than "notice how our patient..."
+- focusedHistoryQuestions, physicalExam, keyLabsAndImaging, treatmentApproach: general clinical approach, NOT "for our patient"
+- patientContextConsiderations: general context factors that come up with this topic in typical practice, NOT this patient's specific SDoH
+- communicationTeaching: a generic scenario that WOULD arise with a patient who had this condition, framed hypothetically ("If you had a patient with X, you might say...")
+- quoteToDiscuss: leave empty string — no patient quote applies since this isn't her problem
+- clinicalPearl: a general teaching pearl framed for the student's future practice, not tied to today's encounter
+
+Think of this as: "We saw a patient with hypothyroidism today. As an aside, since we were talking about labs, let me also teach you about interpreting thyroid antibodies — even though our patient's antibodies weren't checked."`
+  : `This is a PATIENT DIAGNOSIS — the patient we saw today actually has this problem. Frame the ENTIRE teaching case around THIS specific patient, her presentation, her labs, her context. Every section should reference her actual features (her age range, her meds, her quotes, her decisions the attending made about HER care). This is the primary teaching mode described below.`}
 
 STUDENT DEVELOPMENTAL CONTEXT (CU School of Medicine Trek Curriculum, Foothills LIC year):
 - Current phase: ${phase.name}
@@ -1277,20 +1302,24 @@ Additionally include ONLY these focus-driven optional subsections based on what 
 Provide substantive teaching content — 2-3 sentences per learning point, thorough differential reasoning tied to case features, complete treatment rationale, and detailed shelf question explanations.
 
 REMEMBER: This student was IN the room with you for this encounter. Write like you're reflecting on the visit with them afterward, not writing a UWorld question. Reference specifics from the note — the patient's history, quotes, labs, medications, decisions you made — as much as possible.`;
-      const user = `Focus problem for this teaching case: ${problem}
+      const user = `Focus ${isTangential ? "TANGENTIAL topic" : "PATIENT DIAGNOSIS"} for this teaching case: ${problem}
 
-Chief concern: ${chiefConcern}
+Chief concern of today's encounter: ${chiefConcern}
 
-Full clinical note from today's encounter:
+Full clinical note from today's encounter (for context — ${isTangential ? "the tangential topic is NOT one of the patient's problems; the note is background only" : "this patient actually has the focus problem above"}):
 ${notePayload}${evidenceContext}
 
-Write your teaching case as if you and the student just walked out of this patient's room together. Ground every teaching point in what you both observed in this specific patient. Use her actual clinical features, medications, quotes, and story — not abstract examples.`;
+${isTangential
+  ? `Write your teaching case as an ASIDE — a related topic the encounter sparked, but our patient does not have this condition. Frame everything as general clinical knowledge the student should have for future encounters. Do NOT invent patient-specific features for this topic. Do NOT write "our patient" in a way that implies she has this condition. It's fine (encouraged, even) to acknowledge WHY this topic is worth teaching alongside today's case ("Since we were on the topic of X with our patient today, let's also talk about Y — you'll see it soon enough").`
+  : `Write your teaching case as if you and the student just walked out of this patient's room together. Ground every teaching point in what you both observed in this specific patient. Use her actual clinical features, medications, quotes, and story — not abstract examples.`
+}`;
       try {
         const response = await callAi(sys, user, 8000);
         const parsed = extractJson(response);
         console.log(`[teachingCase] "${problem}" citations:`, parsed.keyLearningPoints?.map(lp => lp.citation).filter(Boolean));
-        // Always inject the known problem name — never trust the AI to echo it correctly
+        // Always inject the known problem name and kind — never trust the AI to echo them correctly
         parsed.problem = problem;
+        parsed.kind = kind;
         teachingCases.push(parsed);
       } catch (e) {
         console.error(`Failed to generate case for "${problem}":`, e);
@@ -1303,10 +1332,14 @@ Write your teaching case as if you and the student just walked out of this patie
       }
     }
 
-    // Cross-cutting themes as a separate small call
+    // Cross-cutting themes as a separate small call.
+    // Only run when there are 2+ actual PATIENT-DIAGNOSIS cases — tangential topics
+    // aren't threads in this patient's story, so weaving them into cross-cutting themes
+    // would be dishonest.
     let crossCuttingThemes = [];
     let questionsForReflection = [];
-    if (teachingCases.length > 1) {
+    const patientDxCases = teachingCases.filter(tc => tc.kind !== "tangential");
+    if (patientDxCases.length > 1) {
       await wait(3000);
       setAiStatus(prev => ({ ...prev, progress: "Generating cross-cutting themes" }));
       try {
@@ -1316,15 +1349,17 @@ Good themes are things like: "how untreated hypothyroidism creates a cascade of 
 
 Bad themes are things like: "interrelated physical conditions" or "hormonal dysregulation affecting musculoskeletal health" — these are just categories, not insights.
 
+IMPORTANT: Only weave in the problems the patient ACTUALLY has. Do NOT include any tangential topics that were added separately for teaching purposes — those aren't threads in this patient's story.
+
 Return ONLY valid JSON (no markdown fences):
 {
   "crossCuttingThemes": ["2-3 specific clinical reasoning insights that thread through this patient's problems — written as full sentences from the attending's perspective"],
   "questionsForReflection": ["2-3 thought-provoking open-ended questions for the student to sit with after this encounter"]
 }`;
-        const problemSummaries = teachingCases.map(tc => 
+        const problemSummaries = patientDxCases.map(tc =>
           `- ${tc.problem}: ${tc.primaryDiagnosis?.name || ""} — ${tc.clinicalPearl || tc.primaryDiagnosis?.briefDefinition || ""}`
         ).join("\n");
-        const themesUser = `Patient chief concern: ${chiefConcern || "internal medicine encounter"}\n\nTeaching cases generated for this patient:\n${problemSummaries}\n\nWhat are the deeper clinical reasoning threads that connect these problems in THIS patient?`;
+        const themesUser = `Patient chief concern: ${chiefConcern || "internal medicine encounter"}\n\nTeaching cases generated for this patient (patient-diagnosis cases only — tangential topics excluded):\n${problemSummaries}\n\nWhat are the deeper clinical reasoning threads that connect these problems in THIS patient?`;
         const themesResp = await callAi(themesSys, themesUser, 1500);
         const themesParsed = extractJson(themesResp);
         crossCuttingThemes = themesParsed.crossCuttingThemes || [];
@@ -2672,26 +2707,90 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                     <div className="space-y-2 ml-9">
                       {activeProblems.map((p, i) => {
                         const selected = selectedProblems.includes(p.problem);
+                        const isCustom = p.source === "attending-added";
                         return (
-                          <button
-                            key={i}
-                            onClick={() => {
-                              if (selected) setSelectedProblems(selectedProblems.filter(sp => sp !== p.problem));
-                              else setSelectedProblems([...selectedProblems, p.problem]);
-                            }}
-                            className={`w-full flex items-start gap-3 p-3 rounded-lg text-left transition ${selected ? "bg-indigo-50 border-2 border-indigo-400 shadow-sm" : "bg-slate-50 border-2 border-slate-200 hover:border-indigo-300 hover:bg-white"}`}
-                          >
-                            <div className={`w-5 h-5 rounded flex-shrink-0 mt-0.5 flex items-center justify-center transition ${selected ? "bg-indigo-600" : "bg-white border-2 border-slate-300"}`}>
-                              {selected && <Check className="w-3.5 h-3.5 text-white" />}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <div className="text-sm font-semibold text-slate-900">{p.problem}</div>
-                              {p.keyIssue && <div className="text-xs text-slate-600 mt-1">{p.keyIssue}</div>}
-                              {p.teachingValue && <div className="text-xs text-indigo-700 mt-1 italic"><span className="font-medium not-italic">Teaching value: </span>{p.teachingValue}</div>}
-                            </div>
-                          </button>
+                          <div key={i} className="relative group">
+                            <button
+                              onClick={() => {
+                                if (selected) setSelectedProblems(selectedProblems.filter(sp => sp !== p.problem));
+                                else setSelectedProblems([...selectedProblems, p.problem]);
+                              }}
+                              className={`w-full flex items-start gap-3 p-3 rounded-lg text-left transition ${selected ? "bg-indigo-50 border-2 border-indigo-400 shadow-sm" : "bg-slate-50 border-2 border-slate-200 hover:border-indigo-300 hover:bg-white"}`}
+                            >
+                              <div className={`w-5 h-5 rounded flex-shrink-0 mt-0.5 flex items-center justify-center transition ${selected ? "bg-indigo-600" : "bg-white border-2 border-slate-300"}`}>
+                                {selected && <Check className="w-3.5 h-3.5 text-white" />}
+                              </div>
+                              <div className="flex-1 min-w-0 pr-6">
+                                <div className="text-sm font-semibold text-slate-900 flex items-center gap-2 flex-wrap">
+                                  {p.problem}
+                                  {isCustom && <span className="text-[10px] uppercase tracking-wider bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">You added</span>}
+                                </div>
+                                {p.keyIssue && <div className="text-xs text-slate-600 mt-1">{p.keyIssue}</div>}
+                                {p.teachingValue && <div className="text-xs text-indigo-700 mt-1 italic"><span className="font-medium not-italic">Teaching value: </span>{p.teachingValue}</div>}
+                              </div>
+                            </button>
+                            {/* Remove button — always visible for attending-added, hover-only for AI-extracted */}
+                            <button
+                              onClick={e => {
+                                e.stopPropagation();
+                                setActiveProblems(activeProblems.filter((_, idx) => idx !== i));
+                                setSelectedProblems(selectedProblems.filter(sp => sp !== p.problem));
+                              }}
+                              className={`absolute top-2.5 right-2.5 p-1 rounded hover:bg-red-100 text-slate-400 hover:text-red-600 transition ${isCustom ? "opacity-100" : "opacity-0 group-hover:opacity-100"}`}
+                              title={isCustom ? "Remove this problem" : "Remove — AI added this but you don't need to teach on it"}
+                            >
+                              <X className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
                         );
                       })}
+
+                      {/* Inline "add another problem" input */}
+                      <div className="flex gap-2 pt-2">
+                        <input
+                          type="text"
+                          value={newActiveProblem}
+                          onChange={e => setNewActiveProblem(e.target.value)}
+                          onKeyDown={e => {
+                            if (e.key === "Enter" && newActiveProblem.trim()) {
+                              const problem = newActiveProblem.trim();
+                              // Skip if this exact problem already exists
+                              if (!activeProblems.some(p => p.problem.toLowerCase() === problem.toLowerCase())) {
+                                setActiveProblems([...activeProblems, {
+                                  problem,
+                                  source: "attending-added",
+                                  keyIssue: "",
+                                  teachingValue: "",
+                                }]);
+                                setSelectedProblems([...selectedProblems, problem]);
+                              }
+                              setNewActiveProblem("");
+                            }
+                          }}
+                          placeholder="Add another problem the AI missed (e.g., 'medication adherence barriers')..."
+                          className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
+                        />
+                        <button
+                          onClick={() => {
+                            if (!newActiveProblem.trim()) return;
+                            const problem = newActiveProblem.trim();
+                            if (!activeProblems.some(p => p.problem.toLowerCase() === problem.toLowerCase())) {
+                              setActiveProblems([...activeProblems, {
+                                problem,
+                                source: "attending-added",
+                                keyIssue: "",
+                                teachingValue: "",
+                              }]);
+                              setSelectedProblems([...selectedProblems, problem]);
+                            }
+                            setNewActiveProblem("");
+                          }}
+                          disabled={!newActiveProblem.trim()}
+                          className="px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1 text-sm font-medium disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          <Plus className="w-4 h-4" />Add
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}
@@ -2859,13 +2958,22 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             </div>
 <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
               <div>
-                <h3 className="font-semibold text-slate-900 mb-1">Extra topics to teach as their own cases</h3>
-                <p className="text-sm text-slate-500">Add topics beyond the case diagnoses — each becomes its own teaching case in the final document. E.g., "imaging findings in acute cholecystitis" or "how to counsel about weight-loss medication side effects".</p>
+                <h3 className="font-semibold text-slate-900 mb-1">Tangential teaching topics</h3>
+                <p className="text-sm text-slate-500">
+                  Topics you want to teach on that <em>aren't</em> diagnoses in this patient — background knowledge, teaching detours, or foundational concepts sparked by the encounter. Each becomes its own standalone teaching case, framed as "as an aside, here's how to think about X" rather than being tied to this patient's story.
+                </p>
+                <div className="mt-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-600">
+                  <div className="font-semibold text-slate-700 mb-1">When to use which:</div>
+                  <div className="space-y-1">
+                    <div><span className="font-medium text-slate-800">Step 2 "Add another problem":</span> the patient actually has this problem (AI missed it or didn't extract it). Teaching will be framed around <em>this specific patient</em> — her presentation, her labs, her context.</div>
+                    <div><span className="font-medium text-slate-800">Here (tangential topics):</span> the patient doesn't have this problem, but the encounter is a good excuse to teach it. E.g., patient has cholecystitis → tangential topic: "imaging findings in acute cholecystitis." Or patient is on semaglutide → tangential topic: "how to counsel about GLP-1 side effects."</div>
+                  </div>
+                </div>
                 {(selectedProblems.length + customTopics.length) > 0 && (
                   <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 bg-indigo-50 text-indigo-800 rounded-full text-xs font-medium">
                     <Sparkles className="w-3 h-3" />
                     Will generate {selectedProblems.length + customTopics.length} teaching case{(selectedProblems.length + customTopics.length) !== 1 ? "s" : ""}
-                    {customTopics.length > 0 && ` (${selectedProblems.length} from problems + ${customTopics.length} extra)`}
+                    {customTopics.length > 0 && ` (${selectedProblems.length} from problems + ${customTopics.length} tangential)`}
                   </div>
                 )}
               </div>
@@ -4994,7 +5102,10 @@ function DocumentContent({ doc, phase, session }) {
           return (
             <section key={idx} className="doc-case-wrap">
               <div className="doc-case-banner">
-                <div className="doc-case-numeral">Case {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}</div>
+                <div className="doc-case-numeral">
+                  {c.kind === "tangential" ? "Tangential Topic" : "Case"} {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}
+                  {c.kind === "tangential" && <span style={{ marginLeft: "0.5rem", opacity: 0.75 }}>· sparked by today's encounter</span>}
+                </div>
                 <h2 className="doc-case-title">{c.problem}</h2>
                 {doc.focusAreas?.length > 0 && (() => {
                   const focusReadable = {
