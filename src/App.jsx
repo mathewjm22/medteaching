@@ -5182,28 +5182,31 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              {c.treatmentApproach.firstLine?.length > 0 && (
+              {c.treatmentApproach && (
+                <div style={{ marginBottom: "1.5rem" }}>
+                  <div className="doc-subsection-label">Treatment Approach</div>
+                  {c.treatmentApproach.firstLine?.length > 0 && (
                     <div className="keep-together" style={{ marginBottom: "1rem" }}>
                       <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>First-Line Management</div>
                       <div className="doc-table-scroll">
-                      <table className="doc-table">
-                        <thead>
-                          <tr>
-                            <th>Treatment</th>
-                            <th>Dosing</th>
-                            <th>Evidence</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {c.treatmentApproach.firstLine.map((t, i) => (
-                            <tr key={i}>
-                              <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{t.treatment}</td>
-                              <td>{t.dosing}</td>
-                              <td style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
+                        <table className="doc-table">
+                          <thead>
+                            <tr>
+                              <th>Treatment</th>
+                              <th>Dosing</th>
+                              <th>Evidence</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
+                          </thead>
+                          <tbody>
+                            {c.treatmentApproach.firstLine.map((t, i) => (
+                              <tr key={i}>
+                                <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{t.treatment}</td>
+                                <td>{t.dosing}</td>
+                                <td style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
                       </div>
                     </div>
                   )}
