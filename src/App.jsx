@@ -49,6 +49,12 @@ export default function App() {
 
   // AI is enabled by default; user only toggles on/off
   const [aiEnabled, setAiEnabled] = useState(true);
+
+  // Tracks whether the browser has blocked window.open at least once.
+  // When true, the source panels fall back to showing the legacy separate
+  // "Copy Prompt" + "Open ↗" buttons instead of the combined one, since
+  // the combined button silently fails on popup-blocked browsers.
+  const [popupBlocked, setPopupBlocked] = useState(false);
   const [aiStatus, setAiStatus] = useState({ analyzing: false, generating: false, error: null, progress: null });
 
   // Session metadata
@@ -2901,6 +2907,16 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                 <div className="text-center py-8 text-sm text-slate-500 bg-slate-50 rounded-lg">Select one or more sources above.</div>
               )}
 
+              {popupBlocked && (
+                <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900 flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <strong>Your browser blocked the new tab.</strong> Switched to separate "Copy Prompt" and "Open" buttons — click each one in turn. To restore the one-click flow, allow popups from this site in your browser settings, then reload.
+                  </div>
+                  <button onClick={() => setPopupBlocked(false)} className="text-amber-700 hover:text-amber-900 text-xs underline">Try combined button again</button>
+                </div>
+              )}
+
               {activeFocusList.length === 0 && activeSources.length > 0 && (
                 <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
                   Select at least one teaching focus area (Step 3) for prompts to be tailored.
@@ -2935,14 +2951,20 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                           </button>
                         )}
                         {/* Combined Copy + Open button — one click copies the prompt AND opens the site.
-                            Falls back to just "Copy" if the source has no URL (e.g. "Other"). */}
-                        {src !== "pubmedai" && (
+                            If the browser blocks window.open, we detect it and flip to the legacy
+                            two-button layout so the user always has a working path. */}
+                        {src !== "pubmedai" && !popupBlocked && (
                           <button
                             onClick={e => {
                               e.stopPropagation();
                               copyPrompt(src);
                               if (sourceUrls[src]) {
-                                window.open(sourceUrls[src], "_blank", "noreferrer");
+                                const win = window.open(sourceUrls[src], "_blank", "noreferrer");
+                                // Popup blocker returns null (or an unusable window). Flip to
+                                // the legacy layout so the user can click "Open ↗" manually.
+                                if (!win || win.closed || typeof win.closed === "undefined") {
+                                  setPopupBlocked(true);
+                                }
                               }
                             }}
                             className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === src ? "bg-emerald-600 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"}`}
@@ -2956,10 +2978,10 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                             }
                           </button>
                         )}
-                        {/* --- LEGACY SEPARATE BUTTONS (kept for quick reactivation) ---
-                            To re-enable: change `false &&` to `true &&` (or just remove `false &&`) below,
-                            and delete or comment out the combined button above. */}
-                        {false && src !== "pubmedai" && (
+                        {/* Legacy separate buttons — shown either when the combined button has been
+                            disabled by a popup-blocker detection, OR permanently if you want to
+                            force this layout (change the condition below to just `src !== "pubmedai"`). */}
+                        {src !== "pubmedai" && popupBlocked && (
                           <>
                             <button
                               onClick={e => { e.stopPropagation(); copyPrompt(src); }}
