@@ -57,6 +57,22 @@ export default function App() {
   const [popupBlocked, setPopupBlocked] = useState(false);
   const [aiStatus, setAiStatus] = useState({ analyzing: false, generating: false, error: null, progress: null });
 
+  // Per-unit generation tracking. Persists across "Generate" clicks so we can
+  // retry ONLY what failed and reuse what succeeded. Reset on New Session,
+  // when the user changes source content, or when they change selected problems.
+  // Shape:
+  //   synthesis: null | "success" | "failed" | "skipped" (with .error if failed)
+  //   cases: { [problemName]: { status: "success"|"failed", error?: string, data?: {...} } }
+  //   themes: null | "success" | "failed" | "skipped"
+  const [generationAttempts, setGenerationAttempts] = useState({
+    synthesis: null,
+    cases: {},
+    themes: null,
+    lastRunAt: null,
+    errors: [],
+  });
+</parameter>
+
   // Session metadata
   const [session, setSession] = useState({
     studentName: "",
@@ -229,6 +245,7 @@ const [customTopics, setCustomTopics] = useState([]);
         if (gen.synthesizedEvidence) setSynthesizedEvidence(gen.synthesizedEvidence);
         if (gen.generatedDoc) setGeneratedDoc(gen.generatedDoc);
         if (gen.previewData) setPreviewData(gen.previewData);
+        if (gen.generationAttempts) setGenerationAttempts(gen.generationAttempts);
       }
 
       // Mark load complete — from now on, changes will trigger auto-save
@@ -272,9 +289,9 @@ const [customTopics, setCustomTopics] = useState([]);
   useEffect(() => {
     if (!hasRestored) return;
     debouncedSave("inProgress_generated", {
-      aiTeachingContent, synthesizedEvidence, generatedDoc, previewData,
+      aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts,
     });
-  }, [hasRestored, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, debouncedSave]);
+  }, [hasRestored, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, debouncedSave]);
 
   const discardRestoredSession = async () => {
     if (!confirm("Discard all restored work and start fresh? This will clear the current clinical note, sources, attachments, and any generated content.")) return;
@@ -313,6 +330,7 @@ const [customTopics, setCustomTopics] = useState([]);
     setGeneratedDoc(null);
     setPreviewData(null);
     setPreviewMode(false);
+    setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
     setActiveTab("setup");
     setRestoredSession(null);
   };
@@ -982,10 +1000,19 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
   // ===== Generate case-specific teaching content =====
   // Generates ONE teaching case per API call with waits between,
   // to stay under Groq's tokens-per-minute rate limit.
-  const generateAiTeachingContent = async (synthesizedEvidenceParam = null) => {
+  const generateAiTeachingContent = async (synthesizedEvidenceParam = null) => {// Generates teaching cases. Accepts:
+  //   synthesizedEvidenceParam: the synthesized evidence (or null)
+  //   cachedCases: an object keyed by problem name → previously-generated case data.
+  //                Problems present here are SKIPPED (reused from cache) instead of re-called.
+  //   onlyRetryFailed: if true, skip problems that don't have an entry in cachedCases at all
+  //                    (only used by "Retry failed parts" flow).
+  // Returns { teachingCases, crossCuttingThemes, questionsForReflection, caseResults }
+  // where caseResults is [{problem, status, error?, data?}] for downstream reporting.
+  const generateAiTeachingContent = async (synthesizedEvidenceParam = null, cachedCases = {}, onlyRetryFailed = false) => {
     const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
     if (activeFocus.length === 0) return null;
     if (!aiEnabled) return null;
+</parameter>
 
     const lensGuidance = {
       general_im: "",
@@ -1184,12 +1211,24 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
 
     const wait = (ms) => new Promise(r => setTimeout(r, ms));
     const teachingCases = [];
+    const caseResults = []; // parallel array: [{problem, status: "success"|"failed"|"cached", error?, data?}]
 
-    // Generate one teaching case per API call, with waits between
+    // Generate one teaching case per API call, with waits between.
+    // Skip any problem present in cachedCases (successful in a prior attempt).
     for (let i = 0; i < problemsToTeach.length; i++) {
       const { name: problem, kind } = problemsToTeach[i];
       const isTangential = kind === "tangential";
+
+      // Reuse cached success — avoids re-billing and preserves the exact prior output
+      if (cachedCases[problem]) {
+        console.log(`[teachingCase] Reusing cached case for "${problem}"`);
+        teachingCases.push(cachedCases[problem]);
+        caseResults.push({ problem, status: "cached", data: cachedCases[problem] });
+        continue;
+      }
+
       setAiStatus(prev => ({ ...prev, progress: `Generating teaching case ${i+1} of ${problemsToTeach.length}: ${problem}${isTangential ? " (tangential)" : ""}` }));
+</parameter>
 
 const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student about a patient you saw together today.
 
@@ -1321,8 +1360,10 @@ ${isTangential
         parsed.problem = problem;
         parsed.kind = kind;
         teachingCases.push(parsed);
+        caseResults.push({ problem, status: "success", data: parsed });
       } catch (e) {
         console.error(`Failed to generate case for "${problem}":`, e);
+        caseResults.push({ problem, status: "failed", error: e.message });
         // Continue with remaining problems instead of failing entirely
       }
 
@@ -1338,6 +1379,8 @@ ${isTangential
     // would be dishonest.
     let crossCuttingThemes = [];
     let questionsForReflection = [];
+    let themesStatus = "skipped"; // "success" | "failed" | "skipped"
+    let themesError = null;
     const patientDxCases = teachingCases.filter(tc => tc.kind !== "tangential");
     if (patientDxCases.length > 1) {
       await wait(3000);
@@ -1364,12 +1407,15 @@ Return ONLY valid JSON (no markdown fences):
         const themesParsed = extractJson(themesResp);
         crossCuttingThemes = themesParsed.crossCuttingThemes || [];
         questionsForReflection = themesParsed.questionsForReflection || [];
+        themesStatus = "success";
       } catch (e) {
         console.warn("Themes generation failed:", e);
+        themesStatus = "failed";
+        themesError = e.message;
       }
     }
 
-    return { teachingCases, crossCuttingThemes, questionsForReflection };
+    return { teachingCases, crossCuttingThemes, questionsForReflection, caseResults, themesStatus, themesError };
   };
 
   // ===== Source prompt generator =====
@@ -1408,10 +1454,33 @@ I want to focus today's teaching on: ${focusText}.
   };
 
  // ===== Generate preview (was: generate document) =====
-  const generateDocument = async () => {
+  // ===== Generate preview (was: generate document) =====
+  // Optional opts:
+  //   retryFailedOnly: if true, only re-run units that failed in the last attempt.
+  //                    Successful synthesis and cases are reused from state cache.
+  const generateDocument = async (opts = {}) => {
+    const { retryFailedOnly = false } = opts;
     setAiStatus({ ...aiStatus, generating: true, error: null });
     let aiContent = null;
     let synthesized = null;
+
+    // Build cache of previously-successful outputs. Only used when retryFailedOnly is true.
+    const cachedSuccessfulCases = {};
+    if (retryFailedOnly && aiTeachingContent?.teachingCases) {
+      aiTeachingContent.teachingCases.forEach(tc => {
+        // A case is "successful" if it made it into teachingCases (failed ones never do)
+        cachedSuccessfulCases[tc.problem] = tc;
+      });
+    }
+
+    // Track this attempt's per-unit outcomes for the summary panel
+    const attempt = {
+      synthesis: null,
+      cases: {},
+      themes: null,
+      lastRunAt: Date.now(),
+      errors: [],
+    };
 
     const filledSources = activeSources.filter(s =>
       s === "pubmedai"
@@ -1420,34 +1489,71 @@ I want to focus today's teaching on: ${focusText}.
     );
 
     if (aiEnabled && activeFocusList.length > 0) {
-      const errors = [];
       const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-      // Call 1 (NEW ORDER): Synthesize sources first, so teaching cases can reference structured claims
+      // Call 1: Synthesize sources first, so teaching cases can reference structured claims.
+      // Reuse cached synthesis if this is a retry AND synthesis previously succeeded.
       const hasPdfs = pdfAttachments.some(p => p.extractedText?.trim() && !p.error);
-      if (filledSources.length >= 1 || hasPdfs) {
+      const shouldSynthesize = filledSources.length >= 1 || hasPdfs;
+      const canReuseSynthesis = retryFailedOnly && generationAttempts.synthesis === "success" && synthesizedEvidence;
+
+      if (shouldSynthesize && canReuseSynthesis) {
+        console.log("[generateDocument] Reusing cached synthesis from prior attempt");
+        synthesized = synthesizedEvidence;
+        attempt.synthesis = "success";
+      } else if (shouldSynthesize) {
         setAiStatus({ analyzing: false, generating: true, error: null, progress: "Synthesizing evidence from all sources" });
         try {
           synthesized = await synthesizeSources();
           setSynthesizedEvidence(synthesized);
+          attempt.synthesis = "success";
         } catch (e) {
-          errors.push(`Source synthesis: ${e.message}`);
+          attempt.synthesis = "failed";
+          attempt.errors.push({ unit: "synthesis", message: e.message });
         }
         await wait(3000);
+      } else {
+        attempt.synthesis = "skipped";
       }
 
-      // Call 2: Teaching content — now has access to `synthesized` for grounded citations
+      // Call 2: Teaching content — passes synthesis + cached successful cases
       setAiStatus(prev => ({ ...prev, progress: "Generating teaching cases" }));
       try {
-        aiContent = await generateAiTeachingContent(synthesized);
+        aiContent = await generateAiTeachingContent(synthesized, cachedSuccessfulCases, retryFailedOnly);
+
+        // Record per-case outcomes
+        (aiContent?.caseResults || []).forEach(cr => {
+          attempt.cases[cr.problem] = {
+            status: cr.status,
+            error: cr.error || null,
+          };
+          if (cr.status === "failed") {
+            attempt.errors.push({ unit: `case: ${cr.problem}`, message: cr.error });
+          }
+        });
+
+        // Record themes outcome
+        attempt.themes = aiContent?.themesStatus || "skipped";
+        if (aiContent?.themesStatus === "failed" && aiContent?.themesError) {
+          attempt.errors.push({ unit: "themes", message: aiContent.themesError });
+        }
+
         setAiTeachingContent(aiContent);
       } catch (e) {
-        errors.push(`Teaching content: ${e.message}`);
+        // Only reached if generateAiTeachingContent itself throws (not per-case failures).
+        // Per-case failures are handled above by looking at caseResults.
+        attempt.errors.push({ unit: "teaching-content-batch", message: e.message });
       }
 
-      if (errors.length > 0) {
-        console.error("Generation errors:", errors);
-        setAiStatus({ analyzing: false, generating: false, error: errors.join(" · "), progress: null });
+      // Save attempt state so the summary panel can read it
+      setGenerationAttempts(attempt);
+
+      if (attempt.errors.length > 0) {
+        console.error("Generation errors:", attempt.errors);
+        const summaryMsg = attempt.errors.length === 1
+          ? attempt.errors[0].message
+          : `${attempt.errors.length} generation errors — see summary in Review tab`;
+        setAiStatus({ analyzing: false, generating: false, error: summaryMsg, progress: null });
       } else {
         setAiStatus({ analyzing: false, generating: false, error: null, progress: null });
       }
@@ -1457,9 +1563,13 @@ I want to focus today's teaching on: ${focusText}.
       if (filledSources.length >= 1 || hasPdfs) {
         try {
           synthesized = await synthesizeSources();
+          attempt.synthesis = "success";
         } catch (e) {
           console.error("Synthesis failed:", e);
+          attempt.synthesis = "failed";
+          attempt.errors.push({ unit: "synthesis", message: e.message });
         }
+        setGenerationAttempts(attempt);
       }
     }
 
@@ -1589,7 +1699,7 @@ I want to focus today's teaching on: ${focusText}.
       ["inProgress_pdfs", pdfAttachments],
       ["inProgress_images", imageAttachments],
       ["inProgress_imageBytes", sessionImageBytes],
-      ["inProgress_generated", { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData }],
+      ["inProgress_generated", { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
     ];
 
     try {
@@ -3628,6 +3738,8 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                 commitPreviewToDocument={commitPreviewToDocument}
                 onBack={() => setActiveTab("goals")}
                 onRegenerate={generateDocument}
+                onRetryFailed={() => generateDocument({ retryFailedOnly: true })}
+                generationAttempts={generationAttempts}
                 fetchingPubmed={fetchingPubmed}
                 aiStatus={aiStatus}
                 focusLabels={focusLabels}
@@ -4041,7 +4153,8 @@ function Editable({ value, onSave, multiline = false, className = "", as: Tag = 
 }
 
 // ============ PREVIEW EDITOR COMPONENT ============
-function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, aiStatus, focusLabels, phase, session }) {
+// ============ PREVIEW EDITOR COMPONENT ============
+function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, generationAttempts, aiStatus, focusLabels, phase, session }) {
   const s = previewData.sections;
   const [previewScale, setPreviewScale] = React.useState(0.72);
   const SectionHeader = ({ label, enabled, onToggle, count }) => (
@@ -4058,8 +4171,108 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
     </div>
   );
 
+  // Derive summary counts from generationAttempts
+  const attemptSummary = React.useMemo(() => {
+    if (!generationAttempts?.lastRunAt) return null;
+    const cases = Object.entries(generationAttempts.cases || {});
+    const succeeded = cases.filter(([_, v]) => v.status === "success" || v.status === "cached").length;
+    const failed = cases.filter(([_, v]) => v.status === "failed");
+    return {
+      synthesis: generationAttempts.synthesis,
+      themes: generationAttempts.themes,
+      casesSucceeded: succeeded,
+      casesFailed: failed,
+      casesTotal: cases.length,
+      hasFailures: failed.length > 0 || generationAttempts.synthesis === "failed" || generationAttempts.themes === "failed",
+    };
+  }, [generationAttempts]);
+
+  const StatusBadge = ({ status, label }) => {
+    const colors = {
+      success: "bg-emerald-100 text-emerald-800 border-emerald-200",
+      cached: "bg-slate-100 text-slate-700 border-slate-200",
+      failed: "bg-red-100 text-red-800 border-red-200",
+      skipped: "bg-slate-50 text-slate-500 border-slate-200",
+    };
+    const icons = {
+      success: <Check className="w-3 h-3" />,
+      cached: <Check className="w-3 h-3" />,
+      failed: <X className="w-3 h-3" />,
+      skipped: null,
+    };
+    return (
+      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium border ${colors[status] || colors.skipped}`}>
+        {icons[status]}
+        {label}
+      </span>
+    );
+  };
+
   return (
     <div>
+      {/* Generation summary — only shown after a generation attempt */}
+      {attemptSummary && (
+        <div className={`rounded-lg border p-4 mb-4 ${attemptSummary.hasFailures ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200"}`}>
+          <div className="flex items-start justify-between flex-wrap gap-3">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-2">
+                {attemptSummary.hasFailures
+                  ? <AlertCircle className="w-4 h-4 text-amber-700 flex-shrink-0" />
+                  : <Check className="w-4 h-4 text-emerald-700 flex-shrink-0" />
+                }
+                <h3 className={`text-sm font-bold ${attemptSummary.hasFailures ? "text-amber-900" : "text-emerald-900"}`}>
+                  {attemptSummary.hasFailures ? "Generation partially succeeded" : "Generation complete"}
+                </h3>
+              </div>
+              <div className="flex flex-wrap gap-1.5 items-center text-xs">
+                {attemptSummary.synthesis && attemptSummary.synthesis !== "skipped" && (
+                  <StatusBadge
+                    status={attemptSummary.synthesis}
+                    label={`Evidence synthesis: ${attemptSummary.synthesis}`}
+                  />
+                )}
+                {attemptSummary.casesTotal > 0 && (
+                  <StatusBadge
+                    status={attemptSummary.casesFailed.length > 0 ? "failed" : "success"}
+                    label={`Teaching cases: ${attemptSummary.casesSucceeded}/${attemptSummary.casesTotal} succeeded`}
+                  />
+                )}
+                {attemptSummary.themes && attemptSummary.themes !== "skipped" && (
+                  <StatusBadge
+                    status={attemptSummary.themes}
+                    label={`Cross-cutting themes: ${attemptSummary.themes}`}
+                  />
+                )}
+              </div>
+              {attemptSummary.casesFailed.length > 0 && (
+                <div className="mt-2 text-xs text-amber-900">
+                  <strong>Failed to generate:</strong>
+                  <ul className="list-disc ml-5 mt-1 space-y-0.5">
+                    {attemptSummary.casesFailed.map(([problem, { error }], i) => (
+                      <li key={i}>
+                        <span className="font-medium">{problem}</span>
+                        {error && <span className="text-amber-700 italic ml-1">— {error.slice(0, 120)}</span>}
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-1.5 italic">These cases won't appear in the document. The successful cases and evidence are preserved — click "Retry failed" to try again with just the failed items.</div>
+                </div>
+              )}
+            </div>
+            {attemptSummary.hasFailures && (
+              <button
+                onClick={onRetryFailed}
+                disabled={aiStatus.generating}
+                className="flex items-center gap-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex-shrink-0"
+              >
+                {aiStatus.generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+                Retry failed
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Top action bar */}
       <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4">
         <div className="flex items-start justify-between flex-wrap gap-2">
