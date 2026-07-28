@@ -167,17 +167,6 @@ const [customTopics, setCustomTopics] = useState([]);
     return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
-  // Manual retry: kicks all state watchers to re-save
-  const retrySave = () => {
-    setSaveStatus({ state: "saving", lastSavedAt: saveStatus.lastSavedAt, error: null });
-    // Force a re-save by touching the most important slice
-    debouncedSave("inProgress", {
-      timestamp: new Date().toISOString(),
-      clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
-      activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
-      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
-    });
-  };
 
   // Load persisted state
   // Load persisted state (both durable state and in-progress session)
@@ -1536,13 +1525,39 @@ I want to focus today's teaching on: ${focusText}.
 
     
 
-  const saveState = async () => {
+  // Manual "Save now" — cancels any pending debounced writes and immediately flushes
+  // every slice of state to storage. Used by the header save-status pill.
+  const saveNow = async () => {
+    // Cancel all pending debounced saves so we don't double-write
+    Object.values(saveTimers.current).forEach(t => clearTimeout(t));
+    saveTimers.current = {};
+    pendingWrites.current.clear();
+
+    setSaveStatus(prev => ({ ...prev, state: "saving", error: null }));
+
+    const slices = [
+      ["session", session],
+      ["longTermGoals", longTermGoals],
+      ["inProgress", {
+        timestamp: new Date().toISOString(),
+        clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
+        activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
+        focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
+      }],
+      ["inProgress_sourceResponses", sourceResponses],
+      ["inProgress_pdfs", pdfAttachments],
+      ["inProgress_images", imageAttachments],
+      ["inProgress_imageBytes", sessionImageBytes],
+      ["inProgress_generated", { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData }],
+    ];
+
     try {
-      await storage.set("session", JSON.stringify(session));
-      await storage.set("longTermGoals", JSON.stringify(longTermGoals));
-      setSaved(true);
-      setTimeout(() => setSaved(false), 2000);
-    } catch (e) { console.error(e); }
+      await Promise.all(slices.map(([key, value]) => storage.set(key, JSON.stringify(value))));
+      setSaveStatus({ state: "saved", lastSavedAt: Date.now(), error: null });
+    } catch (e) {
+      console.warn("[saveNow] Failed:", e.message);
+      setSaveStatus(prev => ({ state: "error", lastSavedAt: prev.lastSavedAt, error: e.message.slice(0, 80) }));
+    }
   };
 
   const addPdfAttachments = async (files) => {
@@ -2238,17 +2253,27 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             </div>
             <div className="flex items-center gap-2">
               {hasRestored && (
-                <div
+                <button
+                  onClick={saveNow}
+                  disabled={saveStatus.state === "saving"}
                   className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs transition ${
                     saveStatus.state === "error"
-                      ? "bg-amber-50 border border-amber-200 text-amber-800"
+                      ? "bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100"
                       : saveStatus.state === "saving"
-                      ? "bg-indigo-50 border border-indigo-200 text-indigo-700"
+                      ? "bg-indigo-50 border border-indigo-200 text-indigo-700 cursor-wait"
                       : saveStatus.lastSavedAt
-                      ? "bg-emerald-50 border border-emerald-200 text-emerald-800"
-                      : "bg-slate-50 border border-slate-200 text-slate-500"
+                      ? "bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100"
+                      : "bg-slate-50 border border-slate-200 text-slate-500 hover:bg-slate-100"
                   }`}
-                  title={saveStatus.error || (saveStatus.lastSavedAt ? `Last saved ${new Date(saveStatus.lastSavedAt).toLocaleString()}` : "Auto-save enabled")}
+                  title={
+                    saveStatus.state === "saving"
+                      ? "Saving now..."
+                      : saveStatus.error
+                      ? `${saveStatus.error} — click to retry`
+                      : saveStatus.lastSavedAt
+                      ? `Last saved ${new Date(saveStatus.lastSavedAt).toLocaleString()} — click to save now`
+                      : "Auto-save enabled — click to save now"
+                  }
                 >
                   {saveStatus.state === "saving" && (
                     <>
@@ -2265,17 +2290,16 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   {saveStatus.state === "error" && (
                     <>
                       <AlertCircle className="w-3.5 h-3.5" />
-                      <span>Save failed</span>
-                      <button onClick={retrySave} className="underline hover:text-amber-900">Retry</button>
+                      <span>Save failed · Retry</span>
                     </>
                   )}
                   {saveStatus.state === "idle" && (
                     <>
                       <Save className="w-3.5 h-3.5" />
-                      <span>Auto-save on</span>
+                      <span>Save now</span>
                     </>
                   )}
-                </div>
+                </button>
               )}
               <button
                 onClick={() => {
