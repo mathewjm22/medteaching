@@ -2378,6 +2378,25 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           --fft-muted: #6b7280;
           --fft-accent: #78350f;
           --fft-divider: #fef3c7;
+
+          /* Step 5: AI goal recommendations panel */
+          --goal-rec-bg: linear-gradient(135deg, #fefce8 0%, #ffffff 100%);
+          --goal-rec-border: #fef3c7;
+          --goal-rec-shadow: none;
+          --goal-rec-title: #78350f;
+          --goal-rec-subtitle: #64748b;
+          --goal-rec-helper: #64748b;
+          --goal-rec-button-bg: #fef3c7;
+          --goal-rec-button-hover: #fde68a;
+          --goal-rec-button-text: #78350f;
+          --goal-rec-item-bg: rgba(255, 255, 255, 0.72);
+          --goal-rec-item-hover: #ffffff;
+          --goal-rec-item-border: #fef3c7;
+          --goal-rec-item-border-hover: #fcd34d;
+          --goal-rec-item-text: #0f172a;
+          --goal-rec-rationale: #64748b;
+          --goal-rec-dismiss: #cbd5e1;
+          --goal-rec-dismiss-hover: #475569;
         }
 
         /* Dark theme: applied via data-theme="dark" on <html>.
@@ -2403,6 +2422,25 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           --fft-muted: #94a3b8;
           --fft-accent: #fbbf24;
           --fft-divider: rgba(245, 158, 11, 0.28);
+
+          /* Low-glare warm treatment for Step 5 recommendations */
+          --goal-rec-bg: linear-gradient(135deg, #272316 0%, #171f2d 100%);
+          --goal-rec-border: rgba(245, 158, 11, 0.38);
+          --goal-rec-shadow: 0 10px 28px rgba(0, 0, 0, 0.24);
+          --goal-rec-title: #fbbf24;
+          --goal-rec-subtitle: #cbd5e1;
+          --goal-rec-helper: #f1dfb8;
+          --goal-rec-button-bg: rgba(245, 158, 11, 0.18);
+          --goal-rec-button-hover: rgba(245, 158, 11, 0.30);
+          --goal-rec-button-text: #fde68a;
+          --goal-rec-item-bg: rgba(11, 18, 32, 0.66);
+          --goal-rec-item-hover: rgba(26, 35, 56, 0.9);
+          --goal-rec-item-border: rgba(245, 158, 11, 0.22);
+          --goal-rec-item-border-hover: rgba(245, 158, 11, 0.52);
+          --goal-rec-item-text: #f8fafc;
+          --goal-rec-rationale: #d6c8ad;
+          --goal-rec-dismiss: #64748b;
+          --goal-rec-dismiss-hover: #cbd5e1;
         }
 
         /* Retint Tailwind's slate/white utilities via CSS-only overrides.
@@ -2501,6 +2539,59 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
         .food-for-thought-card {
           transition: background 160ms ease, border-color 160ms ease,
             color 160ms ease, box-shadow 160ms ease;
+        }
+
+        /* Step 5 recommendation panel uses its own palette so the global dark-mode
+           slate/amber utility overrides cannot create pale text on a pale card. */
+        .ai-recommendations-card {
+          background: var(--goal-rec-bg);
+          border: 1px solid var(--goal-rec-border);
+          border-radius: 10px;
+          box-shadow: var(--goal-rec-shadow);
+          padding: 1rem 1.25rem;
+          transition: background 160ms ease, border-color 160ms ease,
+            box-shadow 160ms ease;
+        }
+        .ai-recommendations-eyebrow {
+          color: var(--goal-rec-title);
+          font-family: 'Inter', sans-serif;
+          font-size: 0.65rem;
+          font-weight: 600;
+          letter-spacing: 0.11em;
+          text-transform: uppercase;
+        }
+        .ai-recommendations-subtitle {
+          color: var(--goal-rec-subtitle);
+        }
+        .ai-recommendations-helper {
+          color: var(--goal-rec-helper);
+        }
+        .ai-recommendations-button {
+          background: var(--goal-rec-button-bg);
+          color: var(--goal-rec-button-text);
+        }
+        .ai-recommendations-button:hover:not(:disabled) {
+          background: var(--goal-rec-button-hover);
+        }
+        .ai-recommendation-item {
+          background: var(--goal-rec-item-bg);
+          border: 1px solid var(--goal-rec-item-border);
+        }
+        .ai-recommendation-item:hover {
+          background: var(--goal-rec-item-hover);
+          border-color: var(--goal-rec-item-border-hover);
+        }
+        .ai-recommendation-goal {
+          color: var(--goal-rec-item-text);
+        }
+        .ai-recommendation-rationale {
+          color: var(--goal-rec-rationale);
+        }
+        .ai-recommendation-dismiss {
+          color: var(--goal-rec-dismiss);
+        }
+        .ai-recommendation-dismiss:hover {
+          color: var(--goal-rec-dismiss-hover);
         }
 
         :root[data-theme="dark"] .bg-red-50 { background-color: rgba(220, 38, 38, 0.15) !important; }
@@ -4171,15 +4262,15 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
 
               {/* AI-recommended goals panel — only shown when there's enough context */}
               {aiEnabled && (chiefConcern || workingDx || activeFocusList.length > 0) && (
-                <div style={{ background: "linear-gradient(135deg, #fefce8 0%, #fff 100%)", border: "1px solid #fef3c7", borderRadius: "10px", padding: "1rem 1.25rem" }}>
+                <div className="ai-recommendations-card">
                   <div className="flex items-center justify-between mb-2">
                     <div className="flex items-center gap-2">
                       <span style={{ fontSize: "1.1rem" }}>💡</span>
                       <div>
-                        <div style={{ fontFamily: "'Inter', sans-serif", textTransform: "uppercase", letterSpacing: "0.11em", fontSize: "0.65rem", fontWeight: 600, color: "#78350f" }}>
+                        <div className="ai-recommendations-eyebrow">
                           AI recommendations
                         </div>
-                        <div className="text-xs text-slate-600 mt-0.5">
+                        <div className="ai-recommendations-subtitle text-xs mt-0.5">
                           Based on today's case and your phase-appropriate benchmarks
                         </div>
                       </div>
@@ -4187,7 +4278,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                     <button
                       onClick={generateGoalRecommendations}
                       disabled={loadingGoalRecs}
-                      className="text-xs px-3 py-1.5 bg-amber-100 hover:bg-amber-200 text-amber-900 rounded-lg font-medium flex items-center gap-1 disabled:opacity-50"
+                      className="ai-recommendations-button text-xs px-3 py-1.5 rounded-lg font-medium flex items-center gap-1 disabled:opacity-50 transition"
                     >
                       {loadingGoalRecs
                         ? <><Loader2 className="w-3 h-3 animate-spin" />Thinking...</>
@@ -4209,7 +4300,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                       {recommendedGoals.map((rec, i) => (
                         <div
                           key={i}
-                          className="group flex items-start gap-2 p-2.5 bg-white/70 hover:bg-white border border-amber-100 hover:border-amber-300 rounded-lg transition"
+                          className="ai-recommendation-item group flex items-start gap-2 p-2.5 rounded-lg transition"
                         >
                           <button
                             onClick={() => acceptGoalRecommendation(rec)}
@@ -4219,16 +4310,16 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                             <Plus className="w-3.5 h-3.5" />
                           </button>
                           <div className="flex-1 min-w-0">
-                            <div className="text-sm text-slate-900 leading-snug">{rec.goal}</div>
+                            <div className="ai-recommendation-goal text-sm leading-snug">{rec.goal}</div>
                             {rec.rationale && (
-                              <div className="text-xs text-slate-500 italic mt-1">
+                              <div className="ai-recommendation-rationale text-xs italic mt-1">
                                 <span className="font-medium not-italic">Why: </span>{rec.rationale}
                               </div>
                             )}
                           </div>
                           <button
                             onClick={() => dismissGoalRecommendation(rec)}
-                            className="flex-shrink-0 text-slate-300 hover:text-slate-600 p-0.5 opacity-0 group-hover:opacity-100 transition"
+                            className="ai-recommendation-dismiss flex-shrink-0 p-0.5 opacity-0 group-hover:opacity-100 transition"
                             title="Dismiss this suggestion"
                           >
                             <X className="w-3.5 h-3.5" />
@@ -4239,7 +4330,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   )}
 
                   {!loadingGoalRecs && recommendedGoals.length === 0 && !goalRecError && (
-                    <div className="text-xs text-slate-500 italic mt-2">
+                    <div className="ai-recommendations-helper text-xs italic mt-2">
                       Click "Suggest goals" to see 3-4 phase-appropriate long-term learning goals based on today's case. You can add them to your goals list with one click.
                     </div>
                   )}
