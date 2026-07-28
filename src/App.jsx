@@ -75,7 +75,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState("setup");
   const [saved, setSaved] = useState(false);
   const [copiedPrompt, setCopiedPrompt] = useState(null);
-  const [promptViewerFor, setPromptViewerFor] = useState(null); // source key when open
+  const [promptViewerFor, setPromptViewerFor] = useState(null); // source key or { key, sourceName, prompt } when open
   const [expandedSections, setExpandedSections] = useState({});
 
   // AI is enabled by default; user only toggles on/off
@@ -1680,6 +1680,16 @@ Return ONLY valid JSON (no markdown fences):
     return { teachingCases, crossCuttingThemes, questionsForReflection, caseResults, themesStatus, themesError };
   };
 
+  // PubMed AI performs best here with a single, plain-language topic per prompt.
+  const generatePubmedAiPrompt = (topic) => {
+    const cleanTopic = String(topic || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/[.!?]+$/, "");
+
+    return cleanTopic ? `Detailed review of ${cleanTopic}` : "Detailed review of this clinical topic";
+  };
+
   // ===== Source prompt generator =====
   const generateSourcePrompt = (source) => {
     const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
@@ -2338,6 +2348,18 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
     { id: "goals", label: "5. Goals", shortLabel: "Goals", icon: TrendingUp },
     { id: "output", label: "6. Review & Generate", shortLabel: "Review", icon: Sparkles },
   ];
+
+  // Standard sources store just their source key. PubMed AI supplies a custom
+  // one-line prompt for each topic, so its viewer stores the prompt directly.
+  const promptViewer = promptViewerFor
+    ? (typeof promptViewerFor === "string"
+      ? {
+          key: promptViewerFor,
+          sourceName: sourceLabels[promptViewerFor],
+          prompt: generateSourcePrompt(promptViewerFor),
+        }
+      : promptViewerFor)
+    : null;
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -3963,31 +3985,82 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                     {expandedSections[src] && src === "pubmedai" && (
                       <div className="p-4 space-y-4 bg-white">
                         <div className="text-xs text-slate-600 bg-blue-50 border border-blue-200 rounded p-2">
-                          PubMed AI handles one topic at a time. Below is a separate prompt for each of your selected problems and custom topics. Copy each, paste into PubMed AI, paste the response back in the matching box.
+                          PubMed AI uses one short prompt per topic. Review a prompt with "View Prompt," or use "Copy & Open PubMed AI" to copy it and open PubMed AI in a new tab. Paste each response into its matching topic box.
                         </div>
                         {[...(selectedProblems.length > 0 ? selectedProblems : (workingDx ? [workingDx] : [])), ...customTopics].map((topic, i) => {
-                          const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
-                          const focusText = activeFocus.map(f => focusLabels[f]).join(", ");
-                          const promptText = `Detailed review of the following topic for medical student teaching: ${topic}\n\nFocus specifically on: ${focusText || "diagnosis and management"}.\n\nPatient context (for relevance): ${chiefConcern || "internal medicine encounter"}.`;
+                          const promptText = generatePubmedAiPrompt(topic);
+                          const promptKey = `pubmedai-${i}`;
+                          const copyPubmedPrompt = () => {
+                            navigator.clipboard.writeText(promptText).then(() => {
+                              setCopiedPrompt(promptKey);
+                              setTimeout(() => setCopiedPrompt(null), 2000);
+                            });
+                          };
+
                           return (
-                            <div key={i} className="border border-slate-200 rounded p-3">
-                              <div className="text-sm font-semibold text-slate-800 mb-2">Topic {i+1}: {topic}</div>
-                              <div className="flex items-center justify-between mb-1">
-                                <label className="text-xs font-medium text-slate-600">Prompt for PubMed AI</label>
-                                <button
-                                  onClick={() => {
-                                    navigator.clipboard.writeText(promptText).then(() => {
-                                      setCopiedPrompt(`pubmedai-${i}`);
-                                      setTimeout(() => setCopiedPrompt(null), 2000);
-                                    });
-                                  }}
-                                  className="flex items-center gap-1 text-xs px-2 py-1 bg-indigo-100 text-indigo-700 hover:bg-indigo-200 rounded transition"
-                                >
-                                  {copiedPrompt === `pubmedai-${i}` ? <><Check className="w-3 h-3" />Copied</> : <><Copy className="w-3 h-3" />Copy</>}
-                                </button>
+                            <div key={`${topic}-${i}`} className="border border-slate-200 rounded p-3">
+                              <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+                                <div className="text-sm font-semibold text-slate-800">Topic {i + 1}: {topic}</div>
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <button
+                                    onClick={() => setPromptViewerFor({
+                                      key: promptKey,
+                                      sourceName: `PubMed AI — Topic ${i + 1}`,
+                                      prompt: promptText,
+                                      compact: true,
+                                    })}
+                                    className="text-xs px-3 py-1.5 bg-slate-600 text-white hover:bg-slate-700 rounded transition flex items-center gap-1"
+                                    title="Open this PubMed AI prompt for review"
+                                  >
+                                    <FileText className="w-3 h-3" />View Prompt
+                                  </button>
+
+                                  {!popupBlocked ? (
+                                    <button
+                                      onClick={() => {
+                                        copyPubmedPrompt();
+                                        const win = window.open(sourceUrls.pubmedai, "_blank", "noreferrer");
+                                        if (!win || win.closed || typeof win.closed === "undefined") {
+                                          setPopupBlocked(true);
+                                        }
+                                      }}
+                                      className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === promptKey ? "bg-emerald-600 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"}`}
+                                      title="Copy this one-line prompt and open PubMed AI in a new tab"
+                                    >
+                                      {copiedPrompt === promptKey
+                                        ? <><Check className="w-3 h-3" />Copied — paste in new tab</>
+                                        : <><Copy className="w-3 h-3" />Copy & Open PubMed AI ↗</>
+                                      }
+                                    </button>
+                                  ) : (
+                                    <>
+                                      <button
+                                        onClick={copyPubmedPrompt}
+                                        className={`text-xs px-3 py-1.5 rounded transition flex items-center gap-1 ${copiedPrompt === promptKey ? "bg-emerald-600 text-white" : "bg-slate-100 hover:bg-slate-200 text-slate-700"}`}
+                                        title="Copy this one-line PubMed AI prompt"
+                                      >
+                                        {copiedPrompt === promptKey
+                                          ? <><Check className="w-3 h-3" />Copied</>
+                                          : <><Copy className="w-3 h-3" />Copy Prompt</>
+                                        }
+                                      </button>
+                                      <a
+                                        href={sourceUrls.pubmedai}
+                                        target="_blank"
+                                        rel="noreferrer"
+                                        className="text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition flex items-center gap-1"
+                                      >
+                                        Open PubMed AI ↗
+                                      </a>
+                                    </>
+                                  )}
+                                </div>
                               </div>
-                              <div className="p-2 bg-slate-50 rounded border border-slate-200 text-xs font-mono text-slate-700 whitespace-pre-wrap mb-2">{promptText}</div>
-                              <label className="block text-xs font-medium text-slate-600 mb-1">Paste PubMed AI response for this topic <span className="font-normal text-slate-500">(rich text + images supported)</span></label>
+
+                              <label className="block text-xs font-medium text-slate-600 mb-1">
+                                Paste PubMed AI response for this topic
+                                <span className="font-normal text-slate-500"> (rich text + images supported)</span>
+                              </label>
                               <RichPaste
                                 value={sourceResponses.pubmedai?.[topic] || { html: "", images: [] }}
                                 onChange={v => setSourceResponses({
@@ -4424,10 +4497,12 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             )}
           </>
         )}
-          {promptViewerFor && (
+          {promptViewer && (
           <PromptViewer
-            sourceName={sourceLabels[promptViewerFor]}
-            initialPrompt={generateSourcePrompt(promptViewerFor)}
+            key={promptViewer.key}
+            sourceName={promptViewer.sourceName}
+            initialPrompt={promptViewer.prompt}
+            compact={Boolean(promptViewer.compact)}
             onClose={() => setPromptViewerFor(null)}
           />
         )}
@@ -7023,7 +7098,7 @@ function ImageLightbox({ src, alt, onClose }) {
 }
 
 // ============ PROMPT VIEWER MODAL ============
-function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
+function PromptViewer({ sourceName, initialPrompt, compact = false, onCopy, onClose }) {
   const [editedPrompt, setEditedPrompt] = React.useState(initialPrompt);
   const [copied, setCopied] = React.useState(false);
 
@@ -7159,7 +7234,7 @@ function PromptViewer({ sourceName, initialPrompt, onCopy, onClose }) {
             fontSize: "0.85rem",
             lineHeight: 1.5,
             color: "#334155",
-            minHeight: "300px",
+            minHeight: compact ? "120px" : "300px",
           }}
         />
 
