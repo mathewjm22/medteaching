@@ -2503,6 +2503,46 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           color: var(--app-text-subtle) !important;
         }
 
+        /* Step 4 rich-paste editors are contenteditable divs rather than
+           textareas, so they need their own theme treatment. Pasted sites can
+           also bring inline black text colors; the descendant rule overrides
+           those colors in dark mode while retaining headings, lists, tables,
+           emphasis, and images. */
+        .rich-paste-editor {
+          background-color: var(--app-input-bg);
+          color: var(--app-text);
+          caret-color: currentColor;
+        }
+        :root[data-theme="dark"] .rich-paste-editor {
+          background-color: var(--app-input-bg) !important;
+          color: var(--app-text) !important;
+          border-color: var(--app-border-strong) !important;
+          color-scheme: dark;
+        }
+        :root[data-theme="dark"] .rich-paste-editor * {
+          color: inherit !important;
+          -webkit-text-fill-color: currentColor !important;
+        }
+        :root[data-theme="dark"] .rich-paste-editor a {
+          color: #a5b4fc !important;
+          text-decoration-color: rgba(165, 180, 252, 0.65) !important;
+        }
+        :root[data-theme="dark"] .rich-paste-editor mark {
+          background-color: rgba(245, 158, 11, 0.28) !important;
+          color: #fef3c7 !important;
+          -webkit-text-fill-color: #fef3c7 !important;
+        }
+        :root[data-theme="dark"] .rich-paste-editor:empty::before {
+          color: var(--app-text-subtle) !important;
+          -webkit-text-fill-color: var(--app-text-subtle) !important;
+        }
+        :root[data-theme="dark"] .rich-paste-editor::selection,
+        :root[data-theme="dark"] .rich-paste-editor *::selection {
+          background: rgba(99, 102, 241, 0.45);
+          color: #ffffff;
+          -webkit-text-fill-color: #ffffff;
+        }
+
         /* Tint tinted panels (indigo/amber/emerald/purple/red backgrounds).
            These are used all over the app for status messages and callouts.
            In dark mode we shift them to darker versions of the same hues. */
@@ -4792,7 +4832,7 @@ function RichPaste({ value, onChange, placeholder, rows = 6, sessionImageBytes, 
         onPaste={handlePaste}
         onInput={emitChange}
         onBlur={emitChange}
-        className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm overflow-auto"
+        className="rich-paste-editor w-full px-3 py-2 bg-white text-slate-900 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm overflow-auto"
         style={{ minHeight: `${rows * 1.5}em`, maxHeight: "500px" }}
         data-placeholder={placeholder}
       />
