@@ -1640,6 +1640,8 @@ ${modeGuidance}
 
 Available focus areas: history, physicalExam, differential, workup, management, patientContext, ebm, communication
 
+CRITICAL: The "suggestedFocus" field is REQUIRED and must contain 3-5 area keys from that list. This drives which teaching topics get emphasized. Never omit it, never return it empty.
+
 Return ONLY valid JSON (no markdown fences):
 {
   "chiefConcern": "${isPreVisit ? 'anticipated reason for the upcoming visit if stated in prenote, else the primary chronic issue driving the visit' : 'brief chief concern or reason for visit'}",
@@ -1649,7 +1651,7 @@ Return ONLY valid JSON (no markdown fences):
   ],
   "otherDiagnoses": ["list of other active problems as strings"],
   "keyTopics": ["specific clinical topics worth teaching - be specific"],
-  "suggestedFocus": ["3-5 focus area keys from the list above"],
+  "suggestedFocus": ["REQUIRED — return exactly 3-5 focus area keys from this list: history, physicalExam, differential, workup, management, patientContext, ebm, communication. Never return empty. Pick the areas most relevant to THIS specific patient and encounter — do not just default to the same set every time."],
   "reasoning": "2-3 sentence explanation",
   "complexity": "common" or "complex",
 "redFlags": ["${isPreVisit ? `things to actively screen for during the upcoming visit` : `concerning features, can't-miss diagnoses, iatrogenic risks`}"],
@@ -1677,13 +1679,23 @@ Return ONLY valid JSON (no markdown fences):
       }
       if (parsed.patientQuotes) setPatientQuotes(parsed.patientQuotes);
       if (parsed.labTrends) setLabTrends(parsed.labTrends);
-      if (parsed.suggestedFocus) {
-        setAiSuggestedFocus(parsed.suggestedFocus);
-        const newFocus = { ...focusAreas };
-        Object.keys(newFocus).forEach(k => { newFocus[k] = false; });
-        parsed.suggestedFocus.forEach(k => { if (k in newFocus) newFocus[k] = true; });
-        setFocusAreas(newFocus);
-      }
+      // Auto-select focus areas from AI suggestion. If the AI dropped the field or
+// returned an empty list, fall back to a phase-appropriate default so the
+// student always has something pre-selected on Step 3.
+let focusToApply = parsed.suggestedFocus;
+if (!Array.isArray(focusToApply) || focusToApply.length === 0) {
+  console.warn("[analyzeNote] AI did not return suggestedFocus; applying phase-appropriate default");
+  // Phase-appropriate defaults: foundational students get history+differential,
+  // mid-year get differential+workup+management, end-of-year get the full clinical set.
+  if (phase.monthsIn <= 4) focusToApply = ["history", "differential", "communication"];
+  else if (phase.monthsIn <= 8) focusToApply = ["history", "differential", "workup", "management"];
+  else focusToApply = ["differential", "workup", "management", "ebm"];
+}
+setAiSuggestedFocus(focusToApply);
+const newFocus = { ...focusAreas };
+Object.keys(newFocus).forEach(k => { newFocus[k] = false; });
+focusToApply.forEach(k => { if (k in newFocus) newFocus[k] = true; });
+setFocusAreas(newFocus);
       setAiStatus({ analyzing: false, generating: false, error: null, progress: null });
     } catch (e) {
       setAiStatus({ analyzing: false, generating: false, error: e.message, progress: null });
