@@ -7426,18 +7426,25 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                             {/* Learning points */}
                             {c.keyLearningPoints?.length > 0 && (
                               <div>
-                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Learning points</div>
+                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">
+                                  Learning points
+                                </div>
                                 <ol className="text-xs text-slate-700 space-y-1 pl-5">
                                   {c.keyLearningPoints.map((lp, lpi) => (
                                     <li key={lpi} className="list-decimal">
                                       <strong>{lp.point}:</strong> {lp.explanation}
-                                      {lp.citation && <em className="text-slate-500 ml-1">({lp.citation})</em>}
+                                      {lp.citation && (
+                                        <em className="text-slate-500 ml-1">
+                                          ({lp.citation})
+                                        </em>
+                                      )}
                                     </li>
                                   ))}
                                 </ol>
                               </div>
                             )}
                           </div>
+                        )}
                       </div>
                     </div>
                   </section>
