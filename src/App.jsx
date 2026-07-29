@@ -6366,8 +6366,17 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
 
   // Parse verbatim sections out of the prenote. All snapshot/context boxes
   // render this raw text instead of AI-processed content.
+  // Parse verbatim sections out of the prenote. All snapshot/context boxes
+  // render this raw text instead of AI-processed content.
   const prenoteSections = React.useMemo(() => {
-    return extractPrenoteSections(doc.rawPrenote || doc.clinicalNote || "");
+    const rawText = doc.rawPrenote || doc.clinicalNote || "";
+    console.log("[InRoomDocument] rawPrenote length:", doc.rawPrenote?.length || 0);
+    console.log("[InRoomDocument] clinicalNote length:", doc.clinicalNote?.length || 0);
+    console.log("[InRoomDocument] using text length:", rawText.length);
+    console.log("[InRoomDocument] first 300 chars:", rawText.slice(0, 300));
+    const sections = extractPrenoteSections(rawText);
+    console.log("[InRoomDocument] extracted section keys:", Object.keys(sections));
+    return sections;
   }, [doc.rawPrenote, doc.clinicalNote]);
 
   const whatToKnow = getSection(prenoteSections, "WHAT TO KNOW ABOUT");
