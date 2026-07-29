@@ -2432,9 +2432,50 @@ The keys in "medications" must EXACTLY match the medication names I provide (cas
     }
   };
 
-  // PubMed AI performs best here with a single, plain-language topic per prompt.
+  // ===== Lightweight teaching for non-selected problems (pre-visit only) =====
+  // The student sees ALL of the patient's chronic problems in the doc, not just the ones
+  // the attending selected for deep teaching. For non-selected problems we generate
+  // brief content in a single batch call: brief definition, classic picture, one learning
+  // point, one clinical pearl. Just enough to ground the student.
+  const generateLightweightTeaching = async (nonSelectedProblems) => {
+    if (!aiEnabled || !nonSelectedProblems?.length) return {};
+
+    const sys = `You are a teaching attending writing brief background content on a patient's chronic problems that the student will encounter tomorrow. For each problem below, generate lightweight prep content — enough that the student walks in with basic grounding.
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "problems": {
+    "<exact problem name as provided>": {
+      "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences on what this is, anchored to this patient's chart if relevant"},
+      "theClassicPicture": "2-3 sentences on how this typically presents, what to recognize, key features",
+      "oneKeyLearningPoint": {"point": "the ONE most important thing to know", "explanation": "1-2 sentences", "citation": "real trial/guideline reference — NEVER a tool name like OpenEvidence"},
+      "clinicalPearl": "a memorable one-line teaching point"
+    }
+  }
+}
+
+Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patient's chart context where helpful. Cite real references — society guidelines by year (e.g., "ATA 2014"), landmark trials by name (e.g., "SPRINT"), USPSTF grades — NEVER cite AI tools like OpenEvidence/UpToDate.`;
+
+    const problemList = nonSelectedProblems.map((p, i) => `${i + 1}. ${p}`).join("\n");
+    const contextLine = chiefConcern ? `\n\nPatient context: ${chiefConcern}` : "";
+    const user = `Generate lightweight teaching content for these chronic problems on the patient's chart:\n${problemList}${contextLine}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase).`;
+
+    try {
+      const response = await callAi(sys, user, 4000);
+      const parsed = extractJson(response);
+      const result = {};
+      Object.entries(parsed.problems || {}).forEach(([name, content]) => {
+        result[name.toLowerCase().trim()] = content;
+      });
+      return result;
+    } catch (e) {
+      console.warn("[generateLightweightTeaching] failed:", e.message);
+      return {};
+    }
+  };
 
   // PubMed AI performs best here with a single, plain-language topic per prompt.
+
   const generatePubmedAiPrompt = (topic) => {
     const cleanTopic = String(topic || "")
       .replace(/\s+/g, " ")
@@ -2552,9 +2593,6 @@ I want to focus today's teaching on: ${focusText}.
           const sections = extractPrenoteSections(clinicalNote);
           const medRec = getSection(sections, "MED REC", "MEDICATIONS", "MEDICATION LIST");
           if (medRec) {
-            // Parse med names from the CURRENT MEDICATIONS subsection.
-            // Format is loose — meds may be bulleted, indented, or grouped by specialty.
-            // We look for medication-like tokens (capitalized word + dose unit like mg/mcg/units).
             const currentMedSection = extractCurrentMedsSubsection(medRec);
             const medNames = parseMedNames(currentMedSection);
             if (medNames.length > 0) {
@@ -2565,6 +2603,39 @@ I want to focus today's teaching on: ${focusText}.
               } catch (e) {
                 console.warn("Med descriptions failed:", e);
                 aiContent.medDescriptions = {};
+              }
+            }
+          }
+
+          // Also generate LIGHTWEIGHT teaching for all non-selected problems from PMH.
+          // These are the problems the attending didn't pick for deep teaching — the student
+          // still sees them in the doc, but with brief prep content rather than full cases.
+          const pmhText = getSection(sections, "PAST MEDICAL HISTORY", "PMH");
+          if (pmhText) {
+            const problemBlocks = parseProblemBlocks(pmhText);
+            const allProblemNames = Object.keys(problemBlocks).map(k => problemBlocks[k].rawHeader);
+            const selectedLower = new Set((selectedProblems || []).map(p => p.toLowerCase().trim()));
+            // Non-selected = problems in the prenote NOT already in the deep-teaching selection
+            const nonSelected = allProblemNames.filter(name => {
+              const nl = name.toLowerCase().trim();
+              // Fuzzy match: skip if any selected problem shares significant tokens
+              for (const sel of selectedLower) {
+                if (nl.includes(sel) || sel.includes(nl)) return false;
+                // Strip ICD parens and common qualifiers for a looser check
+                const cleanN = nl.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/g, "").trim();
+                const cleanS = sel.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/g, "").trim();
+                if (cleanN && cleanS && (cleanN.includes(cleanS) || cleanS.includes(cleanN))) return false;
+              }
+              return true;
+            });
+            if (nonSelected.length > 0) {
+              setAiStatus(prev => ({ ...prev, progress: `Generating brief teaching for ${nonSelected.length} background problems` }));
+              try {
+                const lightweight = await generateLightweightTeaching(nonSelected);
+                aiContent.lightweightTeaching = lightweight;
+              } catch (e) {
+                console.warn("Lightweight teaching failed:", e);
+                aiContent.lightweightTeaching = {};
               }
             }
           }
@@ -2660,6 +2731,8 @@ I want to focus today's teaching on: ${focusText}.
       rawPrenote: sessionMode === "pre" ? clinicalNote : null,
       // AI-generated medication descriptions (pre-visit only) — keyed by lowercased med name
       medDescriptions: aiContent?.medDescriptions || null,
+      // Lightweight teaching content for non-selected problems (pre-visit only)
+      lightweightTeaching: aiContent?.lightweightTeaching || null,
       sessionMode,
       sections: {
         caseAtGlance: { enabled: true, editable: false },
@@ -6360,17 +6433,8 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
 
   // Parse verbatim sections out of the prenote. All snapshot/context boxes
   // render this raw text instead of AI-processed content.
-  // Parse verbatim sections out of the prenote. All snapshot/context boxes
-  // render this raw text instead of AI-processed content.
   const prenoteSections = React.useMemo(() => {
-    const rawText = doc.rawPrenote || doc.clinicalNote || "";
-    console.log("[InRoomDocument] rawPrenote length:", doc.rawPrenote?.length || 0);
-    console.log("[InRoomDocument] clinicalNote length:", doc.clinicalNote?.length || 0);
-    console.log("[InRoomDocument] using text length:", rawText.length);
-    console.log("[InRoomDocument] first 300 chars:", rawText.slice(0, 300));
-    const sections = extractPrenoteSections(rawText);
-    console.log("[InRoomDocument] extracted section keys:", Object.keys(sections));
-    return sections;
+    return extractPrenoteSections(doc.rawPrenote || doc.clinicalNote || "");
   }, [doc.rawPrenote, doc.clinicalNote]);
 
   const whatToKnow = getSection(prenoteSections, "WHAT TO KNOW ABOUT");
@@ -6425,7 +6489,8 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
     return null;
   };
 
-  // Helper to render a verbatim text block preserving whitespace/newlines
+  // Helper to render a verbatim text block preserving whitespace/newlines.
+  // Kept for cases where formatting is intentionally raw (e.g., lab tables).
   const VerbatimBlock = ({ text }) => (
     <div
       className="text-sm text-slate-800 whitespace-pre-wrap font-normal leading-relaxed"
@@ -6434,6 +6499,158 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
       {text}
     </div>
   );
+
+  // FormattedBlock — rule-based formatter for prenote text.
+  // Takes raw text and renders it as properly-structured content:
+  //   - Lines starting with "-" or "*" become bullets
+  //   - "Key: value" lines get bolded keys
+  //   - Inline "|"-separated tables can be optionally dropped
+  //   - Optional header stripping (removes a redundant first line matching boxTitle)
+  //   - Blank lines become paragraph breaks
+  //
+  // Options:
+  //   text: the raw text to format
+  //   boxTitle: title of the surrounding box — used to strip redundant leading headers
+  //   dropInlineTables: if true, drops any inline `|`-separated rows (used in Updates box)
+  const FormattedBlock = ({ text, boxTitle = null, dropInlineTables = false }) => {
+    if (!text) return null;
+
+    // Step 1: Strip redundant header — if first non-empty line closely matches boxTitle
+    let workingText = text.trim();
+    if (boxTitle) {
+      const lines = workingText.split(/\r?\n/);
+      const firstNonEmpty = lines.find(l => l.trim());
+      if (firstNonEmpty) {
+        // Normalize both for comparison
+        const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+        const normalizedFirst = normalize(firstNonEmpty);
+        const normalizedTitle = normalize(boxTitle);
+        // Match if the line contains the box title, or vice versa, and is <2x longer
+        const similar =
+          (normalizedFirst.includes(normalizedTitle) && normalizedFirst.length < normalizedTitle.length * 2.5) ||
+          (normalizedTitle.includes(normalizedFirst) && normalizedFirst.length > 5);
+        // Also match specific redundant headers we've seen
+        const knownRedundant = [
+          /^(relevant\s+)?family\s+medical\s+(and\s+psychiatric\s+)?history:?$/i,
+          /^social(\s+history)?:?$/i,
+          /^past\s+medical\s+history:?$/i,
+          /^surgical\s+history:?$/i,
+          /^military\s+history:?$/i,
+          /^preventive\s+medicine:?$/i,
+          /^allergies:?$/i,
+        ];
+        const matchesKnown = knownRedundant.some(r => r.test(firstNonEmpty.trim()));
+        if (similar || matchesKnown) {
+          // Remove the first line
+          const idx = lines.indexOf(firstNonEmpty);
+          workingText = lines.slice(idx + 1).join("\n").trim();
+        }
+      }
+    }
+
+    // Step 2: Drop inline lab tables (used in Updates box). These look like:
+    //   COLLECTION | GLUCOSE | A1C | ... on one line
+    //   07/2026    | 98      | 5.8 | ... on the next
+    // Heuristic: any line containing 3+ pipe characters gets dropped, along with
+    // an optional header ending in a colon just before it.
+    if (dropInlineTables) {
+      const lines = workingText.split(/\r?\n/);
+      const filtered = [];
+      let skipUntilNonTable = false;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const pipeCount = (line.match(/\|/g) || []).length;
+        if (pipeCount >= 3) {
+          skipUntilNonTable = true;
+          // Also retroactively drop a trailing "- Most recent labs:" or similar header
+          while (filtered.length > 0) {
+            const last = filtered[filtered.length - 1].trim();
+            if (/most recent labs?:?$/i.test(last) || /^[\-\*]?\s*(labs?|laboratory)(\s+results?)?:?\s*$/i.test(last)) {
+              filtered.pop();
+            } else break;
+          }
+          continue;
+        }
+        // A table row can also be a trailing summary bullet ("- Lipids remain borderline...")
+        // We keep those; the "skipUntilNonTable" only applies to pipe rows themselves.
+        if (skipUntilNonTable && pipeCount === 0) {
+          skipUntilNonTable = false;
+        }
+        filtered.push(line);
+      }
+      workingText = filtered.join("\n");
+    }
+
+    if (!workingText.trim()) return null;
+
+    // Step 3: Parse structure. Walk lines and classify each as:
+    //   - bullet: starts with "-" or "*"
+    //   - keyvalue: "Word words: content"
+    //   - blank: empty line = paragraph break
+    //   - plain: everything else
+    const parseLines = (raw) => raw.split(/\r?\n/).map(l => {
+      const trimmed = l.trim();
+      if (!trimmed) return { type: "blank" };
+      // Bullet detection — strip leading marker
+      const bulletMatch = trimmed.match(/^[\-\*•●○▪▫►◆·]\s+(.+)$/);
+      if (bulletMatch) return { type: "bullet", content: bulletMatch[1] };
+      // Key-value detection — "Word words: content" where key is short
+      // Only treat as key-value if colon appears before ~35 chars and key is capitalized
+      const kvMatch = trimmed.match(/^([A-Z][A-Za-z0-9\s\/\-\(\)]{2,34}):\s+(.+)$/);
+      if (kvMatch) return { type: "keyvalue", key: kvMatch[1].trim(), value: kvMatch[2].trim() };
+      return { type: "plain", content: trimmed };
+    });
+
+    const items = parseLines(workingText);
+
+    // Step 4: Group consecutive bullets/keyvalues into lists, split by blank lines
+    const groups = [];
+    let currentGroup = null;
+    for (const item of items) {
+      if (item.type === "blank") {
+        if (currentGroup) { groups.push(currentGroup); currentGroup = null; }
+        continue;
+      }
+      if (!currentGroup) currentGroup = { type: item.type, items: [item] };
+      else if (currentGroup.type === item.type || (currentGroup.type === "bullet" && item.type === "keyvalue") || (currentGroup.type === "keyvalue" && item.type === "bullet")) {
+        // Bullets and keyvalues can mix in one group (unified list)
+        currentGroup.items.push(item);
+        currentGroup.type = "mixed";
+      } else {
+        groups.push(currentGroup);
+        currentGroup = { type: item.type, items: [item] };
+      }
+    }
+    if (currentGroup) groups.push(currentGroup);
+
+    // Step 5: Render
+    return (
+      <div className="text-sm text-slate-800 leading-relaxed space-y-2" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+        {groups.map((group, gi) => {
+          if (group.type === "plain") {
+            return group.items.map((it, ii) => (
+              <p key={`${gi}-${ii}`} className="text-slate-800">{it.content}</p>
+            ));
+          }
+          // bullet, keyvalue, or mixed — render as <ul>
+          return (
+            <ul key={gi} className="space-y-1 list-disc pl-5">
+              {group.items.map((it, ii) => {
+                if (it.type === "keyvalue") {
+                  return (
+                    <li key={ii} className="text-slate-800">
+                      <strong className="text-slate-900">{it.key}:</strong> {it.value}
+                    </li>
+                  );
+                }
+                return <li key={ii} className="text-slate-800">{it.content}</li>;
+              })}
+            </ul>
+          );
+        })}
+      </div>
+    );
+  };
 
   // Helper: a titled content box used repeatedly in the snapshot
   const InfoBox = ({ title, children, className = "" }) => (
@@ -7574,19 +7791,20 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                   Patient Snapshot
                 </h2>
 
-                {/* Top row: What to Know (left) | Problems in Focus (right) */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {whatToKnow ? (
-                    <InfoBox title="What to know about this patient">
-                      <VerbatimBlock text={whatToKnow} />
-                    </InfoBox>
-                  ) : (
-                    <InfoBox title="What to know about this patient">
-                      <div className="text-xs text-slate-500 italic">No introductory summary found in prenote.</div>
-                    </InfoBox>
-                  )}
+                {/* Full width: What to Know */}
+                {whatToKnow ? (
+                  <InfoBox title="What to know about this patient">
+                    <FormattedBlock text={whatToKnow} boxTitle="What to know about this patient" />
+                  </InfoBox>
+                ) : (
+                  <InfoBox title="What to know about this patient">
+                    <div className="text-xs text-slate-500 italic">No introductory summary found in prenote.</div>
+                  </InfoBox>
+                )}
 
-                  {doc.selectedProblems?.length > 0 && (
+                {/* Problems in Focus — full width, immediately below */}
+                {doc.selectedProblems?.length > 0 && (
+                  <div className="mt-3">
                     <InfoBox title="Problems in focus for teaching">
                       <ul className="space-y-1">
                         {doc.selectedProblems.map((p, i) => (
@@ -7597,14 +7815,15 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                         ))}
                       </ul>
                     </InfoBox>
-                  )}
-                </div>
+                  </div>
+                )}
 
-                {/* Full-width: Updates since last visit */}
+                {/* Full-width: Updates since last visit — formatter drops inline lab tables
+                    since they're already shown better in the Recent Labs box below. */}
                 {updatesSince && (
                   <div className="mt-3">
                     <InfoBox title="Updates since last visit">
-                      <VerbatimBlock text={updatesSince} />
+                      <FormattedBlock text={updatesSince} boxTitle="Updates since last visit" dropInlineTables={true} />
                     </InfoBox>
                   </div>
                 )}
@@ -7723,7 +7942,8 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                 </section>
               )}
 
-              {/* ==== 3. CONTEXT BOXES: FH/SH, PMH/Surgical, Allergies/Military, Preventive ==== */}
+              {/* ==== 3. CONTEXT BOXES: FH/SH, Surgical/Allergies, Military/Preventive ==== */}
+              {/* Note: PMH is now shown in the consolidated Problem-by-Problem section below. */}
               <section>
                 <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
                   Patient context (from chart)
@@ -7734,57 +7954,46 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {familyHx && (
                       <InfoBox title="Family history">
-                        <VerbatimBlock text={familyHx} />
+                        <FormattedBlock text={familyHx} boxTitle="Family history" />
                       </InfoBox>
                     )}
                     {socialHx && (
                       <InfoBox title="Social history">
-                        <VerbatimBlock text={socialHx} />
+                        <FormattedBlock text={socialHx} boxTitle="Social history" />
                       </InfoBox>
                     )}
                   </div>
                 )}
 
-                {/* Row 2: PMH + Surgical */}
-                {(pastMedHx || surgicalHx) && (
+                {/* Row 2: Surgical + Allergies */}
+                {(surgicalHx || allergies) && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                    {pastMedHx && (
-                      <InfoBox title="Past medical history">
-                        <VerbatimBlock text={pastMedHx} />
-                      </InfoBox>
-                    )}
                     {surgicalHx && (
                       <InfoBox title="Surgical history">
-                        <VerbatimBlock text={surgicalHx} />
+                        <FormattedBlock text={surgicalHx} boxTitle="Surgical history" />
                       </InfoBox>
                     )}
-                  </div>
-                )}
-
-                {/* Row 3: Allergies + Military */}
-                {(allergies || militaryHx) && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
                     {allergies && (
                       <InfoBox title="Allergies">
-                        <VerbatimBlock text={allergies} />
-                      </InfoBox>
-                    )}
-                    {militaryHx && (
-                      <InfoBox title="Military history">
-                        <VerbatimBlock text={militaryHx} />
+                        <FormattedBlock text={allergies} boxTitle="Allergies" />
                       </InfoBox>
                     )}
                   </div>
                 )}
 
-                {/* Row 4: Preventive Medicine (left col only; right col reserved for future) */}
-                {preventiveMed && (
+                {/* Row 3: Military + Preventive */}
+                {(militaryHx || preventiveMed) && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
-                    <InfoBox title="Preventive medicine">
-                      <VerbatimBlock text={preventiveMed} />
-                    </InfoBox>
-                    {/* Right column intentionally empty — reserved for future content */}
-                    <div className="hidden md:block" aria-hidden="true"></div>
+                    {militaryHx && (
+                      <InfoBox title="Military history">
+                        <FormattedBlock text={militaryHx} boxTitle="Military history" />
+                      </InfoBox>
+                    )}
+                    {preventiveMed && (
+                      <InfoBox title="Preventive medicine">
+                        <FormattedBlock text={preventiveMed} boxTitle="Preventive medicine" />
+                      </InfoBox>
+                    )}
                   </div>
                 )}
               </section>
@@ -7809,7 +8018,16 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                 </section>
               )}
 
-              {/* ==== 5. PROBLEM-BY-PROBLEM CHEAT SHEETS ==== */}
+              {/* ==== 5. CONSOLIDATED PROBLEM-BY-PROBLEM SECTION ==== */}
+              {/* Combines selected-for-teaching problems (deep AI teaching) + non-selected
+                  problems from the PMH (chart data + lightweight AI teaching), in that order. */}
+              {(enabledCases.length > 0 || Object.keys(problemBlocks).length > 0) && (
+                <section>
+                  <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
+                    Problems on this patient's chart
+                  </h2>
+                </section>
+              )}
               {enabledCases.map((tc, idx) => {
                 const c = tc.data;
                 const teachingExpanded = !!expandedTeaching[idx];
@@ -8045,6 +8263,149 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                   </section>
                 );
               })}
+
+              {/* Non-selected problems: chart data + lightweight AI teaching, more compact styling */}
+              {(() => {
+                const selectedLower = new Set(enabledCases.map(tc => (tc.data.problem || "").toLowerCase().trim()));
+                const nonSelectedBlocks = Object.entries(problemBlocks).filter(([key, block]) => {
+                  const headerLower = block.rawHeader.toLowerCase().trim();
+                  for (const sel of selectedLower) {
+                    if (headerLower.includes(sel) || sel.includes(headerLower)) return false;
+                    const cleanH = headerLower.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/g, "").trim();
+                    const cleanS = sel.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/g, "").trim();
+                    if (cleanH && cleanS && (cleanH.includes(cleanS) || cleanS.includes(cleanH))) return false;
+                  }
+                  return true;
+                });
+
+                const lightweight = doc.lightweightTeaching || {};
+
+                return nonSelectedBlocks.map(([key, block], idx) => {
+                  // Find matching lightweight teaching by fuzzy name match
+                  const headerLower = block.rawHeader.toLowerCase().trim();
+                  let lwt = lightweight[headerLower];
+                  if (!lwt) {
+                    for (const [lwKey, lwVal] of Object.entries(lightweight)) {
+                      if (headerLower.includes(lwKey) || lwKey.includes(headerLower)) {
+                        lwt = lwVal;
+                        break;
+                      }
+                    }
+                  }
+
+                  return (
+                    <section key={`ns-${idx}`} className="in-room-problem-card border border-slate-200 rounded-lg overflow-hidden mt-3">
+                      {/* Lighter slate-500 header for non-selected problems (vs. slate-800 for teaching cards) */}
+                      <div className="bg-slate-500 text-white px-4 py-2">
+                        <div className="text-base font-semibold">{block.rawHeader}</div>
+                      </div>
+
+                      <div className="p-4 space-y-3 bg-white">
+                        {/* Chart data from prenote */}
+                        {block.currentStatus && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Current status</div>
+                            <p className="text-sm text-slate-800 whitespace-pre-wrap">{block.currentStatus}</p>
+                          </div>
+                        )}
+
+                        {(block.currentMeds || block.pastMeds) && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Current management</div>
+                            <div className="bg-slate-50 rounded p-2 border border-slate-200 space-y-1.5">
+                              {block.currentMeds && (
+                                <div>
+                                  <div className="text-xs font-semibold text-slate-700 mb-0.5">Active:</div>
+                                  <div className="text-sm text-slate-800 whitespace-pre-wrap">{block.currentMeds}</div>
+                                </div>
+                              )}
+                              {block.pastMeds && (
+                                <div>
+                                  <div className="text-xs font-semibold text-slate-700 mb-0.5">Past:</div>
+                                  <div className="text-sm text-slate-700 whitespace-pre-wrap">{block.pastMeds}</div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {(block.labTrends || block.recentControl) && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Labs & trends</div>
+                            {block.labTrends && <p className="text-sm text-slate-800 whitespace-pre-wrap">{block.labTrends}</p>}
+                            {block.recentControl && (
+                              <p className="text-sm text-slate-700 whitespace-pre-wrap italic mt-1">
+                                <span className="font-semibold not-italic">Recent trend: </span>{block.recentControl}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {block.imaging && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Imaging / procedures</div>
+                            <p className="text-sm text-slate-800 whitespace-pre-wrap">{block.imaging}</p>
+                          </div>
+                        )}
+
+                        {block.careTeam && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Care team</div>
+                            <p className="text-sm text-slate-800 whitespace-pre-wrap">{block.careTeam}</p>
+                          </div>
+                        )}
+
+                        {block.statusNotes && (
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Notes</div>
+                            <p className="text-sm text-slate-800 whitespace-pre-wrap">{block.statusNotes}</p>
+                          </div>
+                        )}
+
+                        {/* Lightweight AI teaching (if available) */}
+                        {lwt && (
+                          <div className="pt-3 mt-2 border-t border-slate-200">
+                            <div className="text-[10px] uppercase tracking-wider text-slate-600 font-bold mb-2">
+                              📚 Quick background
+                            </div>
+                            <div className="space-y-2 text-sm">
+                              {lwt.primaryDiagnosis?.briefDefinition && (
+                                <div>
+                                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-0.5">What it is</div>
+                                  <p className="text-slate-800">{lwt.primaryDiagnosis.briefDefinition}</p>
+                                </div>
+                              )}
+                              {lwt.theClassicPicture && (
+                                <div>
+                                  <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-0.5">The classic picture</div>
+                                  <p className="text-slate-800">{lwt.theClassicPicture}</p>
+                                </div>
+                              )}
+                              {lwt.oneKeyLearningPoint && (
+                                <div className="bg-indigo-50/40 border border-indigo-200 rounded p-2">
+                                  <div className="text-[10px] uppercase tracking-wider text-indigo-800 font-semibold mb-0.5">Key learning point</div>
+                                  <div className="text-slate-800">
+                                    <strong>{lwt.oneKeyLearningPoint.point}:</strong> {lwt.oneKeyLearningPoint.explanation}
+                                    {lwt.oneKeyLearningPoint.citation && (
+                                      <em className="text-slate-500 ml-1 text-xs">({lwt.oneKeyLearningPoint.citation})</em>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                              {lwt.clinicalPearl && (
+                                <div className="bg-amber-50 border-l-3 border-amber-500 pl-2 py-1">
+                                  <div className="text-[10px] uppercase tracking-wider text-amber-800 font-semibold mb-0.5">💡 Pearl</div>
+                                  <p className="text-slate-800 italic">{lwt.clinicalPearl}</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                  );
+                });
+              })()}
 
               {/* ==== 6. PATIENT QUOTES / CONTEXT ==== */}
               {doc.patientQuotes?.length > 0 && (
