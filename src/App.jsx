@@ -2486,38 +2486,115 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
   };
 
   // ===== Source prompt generator =====
+  // External AI research tools (UpToDate, OpenEvidence, DynaMed, DoxGPT) have
+  // input character limits (UpToDate caps around 10K). The old prompt dumped
+  // the entire de-identified clinical note as context — for a full prenote
+  // this could be 20K+ characters and blow past the limit.
+  //
+  // The new approach: extract ONLY the sections that are actually useful
+  // context for an AI research tool — WHAT TO KNOW ABOUT (patient summary),
+  // laboratory results, and imaging/diagnostic procedures — and cap the
+  // whole prompt at 9500 chars with a console warning if we hit it.
+  //
+  // PubMed AI has its own single-topic prompt (generatePubmedAiPrompt) and
+  // is intentionally untouched.
+  // ===== Source prompt generator =====
+  // External AI research tools (UpToDate, OpenEvidence, DynaMed, DoxGPT) have
+  // input character limits (UpToDate caps around 10K). The old prompt dumped
+  // the entire de-identified clinical note as context — for a full prenote
+  // this could be 20K+ characters and blow past the limit.
+  //
+  // Approach: build context differently depending on session mode.
+  //   Pre-visit: pull labeled sections (WHAT TO KNOW + Labs + Imaging)
+  //   Post-visit: use extractEssentialNote() to strip social/family/surgical/
+  //     military history, immunizations, normal exam, return precautions,
+  //     med reconciliation, care coordination boilerplate. Keeps HPI,
+  //     assessment, plan, active meds, labs, and relevant clinical findings.
+  //
+  // Hard cap at 9500 chars with a console warning + graceful truncation notice
+  // so we never breach UpToDate's limit. PubMed AI has its own single-topic
+  // prompt (generatePubmedAiPrompt) and is intentionally untouched.
   const generateSourcePrompt = (source) => {
+    const PROMPT_HARD_CAP = 9500; // UpToDate limit ~10K; leave headroom
+
     const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
     const focusText = activeFocus.map(f => focusLabels[f]).join(", ");
-    const dxLine = workingDx ? `Working diagnosis: ${workingDx}. ` : "";
-    const ccLine = chiefConcern ? `Chief concern: ${chiefConcern}. ` : "";
+    const dxLine = workingDx ? `Working diagnosis: ${workingDx}.` : "";
+    const ccLine = chiefConcern ? `Focus: ${chiefConcern}.` : "";
     const problemsLine = selectedProblems.length > 0 ? `\nSpecific problems to focus on: ${selectedProblems.join("; ")}.` : "";
     const topicsLine = extractedTopics.length > 0 ? `\nKey clinical topics: ${extractedTopics.join(", ")}.` : "";
     const lensLine = teachingLens !== "general_im" ? `\nTeaching lens: ${{geriatrics: "Geriatrics/deprescribing", primary_care: "Primary care/preventive", complex_multimorbidity: "Complex multimorbidity"}[teachingLens]}` : "";
-    const contextLine = clinicalNote ? `\n\nDe-identified clinical context:\n${clinicalNote}` : "";
+
+    // Build the patient-context block based on session mode.
+    let contextLine = "";
+    if (clinicalNote) {
+      if (sessionMode === "pre") {
+        // Pre-visit: prenotes are typically huge and section-labeled.
+        // Pull only three focused blocks — patient summary, labs, imaging.
+        const sections = extractPrenoteSections(clinicalNote);
+        const parts = [];
+
+        const whatToKnow = getSection(sections, "WHAT TO KNOW ABOUT");
+        if (whatToKnow) parts.push(`Patient summary:\n${whatToKnow}`);
+
+        const labStudies = getSection(sections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS");
+        if (labStudies) parts.push(`Recent labs:\n${labStudies}`);
+
+        const imaging = getSection(sections, "IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES");
+        if (imaging && !/no imaging/i.test(imaging)) parts.push(`Diagnostic tests / imaging:\n${imaging}`);
+
+        if (parts.length > 0) {
+          contextLine = "\n\nDe-identified patient context:\n" + parts.join("\n\n");
+        }
+      } else {
+        // Post-visit: strip the bureaucratic sections (social/family/surgical/
+        // military history, immunizations, discharge instructions, med rec
+        // history, etc.) but keep the clinical meat (HPI, assessment, plan,
+        // active meds, labs, relevant abnormal findings).
+        //
+        // extractEssentialNote() already knows how to do this — it's used by
+        // the teaching content generator for the same reason.
+        const essential = extractEssentialNote(clinicalNote);
+        contextLine = `\n\nDe-identified clinical note from today's encounter (assessment, plan, and key clinical details):\n${essential}`;
+      }
+    }
 
     const base = `Context: I am a teaching attending in internal medicine. My student is a medical student in month ${phase.monthsIn} of a longitudinal integrated clerkship (${phase.name} phase). Their developmental focus: ${phase.focus}.
 
-${ccLine}${dxLine}${problemsLine}${topicsLine}${lensLine}${contextLine}
+${ccLine} ${dxLine}${problemsLine}${topicsLine}${lensLine}${contextLine}
 
 I want to focus today's teaching on: ${focusText}.
 
 `;
 
+    let prompt;
     switch (source) {
       case "openevidence":
-        return base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
+        prompt = base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
+        break;
       case "uptodate":
-        return base + `Provide UpToDate-style content:\n1. Current approach for each focus area\n2. Grade of Recommendation where UpToDate provides one\n3. When to escalate or refer\n4. Patient-centered talking points`;
+        prompt = base + `Provide UpToDate-style content:\n1. Current approach for each focus area\n2. Grade of Recommendation where UpToDate provides one\n3. When to escalate or refer\n4. Patient-centered talking points`;
+        break;
       case "dynamed":
-        return base + `Give DynaMed-style summary:\n1. Level of Evidence for each recommendation\n2. NNT/NNH where applicable\n3. Practice-changing updates in last 2 years\n4. Cost-conscious alternatives\n5. Choosing Wisely recommendations relevant to this case`;
+        prompt = base + `Give DynaMed-style summary:\n1. Level of Evidence for each recommendation\n2. NNT/NNH where applicable\n3. Practice-changing updates in last 2 years\n4. Cost-conscious alternatives\n5. Choosing Wisely recommendations relevant to this case`;
+        break;
       case "doxgpt":
-        return base + `Peer-consult response as an experienced clinician colleague:\n1. Practical real-world guidance\n2. Pearls and pitfalls from experience\n3. How to explain to the patient\n4. Common trainee errors\n5. What you'd worry about missing`;
+        prompt = base + `Peer-consult response as an experienced clinician colleague:\n1. Practical real-world guidance\n2. Pearls and pitfalls from experience\n3. How to explain to the patient\n4. Common trainee errors\n5. What you'd worry about missing`;
+        break;
       case "other":
       default:
-        // "Other" and unknown sources reuse the OpenEvidence-style prompt
-        return base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
+        prompt = base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
+        break;
     }
+
+    // Hard cap: even after trimming, some prompts could still be huge if
+    // there are many problems, topics, and a long clinical note. Log a
+    // warning if we hit the cap so we notice and can trim further.
+    if (prompt.length > PROMPT_HARD_CAP) {
+      console.warn(`[generateSourcePrompt] Prompt for "${source}" is ${prompt.length} chars — truncating to ${PROMPT_HARD_CAP}. Consider trimming source content.`);
+      prompt = prompt.slice(0, PROMPT_HARD_CAP - 100) + "\n\n[Note: patient context truncated to fit character limit.]";
+    }
+    return prompt;
   };
 
   // ===== Generate preview (was: generate document) =====
