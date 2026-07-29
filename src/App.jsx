@@ -97,8 +97,9 @@ const deidentifyPrenote = (rawText) => {
   triggers.forEach(trigger => {
     // Pattern A: LAST, FIRST [MIDDLE] — EHR comma-separated order
     // Match: trigger + optional title + LASTNAME + comma + FIRST [MIDDLE]
+    // Allow 2+ character last names and first names; middle can be single initial
     const commaRe = new RegExp(
-      `${escapeRegex(trigger)}\\s+(?:Mr\\.?|Ms\\.?|Mx\\.?|Mrs\\.?|Dr\\.?)?\\s*([A-Z][A-Z'\\-]{2,})\\s*,\\s*([A-Z][A-Z'\\-]+(?:\\s+[A-Z][A-Z'\\-]+)?)`,
+      `${escapeRegex(trigger)}\\s+(?:Mr\\.?|Ms\\.?|Mx\\.?|Mrs\\.?|Dr\\.?)?\\s*([A-Z][A-Z'\\-]{1,})\\s*,\\s*([A-Z][A-Z'\\-]+(?:\\s+[A-Z]\\.?(?:[A-Z'\\-]+)?)?)`,
       "g"
     );
     let m;
@@ -107,9 +108,11 @@ const deidentifyPrenote = (rawText) => {
       addCandidate(`${m[2]} ${m[1]}`);
     }
 
-    // Pattern B: FIRST [MIDDLE] LAST — natural order
+    // Pattern B: FIRST [MIDDLE INITIAL OR NAME] LAST — natural order
+    // Middle can be a single initial like "C" or full name like "CHARLES".
+    // We use two alternatives in the repeated group: {1,} allows single-char initials.
     const naturalRe = new RegExp(
-      `${escapeRegex(trigger)}\\s+(?:Mr\\.?|Ms\\.?|Mx\\.?|Mrs\\.?|Dr\\.?)?\\s*([A-Z][A-Z'\\-]{2,}(?:\\s+[A-Z][A-Z'\\-]{2,}){1,3})\\b`,
+      `${escapeRegex(trigger)}\\s+(?:Mr\\.?|Ms\\.?|Mx\\.?|Mrs\\.?|Dr\\.?)?\\s*([A-Z][A-Z'\\-]{1,}(?:\\s+[A-Z][A-Z'\\-]*\\.?){1,3})\\b`,
       "g"
     );
     while ((m = naturalRe.exec(text)) !== null) {
