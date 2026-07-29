@@ -2447,8 +2447,8 @@ I want to focus today's teaching on: ${focusText}.
       [`session:${activeSessionId}:pdfs`, pdfAttachments],
       [`session:${activeSessionId}:images`, imageAttachments],
       [`session:${activeSessionId}:imageBytes`, sessionImageBytes],
-      [[`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
-    ];
+      [`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
+      ];
 
     try {
       await Promise.all(slices.map(([key, value]) => storage.set(key, JSON.stringify(value))));
