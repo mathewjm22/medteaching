@@ -315,79 +315,73 @@ const deidentifyPrenote = (rawText) => {
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 // ===== Prenote section extractor =====
-// Prenotes use a consistent format: sections separated by lines of dashes
-// (40+ hyphens), with the section title on its own line between two divider
-// lines. Example:
+// Prenotes use divider lines of dashes (20+ hyphens) with section titles
+// between them:
 //   ----------------------------------------------------------------
 //   WHAT TO KNOW ABOUT PATIENT NAME
 //   ----------------------------------------------------------------
-//   - Body content...
+//   Body...
+//
+// Real-world prenotes come in TWO shapes:
+//   (a) Multi-line: dividers are on their own lines separated by newlines
+//   (b) Single-line: the whole prenote is one giant line, dividers are inline
+// This parser handles both by treating the divider as a text-level splitter
+// rather than requiring line-level structure.
 //
 // Returns a map keyed by normalized section name → raw text content.
-// Section names are uppercased and stripped of trailing "ABOUT [name]"-style
-// suffixes so we can look them up reliably regardless of the exact wording.
 const extractPrenoteSections = (rawText) => {
   if (!rawText || typeof rawText !== "string") return {};
 
-  const lines = rawText.split(/\r?\n/);
+  // Normalize whitespace: even in single-line prenotes, section titles are
+  // typically surrounded by whitespace on both sides. We split on the divider
+  // pattern (20+ dashes, optionally with surrounding whitespace).
+  const dividerPattern = /\s*-{20,}\s*/g;
+
+  // Split the entire text on divider runs. Between each pair of dividers
+  // we alternately have TITLE and BODY (title first when the prenote starts
+  // with a divider, but in practice we don't assume — we look for what looks
+  // like a title after each divider).
+  const parts = rawText.split(dividerPattern).map(p => p.trim()).filter(p => p);
+
+  // Now walk the parts array in pairs (title, body). A "title" is a short
+  // line (<80 chars) with mostly uppercase letters — that's the sentinel for
+  // a section header.
   const sections = {};
-  const dividerRegex = /^-{20,}$/;
+  const isTitleLike = (s) => {
+    if (!s || s.length > 100) return false;
+    // Count uppercase letters vs. lowercase — titles are mostly uppercase
+    const upper = (s.match(/[A-Z]/g) || []).length;
+    const lower = (s.match(/[a-z]/g) || []).length;
+    if (upper < 3) return false;
+    // If mostly uppercase (and title is short), it's likely a title
+    return upper > lower * 0.7 && s.length < 100;
+  };
 
-  // Walk lines looking for the pattern: divider → title → divider → body...
-  // Body ends at the next divider that precedes another title (or end of file).
-  let i = 0;
-  while (i < lines.length) {
-    if (dividerRegex.test(lines[i].trim())) {
-      // Divider found. Next non-empty line should be the title.
-      let titleIdx = i + 1;
-      while (titleIdx < lines.length && !lines[titleIdx].trim()) titleIdx++;
-      if (titleIdx >= lines.length) break;
+  for (let i = 0; i < parts.length; i++) {
+    const candidateTitle = parts[i];
+    if (!isTitleLike(candidateTitle)) continue;
 
-      const title = lines[titleIdx].trim();
-      // Must be followed by another divider
-      let closingIdx = titleIdx + 1;
-      while (closingIdx < lines.length && !lines[closingIdx].trim()) closingIdx++;
-      if (closingIdx >= lines.length || !dividerRegex.test(lines[closingIdx].trim())) {
-        i = titleIdx + 1;
-        continue;
-      }
+    // Body = next part that isn't itself a title
+    let body = null;
+    for (let j = i + 1; j < parts.length; j++) {
+      if (isTitleLike(parts[j])) break;
+      body = parts[j];
+      i = j; // consume this body
+      break;
+    }
 
-      // Body starts after the closing divider
-      let bodyStart = closingIdx + 1;
-      let bodyEnd = bodyStart;
+    if (!body) continue;
 
-      // Body extends until we hit the next section (divider→title→divider) or end of file
-      while (bodyEnd < lines.length) {
-        if (dividerRegex.test(lines[bodyEnd].trim())) {
-          // Is this the start of the next section? Look ahead for title+divider pattern
-          let peekTitle = bodyEnd + 1;
-          while (peekTitle < lines.length && !lines[peekTitle].trim()) peekTitle++;
-          if (peekTitle < lines.length && lines[peekTitle].trim().length > 0) {
-            let peekClose = peekTitle + 1;
-            while (peekClose < lines.length && !lines[peekClose].trim()) peekClose++;
-            if (peekClose < lines.length && dividerRegex.test(lines[peekClose].trim())) {
-              // Yes — next section starts here. Stop body before this divider.
-              break;
-            }
-          }
-        }
-        bodyEnd++;
-      }
+    const normalizedTitle = normalizeSectionTitle(candidateTitle);
+    if (!normalizedTitle) continue;
 
-      const body = lines.slice(bodyStart, bodyEnd).join("\n").trim();
-      const normalizedTitle = normalizeSectionTitle(title);
-      if (normalizedTitle && body) {
-        // If duplicate section titles exist, keep the longer one
-        if (!sections[normalizedTitle] || body.length > sections[normalizedTitle].length) {
-          sections[normalizedTitle] = body;
-        }
-      }
-      i = bodyEnd;
-    } else {
-      i++;
+    // Keep the longer version if a section repeats
+    if (!sections[normalizedTitle] || body.length > sections[normalizedTitle].length) {
+      sections[normalizedTitle] = body;
     }
   }
 
+  console.log("[extractPrenoteSections] parts count:", parts.length, "sections found:", Object.keys(sections));
   return sections;
 };
 
