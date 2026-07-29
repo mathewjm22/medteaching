@@ -1052,7 +1052,10 @@ const [customTopics, setCustomTopics] = useState([]);
       setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
     }
 
-    setActiveSessionId(sessionId);
+        setActiveSessionId(sessionId);
+
+    // Lets openSession decide which screen should be shown after restoration.
+    return { inProgress, gen };
   };
 
   // ===== Session management =====
@@ -1186,7 +1189,10 @@ const [customTopics, setCustomTopics] = useState([]);
   // Start a new session: create a new session ID, blank the editor, keep the old
   // session preserved in the sessions index. Optionally prune old sessions if we're
   // over the cap.
-  const startNewSession = async () => {
+    const startNewSession = async () => {
+    // Flush the current session before clearing the editor.
+    await saveNow();
+
     // No confirm needed — old session is preserved, not lost
     resetEditorState();
     const newId = generateSessionId();
@@ -1202,17 +1208,52 @@ const [customTopics, setCustomTopics] = useState([]);
     await pruneOldSessions();
   };
 
-  // Open an existing session from the Recent Sessions panel
+   // Open an existing session from the Recent Sessions panel
   const openSession = async (sessionId) => {
-    if (sessionId === activeSessionId) return; // already loaded
+    if (!sessionId || sessionId === activeSessionId) return;
+
+    // Save the session we are leaving and cancel its pending debounce timers.
+    // This prevents the temporary reset state from overwriting that session.
+    await saveNow();
+
+    // Pause autosave while the old editor state is cleared and the selected
+    // session is restored.
+    setHasRestored(false);
     resetEditorState();
-    await loadSessionData(sessionId);
-    setActiveTab("setup");
-    // Reflect in URL so it can be bookmarked / shared
-    if (window.history?.replaceState) {
-      const url = new URL(window.location.href);
-      url.searchParams.set("session", sessionId);
-      window.history.replaceState({}, "", url.toString());
+
+    try {
+      const loaded = await loadSessionData(sessionId);
+
+      const hasGeneratedDocument = Boolean(loaded?.gen?.generatedDoc);
+      const hasPreview = Boolean(loaded?.gen?.previewData);
+
+      // Reopen the most useful screen rather than always returning to Setup.
+      setPreviewMode(hasPreview && !hasGeneratedDocument);
+
+      if (hasGeneratedDocument || hasPreview) {
+        setActiveTab("output");
+      } else if (loaded?.inProgress?.clinicalNote?.trim()) {
+        setActiveTab("note");
+      } else {
+        setActiveTab("setup");
+      }
+
+      // Reflect the selected session in the URL.
+      if (window.history?.replaceState) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("session", sessionId);
+        window.history.replaceState({}, "", url.toString());
+      }
+    } catch (error) {
+      console.error("[openSession] Failed to open session:", error);
+      setSaveStatus(prev => ({
+        ...prev,
+        state: "error",
+        error: "Could not open that session.",
+      }));
+    } finally {
+      // Autosave may resume now that the selected session is fully restored.
+      setHasRestored(true);
     }
   };
 
@@ -2589,6 +2630,170 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
     return t.trim();
   };
 
+    // Break a chief concern into symptom-level teaching items while preserving
+  // text inside parentheses.
+  const splitChiefConcernForPrompt = (text) => {
+    const clean = String(text || "")
+      .replace(/^focus:\s*/i, "")
+      .replace(/[.!?]+$/, "")
+      .trim();
+
+    if (!clean) return [];
+
+    // Temporarily protect parenthetical text so commas or "and" inside
+    // parentheses do not create accidental splits.
+    const parentheticals = [];
+    const protectedText = clean.replace(/\([^()]*\)/g, (match) => {
+      const token = `__PAREN_${parentheticals.length}__`;
+      parentheticals.push(match);
+      return token;
+    });
+
+    return protectedText
+      .split(/\s*(?:\n+|[;,]+|\bwith\b|\band\b)\s*/i)
+      .map((part) =>
+        part.replace(
+          /__PAREN_(\d+)__/g,
+          (_, index) => parentheticals[Number(index)] || ""
+        )
+      )
+      .map((part) =>
+        part.replace(/^[\s,;:.\-]+|[\s,;:.\-]+$/g, "").trim()
+      )
+      // Do not turn explicitly absent symptoms into teaching problems.
+      .filter(
+        (part) =>
+          part && !/^(?:no|denies?|without)\b/i.test(part)
+      );
+  };
+
+
+  // Remove administrative details that do not help an external evidence tool:
+  // event dates, provider names, named care locations, and service-connection
+  // information. Preserve the type of care when it can be identified.
+  const scrubPatientContextForPrompt = (text) => {
+    if (!text) return "";
+
+    const specialtyPattern =
+      /\b(?:primary care|family medicine|internal medicine|geriatrics?|cardiology|neurology|ophthalmology|optometry|orthopedics?|endocrinology|nephrology|pulmonology|gastroenterology|rheumatology|hematology|oncology|infectious diseases?|dermatology|urology|gynecology|obstetrics|general surgery|vascular surgery|cardiothoracic surgery|neurosurgery|psychiatry|psychology|pain management|palliative care|physical therapy|occupational therapy|speech therapy|podiatry|emergency medicine|urgent care)\b/i;
+
+    const monthName =
+      "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)";
+
+    let t = String(text).replace(/\r\n?/g, "\n");
+
+    // Preserve the specialty in patterns such as:
+    // "(Smith, Orthopedics)" -> "(Orthopedics)"
+    t = t.replace(
+      /\(\s*[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)*\s*,\s*([A-Za-z][A-Za-z &/\-]{2,50})\s*\)/g,
+      "($1)"
+    );
+
+    // Remove provider/facility metadata lines. If the line names a specialty,
+    // retain only that type of care.
+    t = t
+      .split("\n")
+      .map((line) => {
+        const isProviderOrLocationLine =
+          /^\s*(?:provider|author|attending|supervising physician|cosigner|signed by|referring provider|primary care provider|pcp|facility|location|site|campus|place of service|clinic location)\s*:/i.test(
+            line
+          );
+
+        if (isProviderOrLocationLine) {
+          const specialty = line.match(specialtyPattern)?.[0];
+          return specialty ? `Type of care: ${specialty}` : "";
+        }
+
+        const isServiceConnectionOnlyLine =
+          /^\s*(?:(?:service[- ]?connect(?:ed|ion)|combined disability rating|disability rating)\s*:|\d{1,3}\s*%\s*(?:service[- ]?connected|SC)\b)/i.test(
+            line
+          );
+
+        if (isServiceConnectionOnlyLine) return "";
+
+        return line;
+      })
+      .join("\n");
+
+    // Numeric dates, including ISO dates.
+    t = t.replace(
+      /\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b/g,
+      ""
+    );
+    t = t.replace(
+      /\b\d{1,2}[-/.]\d{1,2}(?:[-/.]\d{2,4})?\b/g,
+      ""
+    );
+
+    // Written dates such as "February 4, 2026", "4 February 2026",
+    // and "February 2026".
+    t = t.replace(
+      new RegExp(
+        `\\b${monthName}\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{2,4})?\\b`,
+        "gi"
+      ),
+      ""
+    );
+    t = t.replace(
+      new RegExp(
+        `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${monthName}(?:\\s+(?:19|20)\\d{2})?\\b`,
+        "gi"
+      ),
+      ""
+    );
+    t = t.replace(
+      new RegExp(`\\b${monthName}\\s+(?:19|20)\\d{2}\\b`, "gi"),
+      ""
+    );
+
+    // Standalone event years and days of the week.
+    t = t.replace(/\b(?:19|20)\d{2}\b/g, "");
+    t = t.replace(
+      /\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b,?/gi,
+      ""
+    );
+
+    // Provider names remaining in narrative text.
+    t = t.replace(
+      /\bDr\.?\s+[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}\b/g,
+      "the clinician"
+    );
+    t = t.replace(
+      /\b[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,2},?\s*(?:MD|DO|MBBS|NP|APRN|PA-C|PA|RN|PhD|PsyD|DPT|PT|OT)\b/g,
+      "the clinician"
+    );
+
+    // Remove named care locations while leaving preceding specialty text.
+    // Example: "Orthopedics at Denver VA Medical Center" -> "Orthopedics".
+    t = t.replace(
+      /\b(?:at|from|via)\s+(?:the\s+)?[^,.;\n]{0,80}?\b(?:Medical Center|Hospital|VAMC|VA Clinic|Veterans Affairs Clinic|Health(?:care)? System|Campus)\b/gi,
+      ""
+    );
+    t = t.replace(
+      /\b(?:HOSPITAL NAME|FACILITY NAME|LOCATION NAME|location removed)\b/gi,
+      ""
+    );
+
+    // Service-connection percentages and related administrative clauses.
+    t = t.replace(
+      /\b\d{1,3}\s*%\s*(?:service[- ]?connected|SC)\b[^.;\n]*/gi,
+      ""
+    );
+    t = t.replace(
+      /\b(?:service[- ]?connected|service connection|combined disability rating|disability rating)\b\s*:?\s*[^.;\n]*/gi,
+      ""
+    );
+
+    // Cleanup after removals.
+    t = t.replace(/\(\s*\)/g, "");
+    t = t.replace(/[ \t]+([,.;:])/g, "$1");
+    t = t.replace(/^[ \t]*[,.;:|\-]+[ \t]*$/gm, "");
+    t = t.replace(/[ \t]{2,}/g, " ");
+    t = t.replace(/\n{3,}/g, "\n\n");
+
+    return t.trim();
+  };
+
   // ===== Source prompt generator =====
   // External AI research tools (UpToDate, OpenEvidence, DynaMed, DoxGPT) have
   // input character limits (UpToDate caps around 10K). The old prompt dumped
@@ -2715,106 +2920,225 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
       return prompt;
     }
     // ============ END UPTODATE SPECIAL CASE ============
-    const dxLine = workingDx ? `Working diagnosis: ${workingDx}.` : "";
-    const ccLine = chiefConcern ? `Focus: ${chiefConcern}.` : "";
-    const problemsLine = selectedProblems.length > 0 ? `\nSpecific problems to focus on: ${selectedProblems.join("; ")}.` : "";
-    const topicsLine = extractedTopics.length > 0 ? `\nKey clinical topics: ${extractedTopics.join(", ")}.` : "";
-    const lensLine = teachingLens !== "general_im" ? `\nTeaching lens: ${{geriatrics: "Geriatrics/deprescribing", primary_care: "Primary care/preventive", complex_multimorbidity: "Complex multimorbidity"}[teachingLens]}` : "";
+        // ============ OPENEVIDENCE / DYNAMED / DOXGPT / OTHER ============
 
-    // Build the patient-context block based on session mode.
+    const chiefConcernItems = splitChiefConcernForPrompt(chiefConcern);
+
+    const selectedProblemItems = selectedProblems
+      .map((problem) => String(problem || "").trim())
+      .filter(Boolean);
+
+    const diagnosisItems =
+      selectedProblemItems.length > 0
+        ? selectedProblemItems
+        : workingDx?.trim()
+          ? [workingDx.trim()]
+          : [];
+
+    // Keep both symptom-level chief-concern items and selected diagnoses.
+    // Do not deduplicate them: the relationship between a symptom and its
+    // eventual diagnosis may itself be worth teaching.
+    const teachingProblems = [
+      ...chiefConcernItems,
+      ...diagnosisItems,
+    ];
+
+    const hasMultipleProblems = teachingProblems.length > 1;
+
+    const focusLine = focusText
+      ? `I want to focus today's teaching on: ${focusText}.`
+      : "";
+
+    const topicsLine =
+      extractedTopics.length > 0
+        ? `Key clinical topics: ${extractedTopics.join(", ")}.`
+        : "";
+
+    const lensLine =
+      teachingLens !== "general_im"
+        ? `Teaching lens: ${
+            {
+              geriatrics: "Geriatrics/deprescribing",
+              primary_care: "Primary care/preventive",
+              complex_multimorbidity: "Complex multimorbidity",
+            }[teachingLens]
+          }`
+        : "";
+
+    // Build a concise, clinically relevant patient-context block.
     let contextLine = "";
+
     if (clinicalNote) {
       if (sessionMode === "pre") {
-        // Pre-visit: prenotes are typically huge and section-labeled.
-        // Pull only three focused blocks — patient summary, labs, imaging.
         const sections = extractPrenoteSections(clinicalNote);
         const parts = [];
 
-        const whatToKnow = getSection(sections, "WHAT TO KNOW ABOUT", "PATIENT SUMMARY", "SUMMARY");
-if (whatToKnow) parts.push(`Patient summary:\n${whatToKnow}`);
+        const addContextPart = (label, value, maxLength) => {
+          const cleaned = scrubPatientContextForPrompt(value);
+          if (!cleaned) return;
 
-// Also pull in per-problem details from PMH — this is critical for multi-problem
-// cases where each condition has its own status/meds/labs recorded
-const pastMedHx = getSection(sections, "PAST MEDICAL HISTORY", "PMH");
-if (pastMedHx) {
-  // For multi-problem cases, include per-problem context so external AI tools
-  // can see the actual clinical detail for each selected problem
-  if (selectedProblems.length > 1) {
-    parts.push(`Per-problem context from PMH:\n${pastMedHx.slice(0, 3500)}${pastMedHx.length > 3500 ? "\n[truncated]" : ""}`);
-  }
-}
+          const capped =
+            cleaned.length > maxLength
+              ? `${cleaned.slice(0, maxLength)}\n[truncated]`
+              : cleaned;
 
-const labStudies = getSection(sections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS", "RECENT LABS SUMMARY", "RECENT LABS");
-if (labStudies) parts.push(`Recent labs:\n${labStudies}`);
+          parts.push(`${label}:\n${capped}`);
+        };
 
-const imaging = getSection(sections, "IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES", "RADIOLOGY PROCEDURES");
-if (imaging && !/no imaging/i.test(imaging) && !/none found/i.test(imaging)) parts.push(`Diagnostic tests / imaging:\n${imaging}`);
+        addContextPart(
+          "Patient summary",
+          getSection(
+            sections,
+            "WHAT TO KNOW ABOUT",
+            "PATIENT SUMMARY",
+            "SUMMARY"
+          ),
+          1800
+        );
 
-// Also include Updates/Recent Visits — provides visit history context
-const updates = getSection(sections, "UPDATES / RECENT VISITS", "UPDATES", "RECENT VISITS");
-if (updates) parts.push(`Recent visit updates:\n${updates.slice(0, 1500)}${updates.length > 1500 ? "\n[truncated]" : ""}`);
+        if (hasMultipleProblems) {
+          addContextPart(
+            "Per-problem clinical context",
+            getSection(
+              sections,
+              "PAST MEDICAL HISTORY",
+              "PMH"
+            ),
+            2800
+          );
+        }
+
+        addContextPart(
+          "Recent labs",
+          getSection(
+            sections,
+            "LABORATORY STUDIES",
+            "LABS",
+            "LABORATORY RESULTS",
+            "RECENT LABS SUMMARY",
+            "RECENT LABS"
+          ),
+          1200
+        );
+
+        const imaging = getSection(
+          sections,
+          "IMAGING AND DIAGNOSTIC PROCEDURES",
+          "IMAGING",
+          "DIAGNOSTIC PROCEDURES",
+          "RADIOLOGY PROCEDURES"
+        );
+
+        if (
+          imaging &&
+          !/no imaging/i.test(imaging) &&
+          !/none found/i.test(imaging)
+        ) {
+          addContextPart(
+            "Diagnostic tests / imaging",
+            imaging,
+            1200
+          );
+        }
+
+        addContextPart(
+          "Relevant clinical updates",
+          getSection(
+            sections,
+            "UPDATES / RECENT VISITS",
+            "UPDATES",
+            "RECENT VISITS"
+          ),
+          1000
+        );
 
         if (parts.length > 0) {
-          contextLine = "\n\nDe-identified patient context:\n" + parts.join("\n\n");
+          contextLine =
+            `De-identified patient context (clinical details only):\n` +
+            parts.join("\n\n");
         }
       } else {
-        // Post-visit: strip the bureaucratic sections (social/family/surgical/
-        // military history, immunizations, discharge instructions, med rec
-        // history, etc.) but keep the clinical meat (HPI, assessment, plan,
-        // active meds, labs, relevant abnormal findings).
-        //
-        // extractEssentialNote() already knows how to do this — it's used by
-        // the teaching content generator for the same reason.
-        const essential = extractEssentialNote(clinicalNote);
-        contextLine = `\n\nDe-identified clinical note from today's encounter (assessment, plan, and key clinical details):\n${essential}`;
+        const essential = scrubPatientContextForPrompt(
+          extractEssentialNote(clinicalNote)
+        );
+
+        if (essential) {
+          contextLine =
+            `De-identified clinical note from today's encounter ` +
+            `(assessment, plan, and key clinical details only):\n${essential}`;
+        }
       }
     }
 
-    // When multiple problems are selected, restructure the prompt to give each
-// problem equal weight. External AI tools tend to focus on the first/most
-// prominent condition mentioned, so we need to explicitly instruct them to
-// address EACH problem separately with equal depth.
-const hasMultipleProblems = selectedProblems.length > 1;
+    let problemFramingBlock = "";
 
-let problemFramingBlock;
-if (hasMultipleProblems) {
-  // Multi-problem framing: enumerate as co-equal, instruct explicit per-problem coverage
-  const numberedProblems = selectedProblems.map((p, i) => `  ${i + 1}. ${p}`).join("\n");
-  problemFramingBlock = `${ccLine ? ccLine + "\n" : ""}This is a MULTI-PROBLEM teaching case. Today's teaching must address ALL of the following ${selectedProblems.length} problems with EQUAL depth and attention — do not focus disproportionately on any one condition:
+    if (hasMultipleProblems) {
+      const numberedProblems = teachingProblems
+        .map(
+          (problem, index) =>
+            `  ${index + 1}. ${problem}`
+        )
+        .join("\n");
 
-${numberedProblems}
-
-CRITICAL: Organize your response so each of the ${selectedProblems.length} problems above receives its own dedicated section with the same level of evidence, guidelines, and clinical detail. Do not treat any problem as secondary or as merely "context" for another. The interactions BETWEEN these problems (e.g., how one condition affects management of another) are also teaching-worthy and should be addressed explicitly.${topicsLine}${lensLine}${contextLine}`;
-} else {
-  // Single-problem framing: original behavior
-  problemFramingBlock = `${ccLine} ${dxLine}${problemsLine}${topicsLine}${lensLine}${contextLine}`;
-}
-
-const base = `Context: I am a teaching attending in internal medicine. My student is a medical student in month ${phase.monthsIn} of a longitudinal integrated clerkship (${phase.name} phase). Their developmental focus: ${phase.focus}.
-
-${problemFramingBlock}
-
-I want to focus today's teaching on: ${focusText}.
-
-${hasMultipleProblems ? `REMINDER: Structure your response with clear sections for each of the ${selectedProblems.length} problems listed above. Each problem deserves complete evidence-based coverage.\n\n` : ""}`;
-
-
-    let prompt;
-    switch (source) {
-      case "openevidence":
-  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
-  break;
-      case "dynamed":
-  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
-        break;
-      case "doxgpt":
-  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
-        break;
-      case "other":
-      default:
-  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
-        break;
+      problemFramingBlock =
+        `This is a MULTI-PROBLEM teaching case. Today's teaching must address ` +
+        `ALL of the following problems with EQUAL depth and attention — do not ` +
+        `focus disproportionately on any one condition. See whether any of these ` +
+        `problems are interrelated, and teach the student how to recognize and ` +
+        `evaluate those relationships:\n\n` +
+        `${numberedProblems}\n\n` +
+        `CRITICAL: Organize your response so each of the problems above receives ` +
+        `its own dedicated section with the same level of evidence, guidelines, ` +
+        `and clinical detail. Do not treat any problem as secondary or merely as ` +
+        `context for another. Address clinically important interactions between ` +
+        `the problems explicitly.`;
+    } else if (teachingProblems.length === 1) {
+      problemFramingBlock =
+        `Clinical problem to teach: ${teachingProblems[0]}.`;
     }
+
+    // The Step 3 focus now appears immediately before the problem framing.
+    // The redundant multi-problem reminder has been removed.
+    const base =
+      `${[
+        `Context: I am a teaching attending in internal medicine. My student is ` +
+          `a medical student in month ${phase.monthsIn} of a longitudinal ` +
+          `integrated clerkship (${phase.name} phase). Their developmental ` +
+          `focus: ${phase.focus}.`,
+        focusLine,
+        problemFramingBlock,
+        topicsLine,
+        lensLine,
+        contextLine,
+      ]
+        .filter(Boolean)
+        .join("\n\n")}\n\n`;
+
+    const perProblemCoverage = hasMultipleProblems
+      ? " FOR EACH of the problems listed above (organize with a clear heading for each problem)"
+      : "";
+
+    let prompt =
+      base +
+      `Provide evidence-based teaching content${perProblemCoverage}:\n` +
+      `1. For each focus area, current evidence base with landmark citations ` +
+      `(author, year, journal)\n` +
+      `2. Current guideline recommendations by name and year\n` +
+      `3. Ongoing clinical equipoise or debate\n` +
+      `4. Evidence that changed practice in the last 2-3 years\n` +
+      `${
+        hasMultipleProblems
+          ? "5. A brief section on relevant interactions between the problems " +
+            "(drug interactions, competing management priorities, or " +
+            "contraindications one condition creates for another)\n"
+          : ""
+      }\n` +
+      `Format this as a structured summary I can bring to a teaching session` +
+      `${
+        hasMultipleProblems
+          ? ", with each problem clearly delineated"
+          : ""
+      }.`;
 
     // Hard cap: even after trimming, some prompts could still be huge if
     // there are many problems, topics, and a long clinical note. Log a
