@@ -1306,9 +1306,9 @@ const [customTopics, setCustomTopics] = useState([]);
     other: "Other Source",
   };
   const sourceUrls = {
-    openevidence: "https://www.openevidence.com/",
-    uptodate: "https://www.uptodate.com/contents/search",
-    dynamed: "https://www.dynamed.com/",
+  openevidence: "https://www.openevidence.com/",
+  uptodate: "https://ai.uptodate.com/",
+  dynamed: "https://www.dynamed.com/",
     doxgpt: "https://www.doximity.com/gpt",
     pubmedai: "https://www.pubmed.ai/home",
     other: null,
@@ -2530,6 +2530,65 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
     return cleanTopic ? `Detailed review of ${cleanTopic}` : "Detailed review of this clinical topic";
   };
 
+
+// UpToDate AI aggressively rejects prompts containing identifiable patient
+  // descriptors — even de-identified age, sex, titles, and hospital stubs will
+  // trigger a refusal. This function strips those signals while preserving all
+  // clinically relevant content (meds, doses, labs, procedures, trajectories).
+  const scrubForUpToDate = (text) => {
+    if (!text) return text;
+    let t = text;
+
+    // Strip title + initials patterns produced by our de-identifier
+    // e.g., "Mr. BP is a 57-year-old..." → "57-year-old..."
+    t = t.replace(/\b(Mr|Ms|Mx|Mrs)\.?\s+[A-Z]{1,4}\b/g, "");
+
+    // Strip age references entirely — "57-year-old male", "57-year-old",
+    // "aged 57", "age 57", "in his 50s", "in her 80s"
+    t = t.replace(/\b\d{1,3}[- ]?year[- ]?old\s*(?:male|female|man|woman|patient)?/gi, "");
+    t = t.replace(/\b(?:aged?|age)\s+\d{1,3}\b/gi, "");
+    t = t.replace(/\bin (?:his|her|their) \d{1,2}0s\b/gi, "");
+
+    // Strip sex/gender descriptors that were left behind
+    t = t.replace(/\b(?:male|female)\s+(veteran|patient)\b/gi, "$1");
+
+    // Strip pronoun-heavy sentence starters that read as identifying
+    // ("He receives...", "She was seen by..." → "Receives...", "Was seen by...")
+    t = t.replace(/^\s*(?:He|She|They)\s+/gm, "");
+    t = t.replace(/([.!?]\s+)(He|She|They)\s+/g, "$1");
+
+    // Strip our own placeholder tokens that make it look like PHI-adjacent text
+    // (leftover from de-identification): "NAME", "NAME NAME", "HOSPITAL NAME",
+    // "ADDRESS", "IDENTIFYING NUMBER", "DATE"
+    t = t.replace(/\b(?:HOSPITAL NAME|IDENTIFYING NUMBER|VA ID removed|ID removed|phone removed|address removed|DOB removed|location removed|VA ID)\b/gi, "");
+    t = t.replace(/\bNAME(?:\s+NAME)*\b/g, "");
+    t = t.replace(/\bADDRESS\b/g, "");
+    t = t.replace(/\bDATE\b/g, "");
+    t = t.replace(/\[[^\]]*removed[^\]]*\]/gi, "");
+    t = t.replace(/\[[a-z\s]+removed\]/gi, "");
+
+    // Strip specific facility/care team stubs left after de-identification
+    // ("HOSPITAL NAME via HOSPITAL NAME" → "")
+    t = t.replace(/(?:via|at|from|to|by)\s+HOSPITAL NAME(?:\s+(?:via|at|from|to|by)\s+HOSPITAL NAME)*/gi, "");
+
+    // Strip parenthetical care team members entirely
+    // e.g., "(Sebrell, Physical Therapy)" or "(Lasher, Medicine)"
+    t = t.replace(/\([A-Z][a-z]+(?:,\s*[A-Za-z ]+)?\)/g, "");
+
+    // Strip service-connection %, veteran status descriptors
+    t = t.replace(/\b\d{1,3}%\s+service[- ]connected(?:\s+for[^.]+)?\.?/gi, "");
+    t = t.replace(/\bveteran\b/gi, "patient");
+
+    // Collapse runs of whitespace and orphaned punctuation left by removals
+    t = t.replace(/\s+([,.;:])/g, "$1");
+    t = t.replace(/([,.;:])\s*\1+/g, "$1");
+    t = t.replace(/\s{2,}/g, " ");
+    t = t.replace(/\n{3,}/g, "\n\n");
+    t = t.replace(/^\s*[.,;:]+\s*/gm, "");
+
+    return t.trim();
+  };
+
   // ===== Source prompt generator =====
   // External AI research tools (UpToDate, OpenEvidence, DynaMed, DoxGPT) have
   // input character limits (UpToDate caps around 10K). The old prompt dumped
@@ -2564,6 +2623,98 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
 
     const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
     const focusText = activeFocus.map(f => focusLabels[f]).join(", ");
+    // ============ UPTODATE SPECIAL CASE ============
+    // UpToDate AI is far more sensitive to patient-descriptor language than the
+    // other sources. Build a stripped-down, aggressively-scrubbed prompt.
+    if (source === "uptodate") {
+      const UPTODATE_CAP = 6500; // Much tighter than 9500 — UpToDate rejects long prompts
+
+      const problemsLineUtd = selectedProblems.length > 0
+        ? `Problems to focus on: ${selectedProblems.join(", ")}`
+        : (workingDx ? `Problem to focus on: ${workingDx.replace(/\b(Mr|Ms|Mx|Mrs)\.?\s+[A-Z]{1,4}\b/g, "").trim()}` : "");
+      const topicsLineUtd = extractedTopics.length > 0
+        ? `Key clinical topics: ${extractedTopics.join(", ")}` : "";
+      const focusLineUtd = `I want to focus today's teaching on: ${focusText}.`;
+      const isMulti = selectedProblems.length > 1;
+
+      // Build patient context — pull sections but scrub aggressively before use
+      let patientContextUtd = "";
+      if (clinicalNote) {
+        const sections = sessionMode === "pre" ? extractPrenoteSections(clinicalNote) : {};
+        const contextParts = [];
+
+        if (sessionMode === "pre") {
+          const whatToKnow = getSection(sections, "WHAT TO KNOW ABOUT", "PATIENT SUMMARY", "SUMMARY");
+          if (whatToKnow) contextParts.push(`Patient summary:\n${scrubForUpToDate(whatToKnow)}`);
+
+          const pastMedHx = getSection(sections, "PAST MEDICAL HISTORY", "PMH");
+          if (pastMedHx) {
+            // Cap each problem's PMH detail so we stay under UpToDate's limit
+            const scrubbed = scrubForUpToDate(pastMedHx);
+            const capped = scrubbed.length > 2400 ? scrubbed.slice(0, 2400) + "..." : scrubbed;
+            contextParts.push(`Per-problem context from PMH:\n${capped}`);
+          }
+
+          const labStudies = getSection(sections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS", "RECENT LABS SUMMARY", "RECENT LABS");
+          if (labStudies) {
+            const scrubbed = scrubForUpToDate(labStudies);
+            const capped = scrubbed.length > 800 ? scrubbed.slice(0, 800) + "..." : scrubbed;
+            contextParts.push(`Recent labs:\n${capped}`);
+          }
+
+          const updates = getSection(sections, "UPDATES / RECENT VISITS", "UPDATES", "RECENT VISITS");
+          if (updates) {
+            const scrubbed = scrubForUpToDate(updates);
+            const capped = scrubbed.length > 600 ? scrubbed.slice(0, 600) + "..." : scrubbed;
+            contextParts.push(`Recent visit updates:\n${capped}`);
+          }
+        } else {
+          // Post-visit: essential note only, scrubbed
+          const essential = extractEssentialNote(clinicalNote);
+          const scrubbed = scrubForUpToDate(essential);
+          const capped = scrubbed.length > 2500 ? scrubbed.slice(0, 2500) + "..." : scrubbed;
+          contextParts.push(`Clinical context:\n${capped}`);
+        }
+
+        if (contextParts.length > 0) {
+          patientContextUtd = contextParts.join("\n\n");
+        }
+      }
+
+      // Assemble the UpToDate-specific prompt with minimal framing
+      let prompt = `Context: I am a teaching attending in internal medicine. My student is a medical student.\n\n`;
+
+      if (chiefConcern) {
+        // Also scrub the chief concern of titles/ages
+        prompt += `${scrubForUpToDate(chiefConcern)}\n\n`;
+      }
+
+      if (isMulti) {
+        prompt += `This is a MULTI-PROBLEM teaching case. Today's teaching must address ALL of the following ${selectedProblems.length} problems with EQUAL depth and attention — do not focus disproportionately on any one condition:\n\n${problemsLineUtd}\n\nCRITICAL: Organize your response so each of the ${selectedProblems.length} problems above receives its own dedicated section with the same level of evidence, guidelines, and clinical detail. Do not treat any problem as secondary or as merely "context" for another. The interactions BETWEEN these problems (e.g., how one condition affects management of another) are also teaching-worthy and should be addressed explicitly.\n\n`;
+      } else if (problemsLineUtd) {
+        prompt += `${problemsLineUtd}\n\n`;
+      }
+
+      if (topicsLineUtd) prompt += `${topicsLineUtd}\n\n`;
+      if (patientContextUtd) prompt += `${patientContextUtd}\n\n`;
+
+      prompt += `${focusLineUtd}\n\n`;
+
+      if (isMulti) {
+        prompt += `REMINDER: Structure your response with clear sections for each of the ${selectedProblems.length} problems listed above. Each problem deserves complete evidence-based coverage.\n\n`;
+      }
+
+      prompt += `Provide evidence-based teaching content${isMulti ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. Current UpToDate approach for each focus area\n2. Grade of Recommendation where UpToDate provides one\n3. When to escalate or refer\n4. Patient-centered talking points${isMulti ? "\n5. Brief section on interactions between the problems (drug interactions, competing priorities, contraindications one condition creates for another)" : ""}`;
+
+      // Enforce UpToDate's stricter cap
+      if (prompt.length > UPTODATE_CAP) {
+        console.warn(`[generateSourcePrompt] UpToDate prompt is ${prompt.length} chars — trimming to ${UPTODATE_CAP}.`);
+        prompt = prompt.slice(0, UPTODATE_CAP - 100) + "\n\n[Note: context truncated to fit UpToDate's character limit.]";
+      }
+
+      return prompt;
+    }
+    // ============ END UPTODATE SPECIAL CASE ============
     const dxLine = workingDx ? `Working diagnosis: ${workingDx}.` : "";
     const ccLine = chiefConcern ? `Focus: ${chiefConcern}.` : "";
     const problemsLine = selectedProblems.length > 0 ? `\nSpecific problems to focus on: ${selectedProblems.join("; ")}.` : "";
@@ -2653,9 +2804,6 @@ ${hasMultipleProblems ? `REMINDER: Structure your response with clear sections f
       case "openevidence":
   prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
   break;
-      case "uptodate":
-  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
-        break;
       case "dynamed":
   prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
         break;
