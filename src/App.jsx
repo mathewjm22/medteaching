@@ -443,15 +443,13 @@ export default function App() {
   const [deidPreview, setDeidPreview] = useState(null);
   const [showDeidReviewer, setShowDeidReviewer] = useState(false);
 
-  // In-room document interaction state (pre-visit mode only).
-  // inRoomChecks: { [checklistItemId]: boolean } — which checklist items the student
-  //   has ticked off during the visit. Persists per-session so it survives reload.
-  //   Data shape is ready for future post-visit merge feature to summarize
-  //   what was covered vs. missed.
-  // inRoomScratchpad: free-text notes the student types during the visit.
-  //   Also persists per-session.
-  const [inRoomChecks, setInRoomChecks] = useState({});
-  const [inRoomScratchpad, setInRoomScratchpad] = useState("");
+  // NOTE: In-room checkbox and scratchpad state are intentionally NOT stored here.
+  // The in-room document is a PREP ARTIFACT for the student, not a tracking tool
+  // for the attending. Interactive elements exist for the student's convenience
+  // when using the doc, but the attending's app doesn't record or persist them.
+  // In the attending's preview: state is ephemeral (local to the InRoomDocument
+  // component, resets on navigation). In the student's exported HTML: state
+  // persists in the STUDENT's browser localStorage only.
 
   // Cap on how many sessions we keep in storage. Prevents localStorage overflow.
   // Oldest sessions get pruned when a new one would push us over.
@@ -502,6 +500,17 @@ export default function App() {
     management: false, patientContext: false, ebm: false, communication: false,
   });
   const [aiSuggestedFocus, setAiSuggestedFocus] = useState(null);
+
+  // Pre-visit learning content emphasis. Shapes the AI prompt for what KIND of
+  // learning content to generate about the patient's diagnoses.
+  //   "auto"        — phase-recommended (foundational→diagnosis, mid→workup, end→management)
+  //   "diagnosis"   — why is this the diagnosis? what pointed here?
+  //   "workup"      — why these tests? what were they ruling in/out?
+  //   "management"  — why this treatment? evidence? alternatives? monitoring?
+  //   "mixed"       — balanced across all three
+  // Only affects pre-visit mode; ignored in post-visit.
+  const [previsitEmphasis, setPrevisitEmphasis] = useState("auto");
+
 const [customTopics, setCustomTopics] = useState([]);
   const [newCustomTopic, setNewCustomTopic] = useState("");
   // Sources
@@ -709,6 +718,7 @@ const [customTopics, setCustomTopics] = useState([]);
       if (inProgress.sessionTitle) setSessionTitle(inProgress.sessionTitle);
       setSessionMode(inProgress.sessionMode || "post"); // legacy sessions default to post
       setLinkedSessionId(inProgress.linkedSessionId || null);
+      setPrevisitEmphasis(inProgress.previsitEmphasis || "auto");
       setClinicalNote(inProgress.clinicalNote || "");
       setChiefConcern(inProgress.chiefConcern || "");
       setWorkingDx(inProgress.workingDx || "");
@@ -749,16 +759,12 @@ const [customTopics, setCustomTopics] = useState([]);
       setGeneratedDoc(gen.generatedDoc || null);
       setPreviewData(gen.previewData || null);
       setGenerationAttempts(gen.generationAttempts || { synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
-      setInRoomChecks(gen.inRoomChecks || {});
-      setInRoomScratchpad(gen.inRoomScratchpad || "");
     } else {
       setAiTeachingContent(null);
       setSynthesizedEvidence(null);
       setGeneratedDoc(null);
       setPreviewData(null);
       setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
-      setInRoomChecks({});
-      setInRoomScratchpad("");
     }
 
     setActiveSessionId(sessionId);
@@ -811,12 +817,13 @@ const [customTopics, setCustomTopics] = useState([]);
       sessionTitle,
       sessionMode,
       linkedSessionId,
+      previsitEmphasis,
       clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
       activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
       focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
     });
     updateSessionIndexEntry();
-  }, [hasRestored, activeSessionId, sessionTitle, sessionMode, linkedSessionId, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
+  }, [hasRestored, activeSessionId, sessionTitle, sessionMode, linkedSessionId, previsitEmphasis, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
       activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
       focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled, debouncedSave, updateSessionIndexEntry]);
 
@@ -844,11 +851,9 @@ const [customTopics, setCustomTopics] = useState([]);
     if (!hasRestored || !activeSessionId) return;
     debouncedSave(`session:${activeSessionId}:generated`, {
       aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts,
-      inRoomChecks, inRoomScratchpad,
     });
     updateSessionIndexEntry();
-  }, [hasRestored, activeSessionId, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, inRoomChecks, inRoomScratchpad, debouncedSave, updateSessionIndexEntry]);
-
+  }, [hasRestored, activeSessionId, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, debouncedSave, updateSessionIndexEntry]);
 
   // Reset all editor state to blank defaults (without touching storage).
   // Used by both "start new session" (which then creates a new session ID)
@@ -857,6 +862,7 @@ const [customTopics, setCustomTopics] = useState([]);
     setSessionTitle("");
     setSessionMode("post");
     setLinkedSessionId(null);
+    setPrevisitEmphasis("auto");
     setRawPrenote("");
     setDeidPreview(null);
     setShowDeidReviewer(false);
@@ -889,8 +895,6 @@ const [customTopics, setCustomTopics] = useState([]);
     setPreviewData(null);
     setPreviewMode(false);
     setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
-    setInRoomChecks({});
-    setInRoomScratchpad("");
     setRestoredSession(null);
   };
 
@@ -973,6 +977,18 @@ const [customTopics, setCustomTopics] = useState([]);
     };
   };
   const phase = getPhase();
+
+  // Recommended pre-visit learning emphasis based on where the student is in the year.
+  //   Foundational (months 0-4): Focus on diagnostic reasoning — why this diagnosis? what pointed here?
+  //   Mid-year (months 5-8):     Focus on workup — why these tests? what were they ruling in/out?
+  //   End-of-year (months 9+):   Focus on management — why this treatment? evidence? alternatives?
+  const getRecommendedEmphasis = () => {
+    if (phase.monthsIn <= 4) return "diagnosis";
+    if (phase.monthsIn <= 8) return "workup";
+    return "management";
+  };
+  const recommendedEmphasis = getRecommendedEmphasis();
+  const effectiveEmphasis = previsitEmphasis === "auto" ? recommendedEmphasis : previsitEmphasis;
 
   const mepoMap = {
     history: "MEPO Patient Care #6 (History) + ICS #16 (Written Documentation)",
@@ -1845,18 +1861,72 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
 
 const isPreVisit = sessionMode === "pre";
 
-const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student ${isPreVisit ? "BEFORE a patient visit you're both about to do together." : "about a patient you saw together today."}
+// Pre-visit emphasis lens — shapes what KIND of learning content to generate.
+// The attending picks a lens in Step 3, or "auto" which uses phase-recommended.
+const emphasisGuidance = {
+  diagnosis: `LEARNING CONTENT EMPHASIS: DIAGNOSTIC REASONING.
+
+Focus the learning content on WHY this is the diagnosis for this patient. Frame everything around: what features on history, exam, and labs pointed to this diagnosis? What was the differential and how was it narrowed? What patterns did the diagnosing team recognize?
+
+For each diagnosis in the chart:
+- The illness script should emphasize the diagnostic features that fit (and don't fit) this patient
+- The differential should be substantive — 3-5 alternatives with real reasoning for why each was considered and how it was ruled in or out for THIS patient
+- keyLearningPoints should teach diagnostic-reasoning concepts: how to recognize this pattern, what distinguishes it from lookalikes, what would push you toward a different diagnosis
+- focusedHistoryQuestions should be diagnostic-focused: questions that would confirm or refute the diagnosis
+- physicalExam should focus on maneuvers that discriminate this diagnosis from alternatives
+- keyLabsAndImaging should emphasize what each test tells you diagnostically (sensitivity, specificity, when to order)
+- treatmentApproach: keep brief — this lens is about the diagnostic story, not the treatment story
+- clinicalPearl: frame around a diagnostic insight ("The thing to remember about diagnosing X is...")`,
+
+  workup: `LEARNING CONTENT EMPHASIS: WORKUP AND EVALUATION.
+
+Focus the learning content on WHY the workup for this patient's diagnoses looks the way it does. Frame everything around: what tests were ordered and why, what were they ruling in or out, what did the results mean, what would trigger additional testing?
+
+For each diagnosis in the chart:
+- The illness script should note the classic workup pattern
+- differential should exist but be brief — this lens is about workup, not diagnostic reasoning
+- keyLearningPoints should teach workup concepts: why order this test now vs. later, what to do with abnormal results, when initial testing warrants escalation
+- focusedHistoryQuestions should focus on history elements that inform test selection or interpretation
+- physicalExam should focus on findings that would change test ordering
+- keyLabsAndImaging is the STAR of this lens: explain each test's role in this diagnosis specifically — why it was ordered, what a positive/negative result means, how it changes the plan, what to order next based on the result
+- treatmentApproach: emphasize the connection between workup findings and treatment choice
+- clinicalPearl: frame around a workup insight ("The key thing about working up X is...")`,
+
+  management: `LEARNING CONTENT EMPHASIS: MANAGEMENT.
+
+Focus the learning content on WHY this patient's treatment plan is what it is. Frame everything around: why this drug, why this dose, why this monitoring plan, what alternatives existed, what evidence supports the choice, what to watch for on treatment.
+
+For each diagnosis in the chart:
+- The illness script should be brief — this lens assumes the student can recognize the diagnosis
+- differential: brief, only as it affects treatment differentiation (e.g., subtypes that get treated differently)
+- keyLearningPoints should teach management concepts: guideline-recommended first-line therapy, why THIS patient got the treatment they got (consider comorbidities, contraindications, preferences), when to escalate, when to switch, side effects to monitor
+- focusedHistoryQuestions should focus on treatment tolerance, adherence, side effects
+- physicalExam should focus on findings that would change management (BP for HTN meds, tremor for thyroid meds, etc.)
+- keyLabsAndImaging should emphasize monitoring labs — what to check on treatment and why
+- treatmentApproach is the STAR of this lens: detailed first-line with dosing, real citation, and clear explanation of WHY this fits this patient. Additional considerations should include monitoring plan, common adverse effects, patient-specific tradeoffs
+- clinicalPearl: frame around a management insight ("The nuance in managing X is...")`,
+
+  mixed: `LEARNING CONTENT EMPHASIS: BALANCED (diagnosis + workup + management).
+
+Cover all three lenses in balance. For each diagnosis: explain the diagnostic reasoning, then the workup, then the management. Learning points should span the three domains rather than being weighted toward one.`,
+};
+
+const sys = `You are a warm, engaged teaching attending in internal medicine writing a personalized learning document for YOUR medical student ${isPreVisit ? "BEFORE a patient visit you're both about to do together. The student will read this to PREPARE for the visit — to understand why this patient's chart looks the way it does." : "about a patient you saw together today."}
+
+${isPreVisit ? emphasisGuidance[effectiveEmphasis] || emphasisGuidance.mixed : ""}
 
 DOCUMENT PURPOSE: ${isPreVisit ? "PRE-VISIT PREP" : "POST-VISIT DEBRIEF"}
 ${isPreVisit
-  ? `This is a PREP DOCUMENT for a visit that has not happened yet. The student will read this BEFORE going into the room. Everything must be framed as ANTICIPATORY — what to think about, what to ask, what to look for, what to be ready to discuss with the patient.
+  ? `This is a PREP DOCUMENT for a visit that has not happened yet. The student's job before reading this: get up to speed on why this patient's chart looks the way it does. The student's job after reading this: walk into the visit understanding the patient's medical story so they can have an intelligent conversation with the patient and present intelligently to the attending.
 
-Voice rules for pre-visit mode:
-- Write in the future/anticipatory tense: "Before you go in, think about...", "When you take the history, focus on...", "If she reports X, that would push you toward..."
-- Do NOT write "our patient today" as if the visit already happened. The visit is UPCOMING.
-- Reference chart facts (her longstanding hypothyroidism, her recent labs, her medication list) but frame them as "what you know going in" not "what you observed."
-- Anchor teaching to what the student can actively PRACTICE in this specific upcoming encounter given the chart context.
-- If the chart shows a trajectory (labs improving/worsening, med dose changes, missed appointments), name the pattern and tell the student what to look for that would confirm or refute the trajectory continuing.`
+The learning content is NOT anticipatory checklists ("ask about X"). Those live elsewhere in the document. The learning content IS explanatory: "the patient is on levothyroxine 175 + liothyronine 5 because of [reasoning]. Here's why that specific combination, here's what alternatives exist, here's what to know about it."
+
+Voice rules for pre-visit prep content:
+- Explain the WHY behind the patient's current care. Every teaching point should connect a specific chart fact to the reasoning that produced it.
+- Reference chart facts (the specific meds, the specific labs, the specific procedures they've had, the trajectory of their disease) and unpack why those facts exist.
+- The student is preparing — they should come away thinking "now I understand why this patient is on X and had Y test done."
+- It is fine to acknowledge unknowns and open questions ("we don't know from the chart whether they've had a discussion about Z, but you'll want to be ready to explain it if it comes up").
+- Match the emphasis lens above — the shape of the learning content follows that lens.`
   : `This is a DEBRIEF DOCUMENT for a visit that has already happened. Frame everything retrospectively — what was observed, what was decided, what to learn from what you saw together.`
 }
 
@@ -1898,13 +1968,13 @@ ${shelfDifficulty}
 The three shelfQuestions you generate MUST match this difficulty level. Do not write generic-difficulty questions and hope they land — the shelf questions are one of the most useful outputs of this document, and mis-calibrated questions either bore the student (too easy) or discourage them (too hard). If in doubt, err slightly toward the harder end within the specified band.${lensGuidance[teachingLens]}
 
 VOICE AND TONE (CRITICAL):
-${isPreVisit ? `- Write directly TO the student in second person, but ANTICIPATORY: "Before you go in, think about...", "When you take her history, ask about...", "If her BP is X, that changes...", "You'll want to be ready to..."
-- Reference specifics from the chart — her age range, her longstanding problems, her medications, her recent labs, her missed appointments — as "what you know going in."
-- Every learning point should START with something specific about what you know from the chart, THEN pivot to what the student should think about or do in the upcoming visit.
-- Sound like a thoughtful attending huddling with the student before rounds, not a textbook chapter.
-- Include anticipatory reasoning ("I'll want to know if she's actually taking her levothyroxine because her TSH pattern suggests possible non-adherence rather than dose failure — so listen carefully to how she describes her morning routine").
-- When the chart shows a trajectory or a concerning trend, name it explicitly and tell the student what to look for that would confirm or refute it.
-- Reference her life context and social situation from the chart when relevant, but frame it as "what to be aware of going in" not "what she told us."` : `- Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
+${isPreVisit ? `- Write directly TO the student in second person, EXPLAINING and TEACHING: "This patient is on X because...", "The reason they had this workup was...", "When you see [pattern] in a patient like this, it means..."
+- Reference specifics from the chart — the meds, the labs, the trajectory, the procedures — and unpack each one. Every learning point starts with a specific chart fact and explains it.
+- Sound like a thoughtful attending walking the student through the patient's story the night before the visit — patient, unhurried, focused on understanding.
+- Include the REASONING behind each piece of care: "They chose combination T4+T3 despite guidelines favoring T4 monotherapy because [reasoning]. The tradeoff is [X]. This is worth knowing because [Y]."
+- When the chart shows a trajectory (labs trending, med dose changes, procedures over time), narrate the story: what happened, why, what it means now.
+- Do NOT write anticipatory checklist prose ("you should ask about X") — that content lives in other parts of the document. The learning content is EXPLANATORY prose about the patient's medical story.
+- The student should finish reading and feel like they understand this patient's chart the way a resident who's known them would.` : `- Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
 - Reference the specific patient by their pronoun and clinical story throughout — not "the patient" abstractly, but "our patient today with her 45-lb weight loss on Zepbound and 6-month lapse in levothyroxine"
 - Every learning point should START with what you observed together in this specific encounter, THEN pivot to the teaching principle
 - Sound like a thoughtful attending debriefing a case over coffee, not a textbook chapter
@@ -1929,15 +1999,18 @@ When a claim in the structured evidence has a figure reference like [refs: fig-o
 
 If the structured evidence contains a "conflict" claim, address it explicitly in your teaching as a clinical equipoise teaching opportunity — cite BOTH real references that disagree.
 
-EXAMPLES OF GOOD vs. BAD VOICE AND CITATIONS:
-${isPreVisit ? `- BAD (textbook + tool citation): "TSH >10 indicates severe hypothyroidism requiring treatment (per OpenEvidence)."
-- GOOD (attending prep + real citation): "You'll see in her chart that her TSH was 15 two years ago, dropped to 5.78 after a dose change, and is now 2.74. That's the pattern of a patient whose thyroid axis is finally in range — but the question I want you to hold going in is: is she stable, or drifting? Ask specifically about her morning routine and whether she's taking the levothyroxine on an empty stomach (ATA 2014 guidelines)."
+EXAMPLES OF GOOD vs. BAD PRE-VISIT PREP CONTENT:
+${isPreVisit ? `- BAD (checklist framing — belongs elsewhere in the doc, NOT in learning content): "Before you go in, ask her about her morning routine and whether she takes the levothyroxine on an empty stomach."
 
-- BAD: "Menorrhagia can be caused by hypothyroidism (OpenEvidence and DoxGPT)."
-- GOOD (pre-visit): "Her chart flags her menorrhagia workup as pending a GYN referral. Before you assume that's the right call, remember: uncontrolled hypothyroidism is one of the most common reversible causes of menorrhagia. Given her TSH history, I want you to ask her about her bleeding pattern in relation to her thyroid dose changes — the timing may tell us whether her thyroid needs more attention before we send her to GYN (ACOG Practice Bulletin 128; ATA 2014)."
+- GOOD (explanatory prep content): "This patient's thyroid story is complex — she had a total thyroidectomy in 2013 for papillary cancer, and she's been on TSH-suppressive doses ever since to prevent recurrence. Her current regimen is levothyroxine 175 mcg plus liothyronine 5 mcg daily. That combination is unusual — the ATA 2014 guidelines recommend levothyroxine monotherapy for most thyroid cancer survivors, but a subset of patients report better symptom control on combination therapy. Her chart notes she requested T3 in Feb 2026 for persistent fatigue despite normal T4, which is the typical clinical scenario that leads endocrinologists to add liothyronine even when the evidence base is limited (ATA 2014 guidelines; Wiersinga et al., Nat Rev Endocrinol 2019)."
 
-- BAD: "The patient should be counseled on adherence (per OpenEvidence)."
-- GOOD (pre-visit): "Her chart shows a pattern of missed refills that has previously been documented as adherence issues, but the record also notes a name mismatch on refill records. Before you assume non-adherence, plan to ask 'have you been able to get your medications?' rather than 'are you taking them?' — that phrasing surfaces system-level barriers rather than assigning blame (VA/DoD Clinical Practice Guidelines 2022)."` : `- BAD (textbook + tool citation): "TSH >10 indicates severe hypothyroidism requiring treatment (per OpenEvidence)."
+- BAD (checklist framing): "Screen for medication adherence."
+
+- GOOD (explanatory prep content): "You'll see her TSH trajectory in the chart is unusual: 9.99 in Dec 2025, then 0.06 in Feb 2026 after her dose was pushed up, now 0.01 in April 2026. That's the story of a patient whose dose was under-titrated for a year, then pushed into suppression once the cancer surveillance ultrasound raised concern for recurrence. The suppression target for intermediate-risk patients like her is TSH 0.1–0.5 per ATA — she's currently below that. That's why the endocrinologist reduced her from 224 to 175 mcg in May 2026. Understanding this trajectory matters because if her TSH is still very suppressed today, you're looking at a decision point about whether to reduce further (ATA 2014 guidelines)."
+
+- BAD (textbook regurgitation): "Papillary thyroid cancer often metastasizes to cervical lymph nodes."
+
+- GOOD (patient-specific explanation): "Her Feb 2026 neck ultrasound flagged multiple left cervical lymph nodes with suspicious features — rounded shape, loss of fatty hilum, microcalcifications. Those are the ultrasound features specific for metastatic papillary thyroid cancer (as opposed to reactive nodes, which are elongated, have preserved fatty hila, and lack microcalcifications). That's why endocrinology ordered the CT neck and would have proceeded to FNA with thyroglobulin washing if the CT confirmed pathologic nodes. When the CT read as 'lymph nodes present but do not appear pathologic' AND her thyroglobulin came back undetectable, that combination reassured them that this is likely NOT structural recurrence — but it's why she's on TSH suppression and why they're monitoring closely (ATA 2015 guidelines for management of thyroid nodules and differentiated thyroid cancer)."` : `- BAD (textbook + tool citation): "TSH >10 indicates severe hypothyroidism requiring treatment (per OpenEvidence)."
 - GOOD (attending + real citation): "Our patient's TSH of 13.8 after six months off her levothyroxine tells us just how quickly the thyroid axis decompensates — she's essentially back to where she started at diagnosis. This is why I emphasized to her that adherence matters more than dose adjustments right now (ATA 2014 guidelines)."
 
 - BAD: "Menorrhagia can be caused by hypothyroidism (OpenEvidence and DoxGPT)."
@@ -1982,7 +2055,7 @@ Additionally include ONLY these focus-driven optional subsections based on what 
 Provide substantive teaching content — 2-3 sentences per learning point, thorough differential reasoning tied to case features, complete treatment rationale, and detailed shelf question explanations.
 
 REMEMBER: ${isPreVisit
-  ? "This student is about to walk into a room with you to see this patient. Write like you're huddling with them BEFORE the visit — anticipating what to look for, what to ask, what might come up. Reference specifics from the chart (history, labs, medications, trajectories) as much as possible, but always in an anticipatory frame."
+  ? "This student is reading this to PREPARE for a visit tomorrow. Write to help them UNDERSTAND why this patient's chart looks the way it does — every med, every workup, every trajectory has a story. Explain those stories. Ground everything in the specific chart facts, not textbook generalities. When the student walks in tomorrow, they should be able to say 'I understand why this patient is on this treatment' — that is the point of the learning content."
   : "This student was IN the room with you for this encounter. Write like you're reflecting on the visit with them afterward, not writing a UWorld question. Reference specifics from the note — the patient's history, quotes, labs, medications, decisions you made — as much as possible."
 }`;
       const user = `Focus ${isTangential ? "TANGENTIAL topic" : "PATIENT DIAGNOSIS"} for this teaching case: ${problem}
@@ -2365,6 +2438,7 @@ I want to focus today's teaching on: ${focusText}.
         sessionTitle,
         sessionMode,
         linkedSessionId,
+        previsitEmphasis,
         clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
         activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
         focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
@@ -2373,7 +2447,7 @@ I want to focus today's teaching on: ${focusText}.
       [`session:${activeSessionId}:pdfs`, pdfAttachments],
       [`session:${activeSessionId}:images`, imageAttachments],
       [`session:${activeSessionId}:imageBytes`, sessionImageBytes],
-      [`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, inRoomChecks, inRoomScratchpad }],
+      [[`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
     ];
 
     try {
@@ -4278,6 +4352,47 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
               <input type="text" value={sessionGoal} onChange={e => setSessionGoal(e.target.value)} placeholder="e.g., Build an illness script for iatrogenic bradycardia and defend a deprescribing plan" className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
             </div>
 
+            {/* Pre-visit only: learning content emphasis */}
+            {sessionMode === "pre" && (
+              <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-3">
+                <div>
+                  <h3 className="font-semibold text-slate-900 mb-1">Learning content emphasis</h3>
+                  <p className="text-sm text-slate-500">
+                    Shapes the AI-generated learning content about the patient's diagnoses. Auto matches the student's phase in the year; override if you want a different lens.
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-2">
+                  {[
+                    { key: "auto", label: "Auto (phase-recommended)", desc: `Recommends "${recommendedEmphasis}" based on month ${phase.monthsIn + 1} of LIC` },
+                    { key: "diagnosis", label: "Diagnostic reasoning", desc: "Why is this the diagnosis? What pointed here?" },
+                    { key: "workup", label: "Workup", desc: "Why these tests? What were they ruling in/out?" },
+                    { key: "management", label: "Management", desc: "Why this treatment? Evidence? Alternatives?" },
+                    { key: "mixed", label: "Mixed", desc: "Balanced across diagnosis, workup, and management" },
+                  ].map(opt => (
+                    <button
+                      key={opt.key}
+                      onClick={() => setPrevisitEmphasis(opt.key)}
+                      className={`text-left p-3 rounded-lg border-2 transition ${
+                        previsitEmphasis === opt.key
+                          ? "border-indigo-500 bg-indigo-50"
+                          : "border-slate-200 bg-white hover:border-slate-300"
+                      }`}
+                    >
+                      <div className={`text-sm font-semibold ${previsitEmphasis === opt.key ? "text-indigo-900" : "text-slate-900"}`}>
+                        {opt.label}
+                      </div>
+                      <div className="text-xs text-slate-500 mt-0.5 leading-snug">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+                {previsitEmphasis === "auto" && (
+                  <div className="text-xs text-slate-500 italic bg-slate-50 border border-slate-200 rounded p-2">
+                    Currently using <strong className="not-italic">{recommendedEmphasis}</strong> emphasis for this student (month {phase.monthsIn + 1} of LIC · {phase.name}).
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
               <div className="flex items-start justify-between flex-wrap gap-2">
                 <div>
@@ -5072,14 +5187,13 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
               />
             ) : sessionMode === "pre" ? (
               // ============ IN-ROOM DOCUMENT (pre-visit) ============
+              // The attending's preview is ephemeral — no state persistence.
+              // The exported HTML has its own localStorage-backed persistence
+              // for the STUDENT's use only.
               <InRoomDocument
                 doc={generatedDoc || previewData}
                 phase={phase}
                 session={session}
-                checks={inRoomChecks}
-                onCheck={setInRoomChecks}
-                scratchpad={inRoomScratchpad}
-                onScratchpad={setInRoomScratchpad}
                 onEdit={() => { setPreviewMode(true); }}
                 onPrint={printDoc}
               />
@@ -5904,9 +6018,15 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 //   4. Medication list with review flags
 //   5. Full teaching material (moved to bottom — after-visit reading)
 // Plus a floating scratchpad on the right (hidden on print).
-function InRoomDocument({ doc, phase, session, checks, onCheck, scratchpad, onScratchpad, onEdit, onPrint }) {
+function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
+  // In-room interactive state is EPHEMERAL in the attending's preview.
+  // Checkboxes and scratchpad exist so the attending can see what the student
+  // will see, but nothing persists — this is a prep artifact for the student,
+  // not a data-collection tool for the attending.
+  const [checks, onCheck] = React.useState({});
+  const [scratchpad, onScratchpad] = React.useState("");
   const [scratchpadCollapsed, setScratchpadCollapsed] = React.useState(false);
-  const [expandedTeaching, setExpandedTeaching] = React.useState({}); // per-case teaching collapse
+  const [expandedTeaching, setExpandedTeaching] = React.useState({});
 
   if (!doc) return null;
   const s = doc.sections || {};
@@ -6765,43 +6885,6 @@ function InRoomDocument({ doc, phase, session, checks, onCheck, scratchpad, onSc
         // Print
         var printBtn = document.getElementById('btn-print');
         if (printBtn) printBtn.addEventListener('click', function() { window.print(); });
-
-        // Copy state to clipboard — for sending progress back to the attending
-        var copyBtn = document.getElementById('btn-copy-state');
-        var statusEl = document.getElementById('action-status');
-        if (copyBtn) {
-          copyBtn.addEventListener('click', function() {
-            var state = {};
-            document.querySelectorAll('input[type="checkbox"][data-check-id]').forEach(function(box) {
-              if (box.checked) {
-                var label = box.closest('.checklist-item').querySelector('.item-label').textContent;
-                state[box.dataset.checkId] = { checked: true, label: label };
-              }
-            });
-            var report = 'Pre-visit reference — progress report\\n';
-            report += 'Session: ${escapeHtml(doc.sessionTitle || "")}\\n';
-            report += 'Date: ' + new Date().toLocaleString() + '\\n\\n';
-            report += 'Items completed:\\n';
-            Object.keys(state).forEach(function(id) {
-              report += '  ✓ ' + state[id].label + '\\n';
-            });
-            report += '\\nScratchpad notes:\\n';
-            report += (scratchpad ? scratchpad.value : '(empty)') + '\\n';
-
-            navigator.clipboard.writeText(report).then(function() {
-              if (statusEl) {
-                statusEl.textContent = '✓ Progress copied to clipboard — paste into email or message';
-                statusEl.classList.add('success');
-                setTimeout(function() {
-                  statusEl.textContent = '';
-                  statusEl.classList.remove('success');
-                }, 4000);
-              }
-            }).catch(function() {
-              if (statusEl) statusEl.textContent = '⚠ Clipboard copy failed — check browser permissions';
-            });
-          });
-        }
       })();
     `;
 
@@ -6816,8 +6899,6 @@ function InRoomDocument({ doc, phase, session, checks, onCheck, scratchpad, onSc
 <body>
   <div class="action-bar no-print">
     <button id="btn-print" class="action-btn primary">🖨 Print / Save as PDF</button>
-    <button id="btn-copy-state" class="action-btn secondary">📋 Copy progress for attending</button>
-    <span id="action-status" class="action-status"></span>
   </div>
   <div class="container">
     <div class="doc">
@@ -6876,9 +6957,6 @@ function InRoomDocument({ doc, phase, session, checks, onCheck, scratchpad, onSc
       </label>
     );
   };
-
-  const checkedCount = Object.values(checks).filter(Boolean).length;
-  const totalChecks = Object.keys(checks).length;
 
   return (
     <>
@@ -7041,13 +7119,8 @@ function InRoomDocument({ doc, phase, session, checks, onCheck, scratchpad, onSc
           <span className="sm:hidden">← Preview</span>
         </button>
         <div className="text-xs text-slate-500 italic ml-2 hidden lg:block">
-          Interactive HTML for student's laptop · PDF for clinic printout
+          Preview only · export to give to student · your clicks here don't save
         </div>
-        {totalChecks > 0 && (
-          <div className="ml-auto text-xs bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-1 rounded font-medium">
-            {checkedCount} of {totalChecks} items done
-          </div>
-        )}
       </div>
 
       {/* Split: main content left, floating scratchpad right */}
