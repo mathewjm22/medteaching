@@ -2314,7 +2314,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
   "keyLabsAndImaging": [{"study": "name", "purpose": "${isPreVisit ? "why you might order it — or, if the chart shows it's already been done, what to look for in the result" : "why I ordered/would order it for OUR patient"}", "interpretation": "${isPreVisit ? "what the actual (or expected) result means clinically" : "what her actual result (or what a hypothetical result) would mean in her clinical context"}", "role": "${isPreVisit ? "how the result should change your plan" : "how it changes management for HER"}"}],
-  "treatmentApproach": {"firstLine": [{"treatment": "name", "dosing": "dose/route/frequency", "evidence": "real trial/guideline citation — plus 1 sentence explaining WHY this ${isPreVisit ? "would fit this patient given what the chart shows" : "fits our patient"}", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations to bring up in the visit" : "patient-specific considerations, not generic bullet points"}"]},
+"treatmentApproach": {"firstLine": [{"treatment": "medication or intervention NAME ONLY — do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', 'Consider'. Just the drug/intervention name (e.g., 'Hydrocodone/acetaminophen', 'Intra-articular corticosteroid injection', 'Neuromuscular physiotherapy'). The rendering context makes the action clear.", "dosing": "dose/route/frequency", ...
   "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
   "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
   "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
@@ -7707,8 +7707,9 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
           if (!chartBlock?.currentMeds && c.treatmentApproach?.firstLine?.length > 0) {
             bodyHtml += `<ul style="padding-left:1.25rem;font-size:0.87rem;">`;
             c.treatmentApproach.firstLine.forEach(t => {
-              bodyHtml += `<li><strong>${escapeHtml(t.treatment)}</strong>${t.dosing ? ` — ${escapeHtml(t.dosing)}` : ""}</li>`;
-            });
+  const cleanTreatment = String(t.treatment || "").replace(/^(Continue|Start|Initiate|Add|Consider|Prescribe|Begin|Maintain|Discontinue|Stop|Hold|Resume|Trial(?:\s+of)?)\s+/i, "");
+  bodyHtml += `<li><strong>${escapeHtml(cleanTreatment)}</strong>${t.dosing ? ` — ${escapeHtml(t.dosing)}` : ""}</li>`;
+});
             bodyHtml += `</ul>`;
           }
           bodyHtml += `</div></div>`;
@@ -8579,11 +8580,11 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                             {!chartBlock?.currentMeds && c.treatmentApproach?.firstLine?.length > 0 && (
                               <ul className="text-sm text-slate-800 space-y-1 pl-4">
                                 {c.treatmentApproach.firstLine.map((t, ti) => (
-                                  <li key={ti} className="list-disc">
-                                    <span className="font-medium">{t.treatment}</span>
-                                    {t.dosing && <span className="text-slate-700"> — {t.dosing}</span>}
-                                  </li>
-                                ))}
+  <li key={ti} className="list-disc">
+    <span className="font-medium">{stripTreatmentVerb(t.treatment)}</span>
+    {t.dosing && <span className="text-slate-700"> — {t.dosing}</span>}
+  </li>
+))}
                               </ul>
                             )}
                           </div>
@@ -9648,6 +9649,13 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
+  // Strips leading action verbs like "Continue", "Start", "Initiate", "Add",
+// "Consider" that the AI sometimes prepends to medication names when framing
+// treatment as ongoing management. Preserves the actual drug name.
+const stripTreatmentVerb = (str) => {
+  if (!str) return str;
+  return str.replace(/^(Continue|Start|Initiate|Add|Consider|Prescribe|Begin|Maintain|Discontinue|Stop|Hold|Resume|Trial(?:\s+of)?)\s+/i, "");
+};
   const renderContent = () => {
     return <DocumentContent doc={doc} phase={phase} session={session} />;
   };
@@ -10435,12 +10443,12 @@ function DocumentContent({ doc, phase, session }) {
                           </thead>
                           <tbody>
                             {c.treatmentApproach.firstLine.map((t, i) => (
-                              <tr key={i}>
-                                <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{t.treatment}</td>
-                                <td>{t.dosing}</td>
-                                <td style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
-                              </tr>
-                            ))}
+  <tr key={i}>
+    <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{stripTreatmentVerb(t.treatment)}</td>
+    <td>{t.dosing}</td>
+    <td style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
+  </tr>
+))}
                           </tbody>
                         </table>
                       </div>
