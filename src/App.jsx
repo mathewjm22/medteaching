@@ -156,7 +156,7 @@ const deidentifyPrenote = (rawText) => {
   // DEBUG: log what we detected so you can see if it's finding the right names
   console.log("[deidentify] Name candidates detected:", sortedCandidates);
   if (patientName) console.log(`[deidentify] Primary: "${patientName}" (first="${patientFirstName}", last="${patientLastName}")`);
-  
+
 
   // ---- STEP 2: Detect sex from pronouns for title selection ----
   const maleCount = (text.match(/\b(he|him|his|himself)\b/gi) || []).length;
@@ -442,6 +442,16 @@ export default function App() {
   const [rawPrenote, setRawPrenote] = useState("");
   const [deidPreview, setDeidPreview] = useState(null);
   const [showDeidReviewer, setShowDeidReviewer] = useState(false);
+
+  // In-room document interaction state (pre-visit mode only).
+  // inRoomChecks: { [checklistItemId]: boolean } — which checklist items the student
+  //   has ticked off during the visit. Persists per-session so it survives reload.
+  //   Data shape is ready for future post-visit merge feature to summarize
+  //   what was covered vs. missed.
+  // inRoomScratchpad: free-text notes the student types during the visit.
+  //   Also persists per-session.
+  const [inRoomChecks, setInRoomChecks] = useState({});
+  const [inRoomScratchpad, setInRoomScratchpad] = useState("");
 
   // Cap on how many sessions we keep in storage. Prevents localStorage overflow.
   // Oldest sessions get pruned when a new one would push us over.
@@ -739,12 +749,16 @@ const [customTopics, setCustomTopics] = useState([]);
       setGeneratedDoc(gen.generatedDoc || null);
       setPreviewData(gen.previewData || null);
       setGenerationAttempts(gen.generationAttempts || { synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
+      setInRoomChecks(gen.inRoomChecks || {});
+      setInRoomScratchpad(gen.inRoomScratchpad || "");
     } else {
       setAiTeachingContent(null);
       setSynthesizedEvidence(null);
       setGeneratedDoc(null);
       setPreviewData(null);
       setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
+      setInRoomChecks({});
+      setInRoomScratchpad("");
     }
 
     setActiveSessionId(sessionId);
@@ -830,9 +844,11 @@ const [customTopics, setCustomTopics] = useState([]);
     if (!hasRestored || !activeSessionId) return;
     debouncedSave(`session:${activeSessionId}:generated`, {
       aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts,
+      inRoomChecks, inRoomScratchpad,
     });
     updateSessionIndexEntry();
-  }, [hasRestored, activeSessionId, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, debouncedSave, updateSessionIndexEntry]);
+  }, [hasRestored, activeSessionId, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, inRoomChecks, inRoomScratchpad, debouncedSave, updateSessionIndexEntry]);
+
 
   // Reset all editor state to blank defaults (without touching storage).
   // Used by both "start new session" (which then creates a new session ID)
@@ -873,6 +889,8 @@ const [customTopics, setCustomTopics] = useState([]);
     setPreviewData(null);
     setPreviewMode(false);
     setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
+    setInRoomChecks({});
+    setInRoomScratchpad("");
     setRestoredSession(null);
   };
 
@@ -2355,7 +2373,7 @@ I want to focus today's teaching on: ${focusText}.
       [`session:${activeSessionId}:pdfs`, pdfAttachments],
       [`session:${activeSessionId}:images`, imageAttachments],
       [`session:${activeSessionId}:imageBytes`, sessionImageBytes],
-      [`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
+      [`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, inRoomChecks, inRoomScratchpad }],
     ];
 
     try {
@@ -5052,8 +5070,21 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                 phase={phase}
                 session={session}
               />
+            ) : sessionMode === "pre" ? (
+              // ============ IN-ROOM DOCUMENT (pre-visit) ============
+              <InRoomDocument
+                doc={generatedDoc || previewData}
+                phase={phase}
+                session={session}
+                checks={inRoomChecks}
+                onCheck={setInRoomChecks}
+                scratchpad={inRoomScratchpad}
+                onScratchpad={setInRoomScratchpad}
+                onEdit={() => { setPreviewMode(true); }}
+                onPrint={printDoc}
+              />
             ) : (
-              // ============ FINAL DOCUMENT ============
+              // ============ FINAL DOCUMENT (post-visit) ============
               <FinalDocument
                 doc={generatedDoc || previewData}
                 phase={phase}
@@ -5861,6 +5892,1624 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
         </button>
       </div>
     </div>
+  );
+}
+
+// ============ IN-ROOM DOCUMENT COMPONENT (pre-visit mode) ============
+// Layout is optimized for the medical student to have open on a laptop
+// DURING the patient visit. Structure:
+//   1. Patient snapshot (top — always visible)
+//   2. Today's visit priorities checklist
+//   3. Per-problem cheat sheets (checklists + collapsed teaching)
+//   4. Medication list with review flags
+//   5. Full teaching material (moved to bottom — after-visit reading)
+// Plus a floating scratchpad on the right (hidden on print).
+function InRoomDocument({ doc, phase, session, checks, onCheck, scratchpad, onScratchpad, onEdit, onPrint }) {
+  const [scratchpadCollapsed, setScratchpadCollapsed] = React.useState(false);
+  const [expandedTeaching, setExpandedTeaching] = React.useState({}); // per-case teaching collapse
+
+  if (!doc) return null;
+  const s = doc.sections || {};
+  const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+
+  // Extract med list from note analysis if AI captured meds, otherwise fall back to what we have
+  const medList = React.useMemo(() => {
+    // AI analysis doesn't currently extract a structured med list per problem,
+    // but the note itself has meds. We surface what we have — teaching cases
+    // often reference meds in their treatmentApproach section.
+    const meds = new Map();
+    enabledCases.forEach(tc => {
+      const c = tc.data;
+      (c.treatmentApproach?.firstLine || []).forEach(t => {
+        if (t.treatment && !meds.has(t.treatment)) {
+          meds.set(t.treatment, {
+            name: t.treatment,
+            dosing: t.dosing || "",
+            forProblem: c.problem,
+            flagForReview: false,
+          });
+        }
+      });
+    });
+    return Array.from(meds.values());
+  }, [enabledCases]);
+
+  // Build the priorities checklist from session goal + per-case key learning points
+  const priorityItems = React.useMemo(() => {
+    const items = [];
+    if (doc.sessionGoal) {
+      items.push({
+        id: "sess-goal",
+        label: doc.sessionGoal,
+        source: "Session goal",
+      });
+    }
+    enabledCases.forEach((tc, idx) => {
+      const c = tc.data;
+      if (c.clinicalPearl) {
+        items.push({
+          id: `pearl-${idx}`,
+          label: c.clinicalPearl,
+          source: `${c.problem} · pearl`,
+        });
+      }
+    });
+    return items;
+  }, [doc.sessionGoal, enabledCases]);
+
+  const toggleCheck = (id) => onCheck({ ...checks, [id]: !checks[id] });
+
+  // Export the in-room doc as a standalone interactive HTML file the attending
+  // can send to the student. All styles, checkboxes, and scratchpad state are
+  // self-contained. Uses the student's browser localStorage (keyed to the
+  // session ID) so their checkboxes and notes persist between page loads
+  // in *their* browser, without any backend.
+  const exportInRoomAsHtml = () => {
+    const student = doc.student || "Student";
+    const sessionDate = session.sessionDate || new Date().toISOString().split("T")[0];
+    const sessionId = doc.sessionId || "no-id";
+    const title = `Pre-visit Reference — ${doc.sessionTitle || student} — ${sessionDate}`;
+
+    // Serialize checklist item definitions and initial state.
+    // Structure mirrors what the app has: {id, label, sublabel?, sectionKey}
+    const checklistItems = [];
+    priorityItems.forEach(item => checklistItems.push({ ...item, section: "priority" }));
+    enabledCases.forEach((tc, idx) => {
+      const c = tc.data;
+      (c.focusedHistoryQuestions || []).forEach((hq, hi) => {
+        checklistItems.push({
+          id: `case-${idx}-q-${hi}`,
+          label: hq.question,
+          sublabel: hq.rationale,
+          section: `case-${idx}`,
+        });
+      });
+      if (c.physicalExam?.maneuver) {
+        checklistItems.push({
+          id: `case-${idx}-exam`,
+          label: c.physicalExam.maneuver,
+          sublabel: c.physicalExam.interpretation,
+          section: `case-${idx}`,
+        });
+      }
+    });
+    (doc.noteAnalysis?.redFlags || []).forEach((rf, ri) => {
+      checklistItems.push({ id: `redflag-${ri}`, label: rf, section: "redflag" });
+    });
+
+    // Inline stylesheet — everything the doc needs, no external deps
+    const inlineStyles = `
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-size: 15px;
+        line-height: 1.5;
+        color: #0f172a;
+        background: #f8fafc;
+        padding: 1rem;
+      }
+      .container {
+        max-width: 1400px;
+        margin: 0 auto;
+        display: grid;
+        grid-template-columns: 1fr 320px;
+        gap: 1.5rem;
+      }
+      @media (max-width: 1200px) {
+        .container { grid-template-columns: 1fr; }
+        .scratchpad-wrapper { position: static !important; }
+      }
+      .doc {
+        background: white;
+        border-radius: 12px;
+        border: 1px solid #e2e8f0;
+        overflow: hidden;
+      }
+      .doc-header {
+        background: linear-gradient(90deg, #4f46e5 0%, #7c3aed 100%);
+        color: white;
+        padding: 1.25rem 1.5rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 1rem;
+        flex-wrap: wrap;
+      }
+      .doc-header .eyebrow {
+        font-size: 0.7rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        opacity: 0.85;
+      }
+      .doc-header .title {
+        font-size: 1.15rem;
+        font-weight: 600;
+        margin-top: 0.15rem;
+      }
+      .doc-header .meta {
+        font-size: 0.75rem;
+        opacity: 0.85;
+        text-align: right;
+      }
+      .doc-body {
+        padding: 1.25rem;
+      }
+      section {
+        margin-bottom: 1.5rem;
+      }
+      h2.section-header {
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: #312e81;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: 0.5rem;
+        padding-bottom: 0.3rem;
+        border-bottom: 2px solid #c7d2fe;
+      }
+      .snapshot-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+      }
+      @media (max-width: 640px) {
+        .snapshot-grid { grid-template-columns: 1fr; }
+      }
+      .snapshot-card {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 0.75rem;
+      }
+      .field-label {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+        font-weight: 600;
+      }
+      .field-value {
+        font-size: 0.9rem;
+        color: #0f172a;
+        font-weight: 500;
+        margin-top: 0.15rem;
+      }
+      .lab-strip {
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        overflow: hidden;
+        margin-top: 0.75rem;
+      }
+      .lab-strip-header {
+        background: #f1f5f9;
+        padding: 0.4rem 0.75rem;
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #475569;
+        font-weight: 600;
+        border-bottom: 1px solid #e2e8f0;
+      }
+      .lab-strip table {
+        width: 100%;
+        font-size: 0.8rem;
+      }
+      .lab-strip td {
+        padding: 0.35rem 0.75rem;
+        border-top: 1px solid #f1f5f9;
+      }
+      .lab-strip tr:first-child td { border-top: none; }
+      .priorities-box {
+        background: rgba(238, 242, 255, 0.4);
+        border: 1px solid #c7d2fe;
+        border-radius: 8px;
+        padding: 0.75rem;
+      }
+      .problem-card {
+        border: 2px solid #e2e8f0;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 1rem;
+      }
+      .problem-header {
+        background: #1e293b;
+        color: white;
+        padding: 0.65rem 1rem;
+      }
+      .problem-header .kind {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        opacity: 0.75;
+      }
+      .problem-header .name {
+        font-size: 1rem;
+        font-weight: 600;
+      }
+      .problem-body {
+        padding: 1rem;
+      }
+      .subheader {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #64748b;
+        font-weight: 600;
+        margin-bottom: 0.35rem;
+      }
+      .checklist {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 0.5rem;
+      }
+      .redflag-checklist {
+        background: #fef2f2;
+        border-color: #fecaca;
+      }
+      .redflag-header {
+        color: #b91c1c !important;
+      }
+      .checklist-item {
+        display: flex;
+        gap: 0.5rem;
+        padding: 0.4rem 0;
+        align-items: flex-start;
+        cursor: pointer;
+      }
+      .checklist-item input[type="checkbox"] {
+        margin-top: 0.25rem;
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+        cursor: pointer;
+      }
+      .checklist-item .item-body { flex: 1; min-width: 0; }
+      .checklist-item .item-label { font-size: 0.85rem; color: #1e293b; }
+      .checklist-item.checked .item-label {
+        color: #64748b;
+        text-decoration: line-through;
+      }
+      .checklist-item .item-sublabel {
+        font-size: 0.72rem;
+        color: #64748b;
+        margin-top: 0.15rem;
+      }
+      .field-block { margin-bottom: 0.85rem; }
+      .field-block:last-child { margin-bottom: 0; }
+      .field-block ul { padding-left: 1.15rem; }
+      .field-block li { font-size: 0.85rem; color: #1e293b; margin-bottom: 0.15rem; }
+      .med-table {
+        width: 100%;
+        border-collapse: collapse;
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        overflow: hidden;
+        font-size: 0.85rem;
+      }
+      .med-table thead {
+        background: #f1f5f9;
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: #475569;
+      }
+      .med-table th, .med-table td {
+        padding: 0.5rem 0.75rem;
+        text-align: left;
+        border-top: 1px solid #f1f5f9;
+      }
+      .med-table thead th { border-top: none; }
+      blockquote {
+        font-style: italic;
+        border-left: 3px solid #a5b4fc;
+        padding: 0.35rem 0.75rem;
+        margin: 0.5rem 0;
+        background: #f8fafc;
+        border-radius: 0 6px 6px 0;
+        color: #334155;
+        font-size: 0.85rem;
+      }
+      .teaching-toggle {
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: none;
+        border-top: 1px solid #e2e8f0;
+        padding: 0.5rem 0;
+        color: #4338ca;
+        font-size: 0.75rem;
+        font-weight: 500;
+        cursor: pointer;
+        margin-top: 0.5rem;
+      }
+      .teaching-toggle:hover { color: #312e81; }
+      .teaching-content { display: none; margin-top: 0.5rem; }
+      .teaching-content.open { display: block; }
+      .teaching-content .subheader { color: #64748b; }
+      .teaching-content .sub-block {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 0.65rem;
+        margin-bottom: 0.5rem;
+        font-size: 0.78rem;
+      }
+      .teaching-content .sub-block strong { color: #0f172a; }
+      .after-visit-section {
+        margin-top: 2rem;
+        padding-top: 1rem;
+        border-top: 3px solid #cbd5e1;
+      }
+      .after-visit-section h2.section-header {
+        color: #475569;
+        border-bottom-color: #cbd5e1;
+      }
+      .pearl-box {
+        background: #fef3c7;
+        border-left: 4px solid #f59e0b;
+        padding: 0.75rem;
+        margin: 0.5rem 0;
+        font-size: 0.85rem;
+        font-style: italic;
+        color: #1e293b;
+      }
+      .pearl-box .pearl-label {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #92400e;
+        font-weight: 700;
+        margin-bottom: 0.3rem;
+        font-style: normal;
+      }
+      details.q-details {
+        background: #f8fafc;
+        border: 1px solid #e2e8f0;
+        border-radius: 6px;
+        padding: 0.65rem;
+        margin-bottom: 0.5rem;
+      }
+      details.q-details summary {
+        cursor: pointer;
+        font-size: 0.85rem;
+        font-weight: 500;
+        color: #1e293b;
+        list-style: none;
+      }
+      details.q-details summary::-webkit-details-marker { display: none; }
+      details.q-details summary::before {
+        content: "▶ ";
+        color: #64748b;
+        font-size: 0.65rem;
+      }
+      details.q-details[open] summary::before { content: "▼ "; }
+      details.q-details .q-body { margin-top: 0.5rem; font-size: 0.85rem; }
+      details.q-details .q-body ul { list-style: none; padding: 0; margin: 0.5rem 0; }
+      details.q-details .q-body li { padding: 0.15rem 0; }
+      details.q-details .q-body li.correct { font-weight: 600; color: #065f46; }
+      details.q-details .q-answer {
+        background: #ecfdf5;
+        border-left: 3px solid #10b981;
+        padding: 0.5rem;
+        margin-top: 0.5rem;
+        font-size: 0.8rem;
+      }
+      details.q-details .q-answer strong { color: #065f46; }
+      .themes-box {
+        background: #f5f3ff;
+        border: 1px solid #ddd6fe;
+        border-radius: 8px;
+        padding: 0.75rem;
+        margin-top: 1rem;
+      }
+      .themes-box .themes-label {
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: #6b21a8;
+        font-weight: 700;
+        margin-bottom: 0.5rem;
+      }
+      .themes-box li { font-size: 0.85rem; color: #1e293b; margin-bottom: 0.35rem; list-style: none; }
+      .themes-box li::before { content: "• "; color: #7c3aed; }
+
+      /* Scratchpad */
+      .scratchpad-wrapper {
+        position: sticky;
+        top: 1rem;
+        align-self: flex-start;
+      }
+      .scratchpad {
+        background: white;
+        border: 2px solid #fcd34d;
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .scratchpad-header {
+        background: #fef3c7;
+        padding: 0.5rem 0.75rem;
+        border-bottom: 1px solid #fcd34d;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 0.7rem;
+        color: #78350f;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+      }
+      .scratchpad textarea {
+        width: 100%;
+        border: none;
+        outline: none;
+        padding: 0.75rem;
+        font-family: inherit;
+        font-size: 0.85rem;
+        resize: none;
+        min-height: 250px;
+        max-height: calc(100vh - 12rem);
+      }
+      .scratchpad-footer {
+        padding: 0.4rem 0.75rem;
+        border-top: 1px solid #fcd34d;
+        background: #fef3c7;
+        font-size: 0.65rem;
+        color: #78350f;
+        font-style: italic;
+      }
+
+      .action-bar {
+        max-width: 1400px;
+        margin: 0 auto 1rem;
+        display: flex;
+        gap: 0.5rem;
+        flex-wrap: wrap;
+      }
+      .action-btn {
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        font-size: 0.85rem;
+        font-weight: 500;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      .action-btn.primary { background: #4f46e5; color: white; }
+      .action-btn.primary:hover { background: #4338ca; }
+      .action-btn.secondary { background: white; color: #475569; border-color: #cbd5e1; }
+      .action-btn.secondary:hover { background: #f1f5f9; }
+      .action-status {
+        margin-left: auto;
+        font-size: 0.75rem;
+        color: #475569;
+        align-self: center;
+      }
+      .action-status.success { color: #059669; font-weight: 500; }
+
+      .doc-footer {
+        margin-top: 2rem;
+        padding-top: 1rem;
+        border-top: 1px solid #e2e8f0;
+        text-align: center;
+        font-size: 0.65rem;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+      }
+      .doc-footer .footer-note {
+        font-style: italic;
+        text-transform: none;
+        letter-spacing: normal;
+        color: #94a3b8;
+        margin-top: 0.35rem;
+      }
+
+      /* Print styles — mirror the in-app print behavior */
+      @media print {
+        body { background: white; padding: 0; }
+        .container { grid-template-columns: 1fr; gap: 0; max-width: 100%; }
+        .scratchpad-wrapper, .action-bar, .no-print { display: none !important; }
+        .doc { border: none; border-radius: 0; }
+        * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+        input[type="checkbox"] {
+          appearance: none !important;
+          -webkit-appearance: none !important;
+          width: 12px !important;
+          height: 12px !important;
+          border: 1.5px solid #334155 !important;
+          border-radius: 2px !important;
+          background: white !important;
+          position: relative !important;
+        }
+        input[type="checkbox"]:checked::after {
+          content: "✓";
+          position: absolute;
+          top: -4px;
+          left: 1px;
+          font-size: 14px;
+          font-weight: bold;
+          color: #0f172a;
+        }
+        .checklist-item.checked .item-label {
+          text-decoration: none !important;
+          color: inherit !important;
+        }
+
+        /* Force all teaching sections open on paper */
+        .teaching-content { display: block !important; }
+        .teaching-toggle { display: none !important; }
+        details.q-details:not([open]) > *:not(summary) { display: block !important; }
+        details.q-details summary::before { display: none; }
+        details.q-details summary { cursor: default; }
+
+        section, .problem-card { page-break-inside: auto; break-inside: auto; }
+        .after-visit-section { page-break-before: always; break-before: always; }
+        h2, h3, .subheader { page-break-after: avoid; break-after: avoid; }
+        blockquote, li, table { page-break-inside: avoid; break-inside: avoid; }
+
+        @page { margin: 0.5in; }
+      }
+    `;
+
+    // Build the HTML body from the current doc data
+    const escapeHtml = (str) => String(str || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+
+    // Helper to render one checklist item as HTML
+    const renderChecklistItemHtml = (item) => `
+      <label class="checklist-item" data-check-id="${escapeHtml(item.id)}">
+        <input type="checkbox" data-check-id="${escapeHtml(item.id)}" ${checks[item.id] ? "checked" : ""}>
+        <div class="item-body">
+          <div class="item-label">${escapeHtml(item.label)}</div>
+          ${item.sublabel ? `<div class="item-sublabel">${escapeHtml(item.sublabel)}</div>` : ""}
+        </div>
+      </label>
+    `;
+
+    // Assemble the sections
+    let bodyHtml = "";
+
+    // Header
+    bodyHtml += `
+      <div class="doc-header">
+        <div>
+          <div class="eyebrow">Pre-visit reference sheet</div>
+          <div class="title">${escapeHtml(doc.sessionTitle || "Untitled visit")}</div>
+        </div>
+        <div class="meta">
+          <div>${escapeHtml(doc.student)}</div>
+          <div>LIC Month ${escapeHtml(doc.phase?.monthsIn)} · ${escapeHtml(doc.phase?.name)}</div>
+        </div>
+      </div>
+      <div class="doc-body">
+    `;
+
+    // Snapshot
+    bodyHtml += `<section><h2 class="section-header">Patient Snapshot</h2><div class="snapshot-grid">`;
+    bodyHtml += `<div class="snapshot-card">`;
+    if (doc.chiefConcern) bodyHtml += `<div style="margin-bottom:0.5rem;"><div class="field-label">Anticipated concern</div><div class="field-value">${escapeHtml(doc.chiefConcern)}</div></div>`;
+    if (doc.workingDx) bodyHtml += `<div><div class="field-label">Working diagnosis</div><div class="field-value">${escapeHtml(doc.workingDx)}</div></div>`;
+    bodyHtml += `</div>`;
+    if (doc.selectedProblems?.length > 0) {
+      bodyHtml += `<div class="snapshot-card"><div class="field-label" style="margin-bottom:0.25rem;">Problems in focus</div><ul style="list-style:none;padding:0;">`;
+      doc.selectedProblems.forEach(p => {
+        bodyHtml += `<li style="font-size:0.85rem;padding:0.15rem 0;"><span style="color:#6366f1;">•</span> ${escapeHtml(p)}</li>`;
+      });
+      bodyHtml += `</ul></div>`;
+    }
+    bodyHtml += `</div>`;
+    if (s.labTrends?.enabled && s.labTrends.content?.length > 0) {
+      bodyHtml += `<div class="lab-strip"><div class="lab-strip-header">Recent labs & trends</div><table><tbody>`;
+      s.labTrends.content.forEach(t => {
+        bodyHtml += `<tr><td style="font-weight:500;">${escapeHtml(t.parameter)}</td><td>${escapeHtml(t.trend)}</td>${t.teachingPoint ? `<td style="font-style:italic;color:#64748b;">${escapeHtml(t.teachingPoint)}</td>` : ""}</tr>`;
+      });
+      bodyHtml += `</tbody></table></div>`;
+    }
+    bodyHtml += `</section>`;
+
+    // Priorities
+    if (priorityItems.length > 0) {
+      bodyHtml += `<section><h2 class="section-header">Today's Priorities</h2><div class="priorities-box">`;
+      priorityItems.forEach(item => {
+        bodyHtml += renderChecklistItemHtml(item);
+      });
+      bodyHtml += `</div></section>`;
+    }
+
+    // Problem cards
+    enabledCases.forEach((tc, idx) => {
+      const c = tc.data;
+      bodyHtml += `<section class="problem-card"><div class="problem-header">`;
+      bodyHtml += `<div class="kind">${c.kind === "tangential" ? "Tangential topic" : `Problem ${idx + 1} of ${enabledCases.length}`}</div>`;
+      bodyHtml += `<div class="name">${escapeHtml(c.problem)}</div></div>`;
+      bodyHtml += `<div class="problem-body">`;
+
+      if (c.primaryDiagnosis?.briefDefinition) {
+        bodyHtml += `<div class="field-block"><div class="subheader">Current status</div><p style="font-size:0.85rem;color:#1e293b;">${escapeHtml(c.primaryDiagnosis.briefDefinition)}</p></div>`;
+      }
+
+      if (c.focusedHistoryQuestions?.length > 0) {
+        bodyHtml += `<div class="field-block"><div class="subheader">Questions to ask</div><div class="checklist">`;
+        c.focusedHistoryQuestions.forEach((hq, hi) => {
+          bodyHtml += renderChecklistItemHtml({ id: `case-${idx}-q-${hi}`, label: hq.question, sublabel: hq.rationale });
+        });
+        bodyHtml += `</div></div>`;
+      }
+
+      if (c.physicalExam?.maneuver) {
+        bodyHtml += `<div class="field-block"><div class="subheader">Physical exam</div><div class="checklist">`;
+        bodyHtml += renderChecklistItemHtml({ id: `case-${idx}-exam`, label: c.physicalExam.maneuver, sublabel: c.physicalExam.interpretation });
+        if (c.physicalExam.steps?.length > 0) {
+          bodyHtml += `<div style="margin-left:1.5rem;margin-top:0.25rem;font-size:0.72rem;color:#475569;"><strong>Steps:</strong> ${escapeHtml(c.physicalExam.steps.join(" → "))}</div>`;
+        }
+        bodyHtml += `</div></div>`;
+      }
+
+      if (c.keyLabsAndImaging?.length > 0) {
+        bodyHtml += `<div class="field-block"><div class="subheader">Relevant labs / imaging</div><ul>`;
+        c.keyLabsAndImaging.forEach(lab => {
+          bodyHtml += `<li><strong>${escapeHtml(lab.study)}</strong>${lab.purpose ? ` — <span style="color:#475569;">${escapeHtml(lab.purpose)}</span>` : ""}</li>`;
+        });
+        bodyHtml += `</ul></div>`;
+      }
+
+      if (c.treatmentApproach?.firstLine?.length > 0) {
+        bodyHtml += `<div class="field-block"><div class="subheader">Current management</div><ul>`;
+        c.treatmentApproach.firstLine.forEach(t => {
+          bodyHtml += `<li><strong>${escapeHtml(t.treatment)}</strong>${t.dosing ? ` — <span style="color:#334155;">${escapeHtml(t.dosing)}</span>` : ""}</li>`;
+        });
+        bodyHtml += `</ul></div>`;
+      }
+
+      // Red flags on first card
+      if (idx === 0 && doc.noteAnalysis?.redFlags?.length > 0) {
+        bodyHtml += `<div class="field-block"><div class="subheader redflag-header">🚩 Red flags — actively screen for</div><div class="checklist redflag-checklist">`;
+        doc.noteAnalysis.redFlags.forEach((rf, ri) => {
+          bodyHtml += renderChecklistItemHtml({ id: `redflag-${ri}`, label: rf });
+        });
+        bodyHtml += `</div></div>`;
+      }
+
+      // Teaching content (collapsed by default)
+      const teachingId = `teaching-${idx}`;
+      bodyHtml += `<button class="teaching-toggle" data-teaching-toggle="${teachingId}">▶ Teaching content for this problem (illness script, differential, learning points)</button>`;
+      bodyHtml += `<div class="teaching-content" id="${teachingId}">`;
+
+      if (c.illnessScript && (c.illnessScript.epidemiology || c.illnessScript.keySymptoms)) {
+        bodyHtml += `<div class="sub-block"><div class="subheader">Illness script</div>`;
+        ["epidemiology", "timeCourse", "keySymptoms", "keySigns", "keyLabsImaging", "naturalHistory"].forEach(key => {
+          if (c.illnessScript[key]) bodyHtml += `<div style="margin-top:0.25rem;"><strong>${key.replace(/([A-Z])/g, " $1").replace(/^./, s => s.toUpperCase())}:</strong> ${escapeHtml(c.illnessScript[key])}</div>`;
+        });
+        bodyHtml += `</div>`;
+      }
+
+      if (c.differentialDiagnosis?.length > 0) {
+        bodyHtml += `<div class="field-block"><div class="subheader">Differential</div><ul>`;
+        c.differentialDiagnosis.forEach(dd => {
+          bodyHtml += `<li><strong>${escapeHtml(dd.diagnosis)}:</strong> ${escapeHtml(dd.reasoning)}</li>`;
+        });
+        bodyHtml += `</ul></div>`;
+      }
+
+      if (c.keyLearningPoints?.length > 0) {
+        bodyHtml += `<div class="field-block"><div class="subheader">Learning points</div><ol style="padding-left:1.25rem;font-size:0.78rem;">`;
+        c.keyLearningPoints.forEach(lp => {
+          bodyHtml += `<li style="margin-bottom:0.35rem;"><strong>${escapeHtml(lp.point)}:</strong> ${escapeHtml(lp.explanation)}${lp.citation ? ` <em style="color:#64748b;">(${escapeHtml(lp.citation)})</em>` : ""}</li>`;
+        });
+        bodyHtml += `</ol></div>`;
+      }
+
+      bodyHtml += `</div></div></section>`;
+    });
+
+    // Med list
+    if (medList.length > 0) {
+      bodyHtml += `<section><h2 class="section-header">Current Medications (from teaching cases)</h2><table class="med-table"><thead><tr><th>Medication</th><th>Dosing</th><th>For</th></tr></thead><tbody>`;
+      medList.forEach(med => {
+        bodyHtml += `<tr><td style="font-weight:500;">${escapeHtml(med.name)}</td><td>${escapeHtml(med.dosing || "—")}</td><td style="font-size:0.75rem;color:#475569;">${escapeHtml(med.forProblem)}</td></tr>`;
+      });
+      bodyHtml += `</tbody></table></section>`;
+    }
+
+    // Patient quotes
+    if (doc.patientQuotes?.length > 0) {
+      bodyHtml += `<section><h2 class="section-header">From the chart — patient's own words</h2>`;
+      doc.patientQuotes.forEach(q => {
+        bodyHtml += `<blockquote>"${escapeHtml(q)}"</blockquote>`;
+      });
+      bodyHtml += `</section>`;
+    }
+
+    // After-visit section
+    bodyHtml += `<section class="after-visit-section"><h2 class="section-header">After the visit — teaching pearls & practice questions</h2>`;
+    bodyHtml += `<p style="font-size:0.75rem;color:#64748b;font-style:italic;margin-bottom:1rem;">Come back to this section AFTER you've seen the patient.</p>`;
+    enabledCases.forEach((tc, idx) => {
+      const c = tc.data;
+      bodyHtml += `<div style="margin-bottom:1.5rem;padding-bottom:1.5rem;border-bottom:1px solid #e2e8f0;">`;
+      bodyHtml += `<div class="subheader" style="margin-bottom:0.5rem;">${escapeHtml(c.problem)}</div>`;
+      if (c.clinicalPearl) {
+        bodyHtml += `<div class="pearl-box"><div class="pearl-label">Clinical pearl</div>${escapeHtml(c.clinicalPearl)}</div>`;
+      }
+      if (c.shelfQuestions?.length > 0) {
+        bodyHtml += `<div style="margin-top:0.75rem;"><div class="subheader">Practice questions</div>`;
+        c.shelfQuestions.forEach((q, qi) => {
+          const preview = q.vignette.slice(0, 100) + (q.vignette.length > 100 ? "..." : "");
+          bodyHtml += `<details class="q-details"><summary>Q${qi + 1}: ${escapeHtml(preview)}</summary><div class="q-body">`;
+          bodyHtml += `<div style="margin-bottom:0.5rem;">${escapeHtml(q.vignette)}</div>`;
+          if (q.options) {
+            bodyHtml += `<ul>`;
+            Object.entries(q.options).forEach(([letter, opt]) => {
+              bodyHtml += `<li class="${q.correctAnswer === letter ? "correct" : ""}"><strong>${letter}.</strong> ${escapeHtml(opt)}</li>`;
+            });
+            bodyHtml += `</ul>`;
+          }
+          bodyHtml += `<div class="q-answer"><strong>Answer: ${escapeHtml(q.correctAnswer)}</strong><div style="margin-top:0.25rem;">${escapeHtml(q.explanation)}</div></div>`;
+          bodyHtml += `</div></details>`;
+        });
+        bodyHtml += `</div>`;
+      }
+      if (c.recommendedReading?.length > 0) {
+        bodyHtml += `<div style="margin-top:0.5rem;font-size:0.75rem;"><div class="subheader">Recommended reading</div><ul style="padding-left:1.25rem;">`;
+        c.recommendedReading.forEach(r => {
+          bodyHtml += `<li><strong>${escapeHtml(r.reference)}</strong>${r.relevance ? ` — ${escapeHtml(r.relevance)}` : ""}</li>`;
+        });
+        bodyHtml += `</ul></div>`;
+      }
+      bodyHtml += `</div>`;
+    });
+
+    if (s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0) {
+      bodyHtml += `<div class="themes-box"><div class="themes-label">Cross-cutting themes</div><ul style="list-style:none;padding:0;">`;
+      s.crossCuttingThemes.content.forEach(t => {
+        bodyHtml += `<li>${escapeHtml(t)}</li>`;
+      });
+      bodyHtml += `</ul></div>`;
+    }
+    bodyHtml += `</section>`;
+
+    // Footer
+    bodyHtml += `<div class="doc-footer">In-room reference sheet · Session ${escapeHtml(sessionId)}<div class="footer-note">For educational purposes only. Verify all details in the EHR before clinical decisions.</div></div>`;
+    bodyHtml += `</div>`; // close doc-body
+
+    // Interactive JS: checkbox persistence + scratchpad + teaching toggles + copy-state
+    const inlineScript = `
+      (function() {
+        var STORAGE_PREFIX = 'inroom-${sessionId}-';
+        var CHECKS_KEY = STORAGE_PREFIX + 'checks';
+        var SCRATCH_KEY = STORAGE_PREFIX + 'scratchpad';
+
+        // Restore checkbox state from THIS browser's localStorage (may override server-sent state)
+        try {
+          var savedChecks = JSON.parse(localStorage.getItem(CHECKS_KEY) || '{}');
+          Object.keys(savedChecks).forEach(function(id) {
+            var box = document.querySelector('input[data-check-id="' + id + '"]');
+            if (box) box.checked = !!savedChecks[id];
+          });
+          updateCompletedClasses();
+        } catch(e) {}
+
+        // Save on any checkbox change
+        function persistChecks() {
+          var state = {};
+          document.querySelectorAll('input[type="checkbox"][data-check-id]').forEach(function(box) {
+            if (box.checked) state[box.dataset.checkId] = true;
+          });
+          try { localStorage.setItem(CHECKS_KEY, JSON.stringify(state)); } catch(e) {}
+        }
+        function updateCompletedClasses() {
+          document.querySelectorAll('input[type="checkbox"][data-check-id]').forEach(function(box) {
+            var item = box.closest('.checklist-item');
+            if (item) item.classList.toggle('checked', box.checked);
+          });
+        }
+        document.querySelectorAll('input[type="checkbox"][data-check-id]').forEach(function(box) {
+          box.addEventListener('change', function() { persistChecks(); updateCompletedClasses(); });
+        });
+
+        // Scratchpad
+        var scratchpad = document.getElementById('scratchpad-textarea');
+        if (scratchpad) {
+          try {
+            var savedScratch = localStorage.getItem(SCRATCH_KEY);
+            if (savedScratch !== null) scratchpad.value = savedScratch;
+          } catch(e) {}
+          scratchpad.addEventListener('input', function() {
+            try { localStorage.setItem(SCRATCH_KEY, scratchpad.value); } catch(e) {}
+            updateCharCount();
+          });
+          updateCharCount();
+        }
+        function updateCharCount() {
+          var cc = document.getElementById('scratchpad-charcount');
+          if (cc && scratchpad) cc.textContent = scratchpad.value.length + ' chars · auto-saved';
+        }
+
+        // Teaching content toggles
+        document.querySelectorAll('[data-teaching-toggle]').forEach(function(btn) {
+          btn.addEventListener('click', function() {
+            var targetId = btn.dataset.teachingToggle;
+            var target = document.getElementById(targetId);
+            if (!target) return;
+            var isOpen = target.classList.toggle('open');
+            btn.textContent = (isOpen ? '▼' : '▶') + ' Teaching content for this problem (illness script, differential, learning points)';
+          });
+        });
+
+        // Print
+        var printBtn = document.getElementById('btn-print');
+        if (printBtn) printBtn.addEventListener('click', function() { window.print(); });
+
+        // Copy state to clipboard — for sending progress back to the attending
+        var copyBtn = document.getElementById('btn-copy-state');
+        var statusEl = document.getElementById('action-status');
+        if (copyBtn) {
+          copyBtn.addEventListener('click', function() {
+            var state = {};
+            document.querySelectorAll('input[type="checkbox"][data-check-id]').forEach(function(box) {
+              if (box.checked) {
+                var label = box.closest('.checklist-item').querySelector('.item-label').textContent;
+                state[box.dataset.checkId] = { checked: true, label: label };
+              }
+            });
+            var report = 'Pre-visit reference — progress report\\n';
+            report += 'Session: ${escapeHtml(doc.sessionTitle || "")}\\n';
+            report += 'Date: ' + new Date().toLocaleString() + '\\n\\n';
+            report += 'Items completed:\\n';
+            Object.keys(state).forEach(function(id) {
+              report += '  ✓ ' + state[id].label + '\\n';
+            });
+            report += '\\nScratchpad notes:\\n';
+            report += (scratchpad ? scratchpad.value : '(empty)') + '\\n';
+
+            navigator.clipboard.writeText(report).then(function() {
+              if (statusEl) {
+                statusEl.textContent = '✓ Progress copied to clipboard — paste into email or message';
+                statusEl.classList.add('success');
+                setTimeout(function() {
+                  statusEl.textContent = '';
+                  statusEl.classList.remove('success');
+                }, 4000);
+              }
+            }).catch(function() {
+              if (statusEl) statusEl.textContent = '⚠ Clipboard copy failed — check browser permissions';
+            });
+          });
+        }
+      })();
+    `;
+
+    const fullHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+  <style>${inlineStyles}</style>
+</head>
+<body>
+  <div class="action-bar no-print">
+    <button id="btn-print" class="action-btn primary">🖨 Print / Save as PDF</button>
+    <button id="btn-copy-state" class="action-btn secondary">📋 Copy progress for attending</button>
+    <span id="action-status" class="action-status"></span>
+  </div>
+  <div class="container">
+    <div class="doc">
+      ${bodyHtml}
+    </div>
+    <div class="scratchpad-wrapper no-print">
+      <div class="scratchpad">
+        <div class="scratchpad-header">
+          <span>📝 Scratchpad</span>
+        </div>
+        <textarea id="scratchpad-textarea" placeholder="Type notes as you go — auto-saves to this browser..."></textarea>
+        <div class="scratchpad-footer" id="scratchpad-charcount">0 chars · auto-saved</div>
+      </div>
+    </div>
+  </div>
+  <script>${inlineScript}<\/script>
+</body>
+</html>`;
+
+    // Trigger download
+    const blob = new Blob([fullHtml], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const titleSlug = (doc.sessionTitle || "")
+      .replace(/·/g, "-")
+      .replace(/[^a-z0-9\s-]/gi, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .slice(0, 80);
+    a.download = titleSlug ? `previsit-${titleSlug}.html` : `previsit-${student.replace(/[^a-z0-9]/gi, "_")}-${sessionDate}.html`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const CheckboxItem = ({ id, label, sublabel }) => {
+    const isChecked = !!checks[id];
+    return (
+      <label className="flex items-start gap-2 py-1.5 cursor-pointer group">
+        <input
+          type="checkbox"
+          checked={isChecked}
+          onChange={() => toggleCheck(id)}
+          className="mt-1 w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 flex-shrink-0"
+        />
+        <div className="flex-1 min-w-0">
+          <div className={`text-sm ${isChecked ? "text-slate-500 line-through" : "text-slate-800"}`}>
+            {label}
+          </div>
+          {sublabel && (
+            <div className="text-xs text-slate-500 mt-0.5">{sublabel}</div>
+          )}
+        </div>
+      </label>
+    );
+  };
+
+  const checkedCount = Object.values(checks).filter(Boolean).length;
+  const totalChecks = Object.keys(checks).length;
+
+  return (
+    <>
+      <style>{`
+        /* In-room document specific styles */
+        .in-room-scratchpad {
+          position: fixed;
+          right: 1rem;
+          top: 6rem;
+          width: 320px;
+          max-height: calc(100vh - 8rem);
+          z-index: 40;
+        }
+        @media (max-width: 1400px) {
+          .in-room-scratchpad {
+            width: 280px;
+          }
+        }
+        @media (max-width: 1200px) {
+          .in-room-scratchpad {
+            position: static;
+            width: 100%;
+            max-height: none;
+            margin-bottom: 1rem;
+          }
+          .in-room-content {
+            max-width: 100% !important;
+            margin-right: 0 !important;
+          }
+        }
+        .in-room-content {
+          max-width: calc(100% - 360px);
+        }
+        @media (max-width: 1400px) {
+          .in-room-content {
+            max-width: calc(100% - 320px);
+          }
+        }
+        .checklist-item-completed {
+          opacity: 0.6;
+        }
+
+        /* ========== PRINT STYLES ========== */
+        @media print {
+          /* Hide interactive-only chrome */
+          .in-room-scratchpad,
+          .in-room-print-hide { display: none !important; }
+          .in-room-content { max-width: 100% !important; margin-right: 0 !important; }
+
+          /* Force color rendering so header, cards, badges look right on paper */
+          * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+          }
+
+          /* Neutralize the outer app chrome; the document itself provides its own border */
+          body { background: white !important; }
+          .in-room-content > div {
+            border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+          }
+
+          /* Checkboxes on paper: always render as visible empty squares (unless checked).
+             Native checkbox rendering is unreliable in print — we replace with a bordered box. */
+          .in-room-content input[type="checkbox"] {
+            appearance: none !important;
+            -webkit-appearance: none !important;
+            width: 12px !important;
+            height: 12px !important;
+            border: 1.5px solid #334155 !important;
+            border-radius: 2px !important;
+            background: white !important;
+            display: inline-block !important;
+            vertical-align: middle !important;
+            position: relative !important;
+          }
+          .in-room-content input[type="checkbox"]:checked::after {
+            content: "✓";
+            position: absolute;
+            top: -4px;
+            left: 1px;
+            font-size: 14px;
+            font-weight: bold;
+            color: #0f172a;
+          }
+
+          /* Struck-through completed items look weird on paper — remove */
+          .in-room-content label span.line-through {
+            text-decoration: none !important;
+            color: inherit !important;
+          }
+
+          /* Force all collapsed teaching sections to expand for printing.
+             The attending has no way to click "show" on paper, so everything must be visible. */
+          .in-room-teaching-collapsed { display: block !important; }
+          .in-room-teaching-toggle { display: none !important; }
+
+          /* Force all <details> open (used in the practice-question section) */
+          details { }
+          details > summary {
+            list-style: none !important;
+            cursor: default !important;
+          }
+          details > summary::-webkit-details-marker { display: none !important; }
+          details:not([open]) > *:not(summary) { display: block !important; }
+
+          /* Page-break management */
+          section { page-break-inside: avoid; break-inside: avoid; }
+          .in-room-page-break { page-break-before: always; break-before: always; }
+          h1, h2, h3, h4 { page-break-after: avoid; break-after: avoid; }
+          h2 + *, h3 + * { page-break-before: avoid; break-before: avoid; }
+          blockquote, li, table, figure { page-break-inside: avoid; break-inside: avoid; }
+          thead { display: table-header-group; }
+
+          /* Individual problem cards should try to stay on one page; if they must
+             split, at least keep the header with its first bit of content. */
+          .in-room-problem-card {
+            page-break-inside: auto;
+            break-inside: auto;
+          }
+          .in-room-problem-card > div:first-child {
+            page-break-after: avoid;
+            break-after: avoid;
+          }
+
+          /* Tighten spacing slightly for print */
+          .in-room-content .p-5 { padding: 1rem !important; }
+          .in-room-content .space-y-6 > * + * { margin-top: 1rem !important; }
+          .in-room-content .p-4 { padding: 0.75rem !important; }
+
+          @page {
+            margin: 0.5in;
+          }
+        }
+      `}</style>
+
+      {/* Top action bar — two export options + back button */}
+      <div className="no-print in-room-print-hide flex gap-2 mb-4 items-center flex-wrap">
+        <button
+          onClick={exportInRoomAsHtml}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
+          title="Download a standalone interactive HTML file to give to the student — floating scratchpad, checkboxes save to their browser"
+        >
+          <FileText className="w-4 h-4" />
+          <span className="hidden sm:inline">Export as Interactive HTML</span>
+          <span className="sm:hidden">Export HTML</span>
+        </button>
+        <button
+          onClick={onPrint}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
+          title="Print or save as PDF — for the student to carry into clinic on paper"
+        >
+          <Printer className="w-4 h-4" />
+          <span className="hidden sm:inline">Print / Save as PDF</span>
+          <span className="sm:hidden">Print / PDF</span>
+        </button>
+        <button onClick={onEdit} className="px-3 sm:px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">
+          <span className="hidden sm:inline">← Back to preview</span>
+          <span className="sm:hidden">← Preview</span>
+        </button>
+        <div className="text-xs text-slate-500 italic ml-2 hidden lg:block">
+          Interactive HTML for student's laptop · PDF for clinic printout
+        </div>
+        {totalChecks > 0 && (
+          <div className="ml-auto text-xs bg-emerald-50 border border-emerald-200 text-emerald-800 px-2 py-1 rounded font-medium">
+            {checkedCount} of {totalChecks} items done
+          </div>
+        )}
+      </div>
+
+      {/* Split: main content left, floating scratchpad right */}
+      <div className="relative">
+        {/* Floating scratchpad — right side on wide screens, top on narrow */}
+        <div className="in-room-scratchpad no-print in-room-print-hide">
+          <div className="bg-white rounded-lg border-2 border-amber-300 shadow-md overflow-hidden flex flex-col" style={{ maxHeight: "inherit" }}>
+            <div className="px-3 py-2 bg-amber-50 border-b border-amber-200 flex items-center justify-between">
+              <div className="text-xs font-semibold text-amber-900 uppercase tracking-wider flex items-center gap-1.5">
+                <span>📝</span>
+                Scratchpad
+              </div>
+              <button
+                onClick={() => setScratchpadCollapsed(!scratchpadCollapsed)}
+                className="text-xs text-amber-700 hover:text-amber-900"
+                title={scratchpadCollapsed ? "Expand" : "Collapse"}
+              >
+                {scratchpadCollapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+              </button>
+            </div>
+            {!scratchpadCollapsed && (
+              <>
+                <textarea
+                  value={scratchpad}
+                  onChange={e => onScratchpad(e.target.value)}
+                  placeholder="Type notes as you go — auto-saves..."
+                  className="flex-1 p-3 text-sm text-slate-800 bg-white resize-none outline-none font-sans"
+                  style={{ minHeight: "200px", maxHeight: "calc(100vh - 12rem)" }}
+                />
+                <div className="px-3 py-1.5 border-t border-amber-200 text-[10px] text-amber-700 italic bg-amber-50">
+                  {scratchpad.length} chars · saved with session · won't print
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* Main content */}
+        <div className="in-room-content">
+          <div className="bg-white rounded-xl border border-slate-200 overflow-hidden" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
+            {/* Slim header (replaces the big post-visit cover page) */}
+            <div className="bg-gradient-to-r from-indigo-600 to-purple-700 text-white px-6 py-4">
+              <div className="flex items-start justify-between gap-3 flex-wrap">
+                <div>
+                  <div className="text-xs uppercase tracking-wider opacity-80">Pre-visit reference sheet</div>
+                  <div className="text-lg font-semibold mt-0.5">{doc.sessionTitle || "Untitled visit"}</div>
+                </div>
+                <div className="text-xs opacity-80 text-right">
+                  <div>{doc.student}</div>
+                  <div>LIC Month {doc.phase.monthsIn} · {doc.phase.name}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="p-5 space-y-6">
+
+              {/* ==== 1. PATIENT SNAPSHOT ==== */}
+              <section>
+                <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
+                  Patient Snapshot
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* Left col: demographics + primary concern */}
+                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                    {doc.chiefConcern && (
+                      <div className="mb-2">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Anticipated concern</div>
+                        <div className="text-sm text-slate-900 font-medium mt-0.5">{doc.chiefConcern}</div>
+                      </div>
+                    )}
+                    {doc.workingDx && (
+                      <div>
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Working diagnosis</div>
+                        <div className="text-sm text-slate-900 font-medium mt-0.5">{doc.workingDx}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Right col: problems in focus */}
+                  {doc.selectedProblems?.length > 0 && (
+                    <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Problems in focus</div>
+                      <ul className="space-y-0.5">
+                        {doc.selectedProblems.map((p, i) => (
+                          <li key={i} className="text-sm text-slate-900 flex items-start gap-1.5">
+                            <span className="text-indigo-500 mt-0.5">•</span>
+                            <span>{p}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent labs strip */}
+                {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
+                  <div className="mt-3 bg-white border border-slate-200 rounded-lg overflow-hidden">
+                    <div className="px-3 py-1.5 bg-slate-100 border-b border-slate-200 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
+                      Recent labs & trends
+                    </div>
+                    <div className="p-2 overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <tbody>
+                          {s.labTrends.content.map((t, i) => (
+                            <tr key={i} className={i > 0 ? "border-t border-slate-100" : ""}>
+                              <td className="py-1.5 pr-3 font-medium text-slate-900 whitespace-nowrap">{t.parameter}</td>
+                              <td className="py-1.5 pr-3 text-slate-700">{t.trend}</td>
+                              {t.teachingPoint && (
+                                <td className="py-1.5 text-slate-500 italic">{t.teachingPoint}</td>
+                              )}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+              </section>
+
+              {/* ==== 2. TODAY'S VISIT PRIORITIES ==== */}
+              {priorityItems.length > 0 && (
+                <section>
+                  <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
+                    Today's Priorities
+                  </h2>
+                  <div className="bg-indigo-50/40 border border-indigo-200 rounded-lg p-3">
+                    {priorityItems.map(item => (
+                      <div key={item.id}>
+                        <CheckboxItem id={item.id} label={item.label} sublabel={item.source} />
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* ==== 3. PROBLEM-BY-PROBLEM CHEAT SHEETS ==== */}
+              {enabledCases.map((tc, idx) => {
+                const c = tc.data;
+                const teachingExpanded = !!expandedTeaching[idx];
+                return (
+                  <section key={idx} className="in-room-problem-card border-2 border-slate-200 rounded-lg overflow-hidden">
+                    {/* Problem header */}
+                    <div className="bg-slate-800 text-white px-4 py-2.5">
+                      <div className="flex items-center justify-between gap-2 flex-wrap">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider opacity-70">
+                            {c.kind === "tangential" ? "Tangential topic" : `Problem ${idx + 1} of ${enabledCases.length}`}
+                          </div>
+                          <div className="text-base font-semibold">{c.problem}</div>
+                        </div>
+                        {c.primaryDiagnosis?.name && c.primaryDiagnosis.name !== c.problem && (
+                          <div className="text-xs opacity-80 italic">{c.primaryDiagnosis.name}</div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="p-4 space-y-4 bg-white">
+                      {/* Current status */}
+                      {c.primaryDiagnosis?.briefDefinition && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Current status</div>
+                          <p className="text-sm text-slate-800">{c.primaryDiagnosis.briefDefinition}</p>
+                        </div>
+                      )}
+
+                      {/* Key questions to ask */}
+                      {c.focusedHistoryQuestions?.length > 0 && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
+                            Questions to ask
+                          </div>
+                          <div className="bg-slate-50 rounded p-2 border border-slate-200">
+                            {c.focusedHistoryQuestions.map((hq, hi) => (
+                              <CheckboxItem
+                                key={hi}
+                                id={`case-${idx}-q-${hi}`}
+                                label={hq.question}
+                                sublabel={hq.rationale}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Physical exam checklist */}
+                      {c.physicalExam?.maneuver && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
+                            Physical exam
+                          </div>
+                          <div className="bg-slate-50 rounded p-2 border border-slate-200">
+                            <CheckboxItem
+                              id={`case-${idx}-exam`}
+                              label={c.physicalExam.maneuver}
+                              sublabel={c.physicalExam.interpretation}
+                            />
+                            {c.physicalExam.steps?.length > 0 && (
+                              <div className="ml-6 mt-1 text-xs text-slate-600">
+                                <span className="font-medium">Steps:</span> {c.physicalExam.steps.join(" → ")}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Labs / imaging for this problem */}
+                      {c.keyLabsAndImaging?.length > 0 && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
+                            Relevant labs / imaging
+                          </div>
+                          <ul className="text-sm text-slate-800 space-y-1 pl-4">
+                            {c.keyLabsAndImaging.map((lab, li) => (
+                              <li key={li} className="list-disc">
+                                <span className="font-medium">{lab.study}</span>
+                                {lab.purpose && <span className="text-slate-600"> — {lab.purpose}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Meds for this problem */}
+                      {c.treatmentApproach?.firstLine?.length > 0 && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
+                            Current management
+                          </div>
+                          <ul className="text-sm text-slate-800 space-y-1 pl-4">
+                            {c.treatmentApproach.firstLine.map((t, ti) => (
+                              <li key={ti} className="list-disc">
+                                <span className="font-medium">{t.treatment}</span>
+                                {t.dosing && <span className="text-slate-700"> — {t.dosing}</span>}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+
+                      {/* Red flags — screen for */}
+                      {doc.noteAnalysis?.redFlags?.length > 0 && idx === 0 && (
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wider text-red-700 font-semibold mb-1">
+                            🚩 Red flags — actively screen for
+                          </div>
+                          <div className="bg-red-50 rounded p-2 border border-red-200">
+                            {doc.noteAnalysis.redFlags.map((rf, ri) => (
+                              <CheckboxItem
+                                key={ri}
+                                id={`redflag-${ri}`}
+                                label={rf}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Collapsed teaching content */}
+                      <div className="pt-2 border-t border-slate-200">
+                        <button
+                          onClick={() => setExpandedTeaching({ ...expandedTeaching, [idx]: !teachingExpanded })}
+                          className="in-room-teaching-toggle w-full flex items-center justify-between text-xs text-indigo-700 hover:text-indigo-900 font-medium py-1"
+                        >
+                          <span className="flex items-center gap-1">
+                            {teachingExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                            Teaching content for this problem (illness script, differential, learning points)
+                          </span>
+                          <span className="text-slate-400 italic text-[10px]">
+                            {teachingExpanded ? "hide" : "show"}
+                          </span>
+                        </button>
+                        {(teachingExpanded || false) && (
+                          <div className="mt-2 space-y-3 text-sm in-room-teaching-collapsed" style={{ display: teachingExpanded ? "block" : "none" }}>
+                            {/* Illness script */}
+                            {c.illnessScript && (c.illnessScript.epidemiology || c.illnessScript.keySymptoms) && (
+                              <div className="bg-slate-50 p-3 rounded border border-slate-200">
+                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1.5">Illness script</div>
+                                <div className="space-y-1 text-xs text-slate-700">
+                                  {c.illnessScript.epidemiology && <div><strong>Epidemiology:</strong> {c.illnessScript.epidemiology}</div>}
+                                  {c.illnessScript.timeCourse && <div><strong>Time course:</strong> {c.illnessScript.timeCourse}</div>}
+                                  {c.illnessScript.keySymptoms && <div><strong>Key symptoms:</strong> {c.illnessScript.keySymptoms}</div>}
+                                  {c.illnessScript.keySigns && <div><strong>Key signs:</strong> {c.illnessScript.keySigns}</div>}
+                                  {c.illnessScript.keyLabsImaging && <div><strong>Key labs/imaging:</strong> {c.illnessScript.keyLabsImaging}</div>}
+                                  {c.illnessScript.naturalHistory && <div><strong>Natural history:</strong> {c.illnessScript.naturalHistory}</div>}
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Differential */}
+                            {c.differentialDiagnosis?.length > 0 && (
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Differential</div>
+                                <ul className="text-xs text-slate-700 space-y-1 pl-4">
+                                  {c.differentialDiagnosis.map((dd, ddi) => (
+                                    <li key={ddi} className="list-disc">
+                                      <strong>{dd.diagnosis}:</strong> {dd.reasoning}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+
+                            {/* Learning points */}
+                            {c.keyLearningPoints?.length > 0 && (
+                              <div>
+                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Learning points</div>
+                                <ol className="text-xs text-slate-700 space-y-1 pl-5">
+                                  {c.keyLearningPoints.map((lp, lpi) => (
+                                    <li key={lpi} className="list-decimal">
+                                      <strong>{lp.point}:</strong> {lp.explanation}
+                                      {lp.citation && <em className="text-slate-500 ml-1">({lp.citation})</em>}
+                                    </li>
+                                  ))}
+                                </ol>
+                              </div>
+                            )}
+                          </div>
+                      </div>
+                    </div>
+                  </section>
+                );
+              })}
+
+              {/* ==== 4. MED LIST ==== */}
+              {medList.length > 0 && (
+                <section>
+                  <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
+                    Current Medications (from teaching cases)
+                  </h2>
+                  <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-100 text-[10px] uppercase tracking-wider text-slate-600">
+                        <tr>
+                          <th className="text-left px-3 py-1.5">Medication</th>
+                          <th className="text-left px-3 py-1.5">Dosing</th>
+                          <th className="text-left px-3 py-1.5">For</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {medList.map((med, mi) => (
+                          <tr key={mi} className={mi > 0 ? "border-t border-slate-100" : ""}>
+                            <td className="px-3 py-1.5 font-medium text-slate-900">{med.name}</td>
+                            <td className="px-3 py-1.5 text-slate-700">{med.dosing || "—"}</td>
+                            <td className="px-3 py-1.5 text-slate-600 text-xs">{med.forProblem}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </section>
+              )}
+
+              {/* ==== 5. PATIENT QUOTES / CONTEXT ==== */}
+              {doc.patientQuotes?.length > 0 && (
+                <section>
+                  <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
+                    From the chart — patient's own words
+                  </h2>
+                  <div className="space-y-2">
+                    {doc.patientQuotes.map((q, qi) => (
+                      <blockquote key={qi} className="italic text-sm text-slate-700 border-l-3 border-indigo-300 pl-3 py-1 bg-slate-50 rounded-r">
+                        "{q}"
+                      </blockquote>
+                    ))}
+                  </div>
+                </section>
+              )}
+
+              {/* ==== 6. AFTER-VISIT TEACHING SECTION ==== */}
+              <section className="in-room-page-break">
+                <h2 className="text-sm font-bold text-slate-700 uppercase tracking-wider mb-3 pb-1 border-b-2 border-slate-300">
+                  After the visit — teaching pearls & practice questions
+                </h2>
+                <p className="text-xs text-slate-500 italic mb-4">
+                  Come back to this section AFTER you've seen the patient. It has the practice questions, recommended reading, and cross-cutting themes.
+                </p>
+
+                {enabledCases.map((tc, idx) => {
+                  const c = tc.data;
+                  return (
+                    <div key={idx} className="mb-6 pb-6 border-b border-slate-200 last:border-b-0">
+                      <div className="text-xs uppercase tracking-wider text-slate-500 font-semibold mb-2">
+                        {c.problem}
+                      </div>
+
+                      {c.clinicalPearl && (
+                        <div className="bg-amber-50 border-l-4 border-amber-500 p-3 mb-3">
+                          <div className="text-[10px] uppercase tracking-wider text-amber-800 font-bold mb-1">Clinical pearl</div>
+                          <div className="text-sm text-slate-800 italic">{c.clinicalPearl}</div>
+                        </div>
+                      )}
+
+                      {c.shelfQuestions?.length > 0 && (
+                        <div className="mb-3">
+                          <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-2">Practice questions</div>
+                          {c.shelfQuestions.map((q, qi) => (
+                            <details key={qi} className="mb-2 bg-slate-50 border border-slate-200 rounded p-3">
+                              <summary className="text-sm text-slate-800 cursor-pointer font-medium">
+                                Q{qi + 1}: {q.vignette.slice(0, 100)}{q.vignette.length > 100 ? "..." : ""}
+                              </summary>
+                              <div className="mt-2 text-sm text-slate-700">
+                                <div className="mb-2">{q.vignette}</div>
+                                {q.options && (
+                                  <ul className="mb-2 space-y-1">
+                                    {Object.entries(q.options).map(([letter, opt]) => (
+                                      <li key={letter} className={q.correctAnswer === letter ? "font-semibold text-emerald-800" : ""}>
+                                        <strong>{letter}.</strong> {opt}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                )}
+                                <div className="bg-emerald-50 border-l-2 border-emerald-500 p-2 mt-2">
+                                  <div className="text-xs font-semibold text-emerald-800">Answer: {q.correctAnswer}</div>
+                                  <div className="text-xs text-slate-700 mt-1">{q.explanation}</div>
+                                </div>
+                              </div>
+                            </details>
+                          ))}
+                        </div>
+                      )}
+
+                      {c.recommendedReading?.length > 0 && (
+                        <div className="text-xs">
+                          <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Recommended reading</div>
+                          <ul className="pl-4 space-y-1">
+                            {c.recommendedReading.map((r, ri) => (
+                              <li key={ri} className="list-disc text-slate-700">
+                                <strong>{r.reference}</strong>{r.relevance && ` — ${r.relevance}`}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+
+                {/* Cross-cutting themes at the very bottom */}
+                {s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0 && (
+                  <div className="mt-4 bg-purple-50 border border-purple-200 rounded p-3">
+                    <div className="text-[10px] uppercase tracking-wider text-purple-800 font-bold mb-2">Cross-cutting themes</div>
+                    <ul className="space-y-1.5">
+                      {s.crossCuttingThemes.content.map((t, ti) => (
+                        <li key={ti} className="text-sm text-slate-800">• {t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </section>
+
+              {/* Footer */}
+              <div className="pt-4 mt-6 border-t border-slate-300 text-center text-[10px] text-slate-500 uppercase tracking-wider">
+                <div>In-room reference sheet · Session {doc.sessionId || "unsaved"}</div>
+                <div className="normal-case tracking-normal italic mt-1">
+                  For educational purposes only. Verify all details in the EHR before clinical decisions.
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
 
