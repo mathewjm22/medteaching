@@ -2573,6 +2573,12 @@ I want to focus today's teaching on: ${focusText}.
       noteAnalysis,
       allSourceImages,
       imageAttachments,
+      // Full de-identified prenote text — used by pre-visit in-room doc to render
+      // verbatim chart sections (PMH, FH, SH, meds, labs, imaging, preventive, etc.)
+      rawPrenote: sessionMode === "pre" ? clinicalNote : null,
+      // AI-generated medication descriptions (pre-visit only) — keyed by lowercased med name
+      medDescriptions: aiContent?.medDescriptions || null,
+      sessionMode,
       sections: {
         caseAtGlance: { enabled: true, editable: false },
         sessionGoal: { enabled: !!sessionGoal, content: sessionGoal },
@@ -6270,6 +6276,63 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
   const s = doc.sections || {};
   const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
 
+  // Parse verbatim sections out of the prenote. All snapshot/context boxes
+  // render this raw text instead of AI-processed content.
+  const prenoteSections = React.useMemo(() => {
+    return extractPrenoteSections(doc.rawPrenote || doc.clinicalNote || "");
+  }, [doc.rawPrenote, doc.clinicalNote]);
+
+  const whatToKnow = getSection(prenoteSections, "WHAT TO KNOW ABOUT");
+  const updatesSince = getSection(prenoteSections, "UPDATES / RECENT VISITS", "UPDATES");
+  const vitalTrends = getSection(prenoteSections, "VITAL SIGNS TRENDS", "VITALS");
+  const labStudies = getSection(prenoteSections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS");
+  const imagingSection = getSection(prenoteSections, "IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES");
+  const socialHx = getSection(prenoteSections, "SOCIAL", "SOCIAL HISTORY");
+  const familyHx = getSection(prenoteSections, "FAMILY HISTORY");
+  const pastMedHx = getSection(prenoteSections, "PAST MEDICAL HISTORY", "PMH");
+  const surgicalHx = getSection(prenoteSections, "SURGICAL HISTORY");
+  const allergies = getSection(prenoteSections, "ALLERGIES");
+  const militaryHx = getSection(prenoteSections, "MILITARY HISTORY");
+  const preventiveMed = getSection(prenoteSections, "PREVENTIVE MEDICINE", "PREVENTION");
+  const medRec = getSection(prenoteSections, "MED REC", "MEDICATIONS", "MEDICATION LIST");
+
+  // Break MED REC into its three subsections for display
+  const currentMedsText = extractCurrentMedsSubsection(medRec);
+  const discontinuedMedsText = extractMedSubsection(
+    medRec,
+    /RECENTLY\s+DISCONTINUED/,
+    [/SIGNIFICANT\s+HISTORICAL/, /HISTORICAL\s+MEDICATIONS?/]
+  );
+  const historicalMedsText = extractMedSubsection(
+    medRec,
+    /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/,
+    []
+  );
+
+  // Parse current med names for the top table
+  const currentMedNames = parseMedNames(currentMedsText);
+  const medDescriptions = doc.medDescriptions || {};
+
+  // Helper to render a verbatim text block preserving whitespace/newlines
+  const VerbatimBlock = ({ text }) => (
+    <div
+      className="text-sm text-slate-800 whitespace-pre-wrap font-normal leading-relaxed"
+      style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
+    >
+      {text}
+    </div>
+  );
+
+  // Helper: a titled content box used repeatedly in the snapshot
+  const InfoBox = ({ title, children, className = "" }) => (
+    <div className={`bg-slate-50 rounded-lg p-3 border border-slate-200 ${className}`}>
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+
   // Extract med list from note analysis if AI captured meds, otherwise fall back to what we have
   const medList = React.useMemo(() => {
     // AI analysis doesn't currently extract a structured med list per problem,
@@ -7420,28 +7483,22 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                 <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
                   Patient Snapshot
                 </h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* Left col: demographics + primary concern */}
-                  <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
-                    {doc.chiefConcern && (
-                      <div className="mb-2">
-                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Anticipated concern</div>
-                        <div className="text-sm text-slate-900 font-medium mt-0.5">{doc.chiefConcern}</div>
-                      </div>
-                    )}
-                    {doc.workingDx && (
-                      <div>
-                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Working diagnosis</div>
-                        <div className="text-sm text-slate-900 font-medium mt-0.5">{doc.workingDx}</div>
-                      </div>
-                    )}
-                  </div>
 
-                  {/* Right col: problems in focus */}
+                {/* Top row: What to Know (left) | Problems in Focus (right) */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {whatToKnow ? (
+                    <InfoBox title="What to know about this patient">
+                      <VerbatimBlock text={whatToKnow} />
+                    </InfoBox>
+                  ) : (
+                    <InfoBox title="What to know about this patient">
+                      <div className="text-xs text-slate-500 italic">No introductory summary found in prenote.</div>
+                    </InfoBox>
+                  )}
+
                   {doc.selectedProblems?.length > 0 && (
-                    <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
-                      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Problems in focus</div>
-                      <ul className="space-y-0.5">
+                    <InfoBox title="Problems in focus for teaching">
+                      <ul className="space-y-1">
                         {doc.selectedProblems.map((p, i) => (
                           <li key={i} className="text-sm text-slate-900 flex items-start gap-1.5">
                             <span className="text-indigo-500 mt-0.5">•</span>
@@ -7449,45 +7506,213 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                           </li>
                         ))}
                       </ul>
-                    </div>
+                    </InfoBox>
                   )}
                 </div>
 
-                {/* Recent labs strip */}
-                {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
-                  <div className="mt-3 bg-white border border-slate-200 rounded-lg overflow-hidden">
-                    <div className="px-3 py-1.5 bg-slate-100 border-b border-slate-200 text-[10px] uppercase tracking-wider text-slate-600 font-semibold">
-                      Recent labs & trends
-                    </div>
-                    <div className="p-2 overflow-x-auto">
-                      <table className="w-full text-xs">
-                        <tbody>
-                          {s.labTrends.content.map((t, i) => (
-                            <tr key={i} className={i > 0 ? "border-t border-slate-100" : ""}>
-                              <td className="py-1.5 pr-3 font-medium text-slate-900 whitespace-nowrap">{t.parameter}</td>
-                              <td className="py-1.5 pr-3 text-slate-700">{t.trend}</td>
-                              {t.teachingPoint && (
-                                <td className="py-1.5 text-slate-500 italic">{t.teachingPoint}</td>
-                              )}
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                {/* Full-width: Updates since last visit */}
+                {updatesSince && (
+                  <div className="mt-3">
+                    <InfoBox title="Updates since last visit">
+                      <VerbatimBlock text={updatesSince} />
+                    </InfoBox>
+                  </div>
+                )}
+
+                {/* Full-width: Recent Labs & Trends (verbatim from prenote, with vitals) */}
+                {(labStudies || vitalTrends) && (
+                  <div className="mt-3">
+                    <InfoBox title="Recent labs & trends">
+                      {vitalTrends && (
+                        <div className="mb-3">
+                          <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Vital signs</div>
+                          <VerbatimBlock text={vitalTrends} />
+                        </div>
+                      )}
+                      {labStudies && (
+                        <div>
+                          {vitalTrends && (
+                            <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Laboratory results</div>
+                          )}
+                          <VerbatimBlock text={labStudies} />
+                          <div className="text-[10px] italic text-slate-500 mt-2">
+                            Most recent results first.
+                          </div>
+                        </div>
+                      )}
+                    </InfoBox>
+                  </div>
+                )}
+
+                {/* Full-width: Diagnostic Imaging / Procedures (only if present and non-trivial) */}
+                {imagingSection && imagingSection.length > 5 && !/no imaging/i.test(imagingSection) && (
+                  <div className="mt-3">
+                    <InfoBox title="Diagnostic imaging / procedures">
+                      <VerbatimBlock text={imagingSection} />
+                    </InfoBox>
                   </div>
                 )}
               </section>
 
-              {/* ==== 2. TODAY'S VISIT PRIORITIES ==== */}
+              {/* ==== 2. CURRENT MEDICATIONS TABLE ==== */}
+              {(currentMedsText || discontinuedMedsText || historicalMedsText) && (
+                <section>
+                  <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
+                    Current Medications
+                  </h2>
+
+                  {/* Current meds table with links + AI descriptions */}
+                  {currentMedNames.length > 0 ? (
+                    <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-100 text-[10px] uppercase tracking-wider text-slate-600">
+                          <tr>
+                            <th className="text-left px-3 py-1.5">Medication</th>
+                            <th className="text-left px-3 py-1.5">Treats</th>
+                            <th className="text-left px-3 py-1.5">Mechanism of action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {currentMedNames.map((name, mi) => {
+                            const desc = medDescriptions[name.toLowerCase().trim()] || {};
+                            const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(name)}`;
+                            return (
+                              <tr key={mi} className={mi > 0 ? "border-t border-slate-100" : ""}>
+                                <td className="px-3 py-1.5 font-medium text-slate-900">
+                                  
+                                    href={utdUrl}
+                                    target="_blank"
+                                    rel="noreferrer"
+                                    className="text-indigo-700 hover:text-indigo-900 hover:underline"
+                                    title={`Search UpToDate for ${name}`}
+                                  >
+                                    {name} ↗
+                                  </a>
+                                </td>
+                                <td className="px-3 py-1.5 text-slate-700 text-xs">
+                                  {desc.treats || <span className="text-slate-400 italic">—</span>}
+                                </td>
+                                <td className="px-3 py-1.5 text-slate-700 text-xs">
+                                  {desc.mechanism || <span className="text-slate-400 italic">—</span>}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : currentMedsText && (
+                    <InfoBox title="Current medications (verbatim from prenote)">
+                      <VerbatimBlock text={currentMedsText} />
+                    </InfoBox>
+                  )}
+
+                  {/* Collapsible: recently discontinued */}
+                  {discontinuedMedsText && (
+                    <details className="mt-2 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden in-room-meds-details">
+                      <summary className="px-3 py-2 cursor-pointer text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                        Recently discontinued medications ▾
+                      </summary>
+                      <div className="px-3 py-2 border-t border-slate-200">
+                        <VerbatimBlock text={discontinuedMedsText} />
+                      </div>
+                    </details>
+                  )}
+
+                  {/* Collapsible: significant historical */}
+                  {historicalMedsText && (
+                    <details className="mt-2 bg-slate-50 border border-slate-200 rounded-lg overflow-hidden in-room-meds-details">
+                      <summary className="px-3 py-2 cursor-pointer text-xs font-semibold text-slate-700 hover:bg-slate-100">
+                        Significant historical medications / timeline ▾
+                      </summary>
+                      <div className="px-3 py-2 border-t border-slate-200">
+                        <VerbatimBlock text={historicalMedsText} />
+                      </div>
+                    </details>
+                  )}
+                </section>
+              )}
+
+              {/* ==== 3. CONTEXT BOXES: FH/SH, PMH/Surgical, Allergies/Military, Preventive ==== */}
+              <section>
+                <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
+                  Patient context (from chart)
+                </h2>
+
+                {/* Row 1: Family + Social */}
+                {(familyHx || socialHx) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    {familyHx && (
+                      <InfoBox title="Family history">
+                        <VerbatimBlock text={familyHx} />
+                      </InfoBox>
+                    )}
+                    {socialHx && (
+                      <InfoBox title="Social history">
+                        <VerbatimBlock text={socialHx} />
+                      </InfoBox>
+                    )}
+                  </div>
+                )}
+
+                {/* Row 2: PMH + Surgical */}
+                {(pastMedHx || surgicalHx) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                    {pastMedHx && (
+                      <InfoBox title="Past medical history">
+                        <VerbatimBlock text={pastMedHx} />
+                      </InfoBox>
+                    )}
+                    {surgicalHx && (
+                      <InfoBox title="Surgical history">
+                        <VerbatimBlock text={surgicalHx} />
+                      </InfoBox>
+                    )}
+                  </div>
+                )}
+
+                {/* Row 3: Allergies + Military */}
+                {(allergies || militaryHx) && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                    {allergies && (
+                      <InfoBox title="Allergies">
+                        <VerbatimBlock text={allergies} />
+                      </InfoBox>
+                    )}
+                    {militaryHx && (
+                      <InfoBox title="Military history">
+                        <VerbatimBlock text={militaryHx} />
+                      </InfoBox>
+                    )}
+                  </div>
+                )}
+
+                {/* Row 4: Preventive Medicine (left col only; right col reserved for future) */}
+                {preventiveMed && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3">
+                    <InfoBox title="Preventive medicine">
+                      <VerbatimBlock text={preventiveMed} />
+                    </InfoBox>
+                    {/* Right column intentionally empty — reserved for future content */}
+                    <div className="hidden md:block" aria-hidden="true"></div>
+                  </div>
+                )}
+              </section>
+
+              {/* ==== 4. PEARLS TO KNOW (formerly Today's Priorities) ==== */}
               {priorityItems.length > 0 && (
                 <section>
                   <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
-                    Today's Priorities
+                    Pearls to know about this patient's conditions
                   </h2>
-                  <div className="bg-indigo-50/40 border border-indigo-200 rounded-lg p-3">
+                  <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-2">
                     {priorityItems.map(item => (
-                      <div key={item.id}>
-                        <CheckboxItem id={item.id} label={item.label} sublabel={item.source} />
+                      <div key={item.id} className="text-sm text-slate-800">
+                        <span className="text-amber-600 font-bold mr-1.5">💡</span>
+                        <span>{item.label}</span>
+                        {item.source && (
+                          <div className="text-xs text-slate-500 italic ml-6 mt-0.5">{item.source}</div>
+                        )}
                       </div>
                     ))}
                   </div>
