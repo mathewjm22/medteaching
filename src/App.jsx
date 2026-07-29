@@ -332,10 +332,11 @@ const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const extractPrenoteSections = (rawText) => {
   if (!rawText || typeof rawText !== "string") return {};
 
-  // Normalize whitespace: even in single-line prenotes, section titles are
-  // typically surrounded by whitespace on both sides. We split on the divider
-  // pattern (20+ dashes, optionally with surrounding whitespace).
-  const dividerPattern = /\s*-{20,}\s*/g;
+  // Prenotes use MULTIPLE divider styles — hyphens (----) AND equals signs (====).
+  // We must handle both. We also need to be tolerant of prenotes that use
+  // equals-sign dividers for major "parts" and hyphens for subsections.
+  // Split on either divider style (20+ of either char, possibly with whitespace).
+  const dividerPattern = /\s*[-=]{20,}\s*/g;
 
   // Split the entire text on divider runs. Between each pair of dividers
   // we alternately have TITLE and BODY (title first when the prenote starts
@@ -349,33 +350,56 @@ const extractPrenoteSections = (rawText) => {
   const sections = {};
   const isTitleLike = (s) => {
     if (!s || s.length > 100) return false;
+    // Take only the FIRST line for title detection — some parts have a title
+    // on line 1 followed by body content on subsequent lines
+    const firstLine = s.split(/[\n\r]/)[0].trim();
+    if (!firstLine || firstLine.length > 100) return false;
     // Count uppercase letters vs. lowercase — titles are mostly uppercase
-    const upper = (s.match(/[A-Z]/g) || []).length;
-    const lower = (s.match(/[a-z]/g) || []).length;
+    const upper = (firstLine.match(/[A-Z]/g) || []).length;
+    const lower = (firstLine.match(/[a-z]/g) || []).length;
     if (upper < 3) return false;
     // If mostly uppercase (and title is short), it's likely a title
-    return upper > lower * 0.7 && s.length < 100;
+    return upper > lower * 0.7 && firstLine.length < 100;
+  };
+
+  // Extract just the title portion (first line) from a title-like part
+  const extractTitle = (s) => s.split(/[\n\r]/)[0].trim();
+
+  // Extract the body portion (everything after the first line) if the title
+  // and body are combined in one part
+  const extractBodyAfterTitle = (s) => {
+    const lines = s.split(/[\n\r]/);
+    if (lines.length <= 1) return null;
+    return lines.slice(1).join("\n").trim();
   };
 
   for (let i = 0; i < parts.length; i++) {
-    const candidateTitle = parts[i];
-    if (!isTitleLike(candidateTitle)) continue;
+    const currentPart = parts[i];
+    if (!isTitleLike(currentPart)) continue;
 
-    // Body = next part that isn't itself a title
-    let body = null;
-    for (let j = i + 1; j < parts.length; j++) {
-      if (isTitleLike(parts[j])) break;
-      body = parts[j];
-      i = j; // consume this body
-      break;
+    const title = extractTitle(currentPart);
+
+    // Body strategy: if the title-like part contains body content after the
+    // first line, use that. Otherwise, look for the next non-title part.
+    let body = extractBodyAfterTitle(currentPart);
+
+    if (!body || body.length < 20) {
+      // Look ahead for a body part
+      for (let j = i + 1; j < parts.length; j++) {
+        if (isTitleLike(parts[j])) break;
+        body = parts[j];
+        i = j; // consume this body
+        break;
+      }
     }
 
     if (!body) continue;
 
-    const normalizedTitle = normalizeSectionTitle(candidateTitle);
+    const normalizedTitle = normalizeSectionTitle(title);
     if (!normalizedTitle) continue;
 
-    // Keep the longer version if a section repeats
+    // Keep the longer version if a section repeats (e.g., PART 1 and PART 2
+    // might both have a WHAT_TO_KNOW section)
     if (!sections[normalizedTitle] || body.length > sections[normalizedTitle].length) {
       sections[normalizedTitle] = body;
     }
@@ -2534,14 +2558,29 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
         const sections = extractPrenoteSections(clinicalNote);
         const parts = [];
 
-        const whatToKnow = getSection(sections, "WHAT TO KNOW ABOUT");
-        if (whatToKnow) parts.push(`Patient summary:\n${whatToKnow}`);
+        const whatToKnow = getSection(sections, "WHAT TO KNOW ABOUT", "PATIENT SUMMARY", "SUMMARY");
+if (whatToKnow) parts.push(`Patient summary:\n${whatToKnow}`);
 
-        const labStudies = getSection(sections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS");
-        if (labStudies) parts.push(`Recent labs:\n${labStudies}`);
+// Also pull in per-problem details from PMH — this is critical for multi-problem
+// cases where each condition has its own status/meds/labs recorded
+const pastMedHx = getSection(sections, "PAST MEDICAL HISTORY", "PMH");
+if (pastMedHx) {
+  // For multi-problem cases, include per-problem context so external AI tools
+  // can see the actual clinical detail for each selected problem
+  if (selectedProblems.length > 1) {
+    parts.push(`Per-problem context from PMH:\n${pastMedHx.slice(0, 3500)}${pastMedHx.length > 3500 ? "\n[truncated]" : ""}`);
+  }
+}
 
-        const imaging = getSection(sections, "IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES");
-        if (imaging && !/no imaging/i.test(imaging)) parts.push(`Diagnostic tests / imaging:\n${imaging}`);
+const labStudies = getSection(sections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS", "RECENT LABS SUMMARY", "RECENT LABS");
+if (labStudies) parts.push(`Recent labs:\n${labStudies}`);
+
+const imaging = getSection(sections, "IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES", "RADIOLOGY PROCEDURES");
+if (imaging && !/no imaging/i.test(imaging) && !/none found/i.test(imaging)) parts.push(`Diagnostic tests / imaging:\n${imaging}`);
+
+// Also include Updates/Recent Visits — provides visit history context
+const updates = getSection(sections, "UPDATES / RECENT VISITS", "UPDATES", "RECENT VISITS");
+if (updates) parts.push(`Recent visit updates:\n${updates.slice(0, 1500)}${updates.length > 1500 ? "\n[truncated]" : ""}`);
 
         if (parts.length > 0) {
           contextLine = "\n\nDe-identified patient context:\n" + parts.join("\n\n");
@@ -2559,31 +2598,52 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
       }
     }
 
-    const base = `Context: I am a teaching attending in internal medicine. My student is a medical student in month ${phase.monthsIn} of a longitudinal integrated clerkship (${phase.name} phase). Their developmental focus: ${phase.focus}.
+    // When multiple problems are selected, restructure the prompt to give each
+// problem equal weight. External AI tools tend to focus on the first/most
+// prominent condition mentioned, so we need to explicitly instruct them to
+// address EACH problem separately with equal depth.
+const hasMultipleProblems = selectedProblems.length > 1;
 
-${ccLine} ${dxLine}${problemsLine}${topicsLine}${lensLine}${contextLine}
+let problemFramingBlock;
+if (hasMultipleProblems) {
+  // Multi-problem framing: enumerate as co-equal, instruct explicit per-problem coverage
+  const numberedProblems = selectedProblems.map((p, i) => `  ${i + 1}. ${p}`).join("\n");
+  problemFramingBlock = `${ccLine ? ccLine + "\n" : ""}This is a MULTI-PROBLEM teaching case. Today's teaching must address ALL of the following ${selectedProblems.length} problems with EQUAL depth and attention — do not focus disproportionately on any one condition:
+
+${numberedProblems}
+
+CRITICAL: Organize your response so each of the ${selectedProblems.length} problems above receives its own dedicated section with the same level of evidence, guidelines, and clinical detail. Do not treat any problem as secondary or as merely "context" for another. The interactions BETWEEN these problems (e.g., how one condition affects management of another) are also teaching-worthy and should be addressed explicitly.${topicsLine}${lensLine}${contextLine}`;
+} else {
+  // Single-problem framing: original behavior
+  problemFramingBlock = `${ccLine} ${dxLine}${problemsLine}${topicsLine}${lensLine}${contextLine}`;
+}
+
+const base = `Context: I am a teaching attending in internal medicine. My student is a medical student in month ${phase.monthsIn} of a longitudinal integrated clerkship (${phase.name} phase). Their developmental focus: ${phase.focus}.
+
+${problemFramingBlock}
 
 I want to focus today's teaching on: ${focusText}.
 
-`;
+${hasMultipleProblems ? `REMINDER: Structure your response with clear sections for each of the ${selectedProblems.length} problems listed above. Each problem deserves complete evidence-based coverage.\n\n` : ""}`;
+
 
     let prompt;
     switch (source) {
       case "openevidence":
-        prompt = base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
-        break;
+  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
+  break;
       case "uptodate":
-        prompt = base + `Provide UpToDate-style content:\n1. Current approach for each focus area\n2. Grade of Recommendation where UpToDate provides one\n3. When to escalate or refer\n4. Patient-centered talking points`;
+  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
         break;
       case "dynamed":
-        prompt = base + `Give DynaMed-style summary:\n1. Level of Evidence for each recommendation\n2. NNT/NNH where applicable\n3. Practice-changing updates in last 2 years\n4. Cost-conscious alternatives\n5. Choosing Wisely recommendations relevant to this case`;
+  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
         break;
       case "doxgpt":
-        prompt = base + `Peer-consult response as an experienced clinician colleague:\n1. Practical real-world guidance\n2. Pearls and pitfalls from experience\n3. How to explain to the patient\n4. Common trainee errors\n5. What you'd worry about missing`;
+  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
         break;
       case "other":
       default:
-        prompt = base + `Provide evidence-based teaching content:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n\nFormat as structured summary I can bring to a teaching session.`;
+  prompt = base + `Provide evidence-based teaching content${hasMultipleProblems ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. For each focus area, current evidence base with landmark citations (author, year, journal)\n2. Current guideline recommendations by name and year\n3. Ongoing clinical equipoise or debate\n4. Evidence that changed practice in the last 2-3 years\n${hasMultipleProblems ? "5. A brief section on relevant interactions BETWEEN these problems (drug interactions, competing management priorities, contraindications one condition creates for another)\n" : ""}\nFormat as structured summary I can bring to a teaching session${hasMultipleProblems ? ", with each problem clearly delineated" : ""}.`;
         break;
     }
 
