@@ -131,9 +131,9 @@ const deidentifyPrenote = (rawText) => {
     const csvMatch = trimmed.match(/^([A-Z][A-Z'\-]{2,}),\s*([A-Z][A-Z'\-]+(?:\s+[A-Z][A-Z'\-]+)?)$/);
     if (csvMatch) addCandidate(`${csvMatch[2]} ${csvMatch[1]}`);
 
-    // All-caps natural order: "RYAN DUANE WHITHORN"
-    const naturalMatch = trimmed.match(/^([A-Z][A-Z'\-]{2,}(?:\s+[A-Z][A-Z'\-]{2,}){1,3})$/);
-    if (naturalMatch) addCandidate(naturalMatch[1]);
+    // All-caps natural order: "RYAN DUANE WHITHORN" or "BENJAMIN C PARKS" (with middle initial)
+const naturalMatch = trimmed.match(/^([A-Z][A-Z'\-]{1,}(?:\s+[A-Z][A-Z'\-]*\.?){1,3})$/);
+if (naturalMatch) addCandidate(naturalMatch[1]);
   }
 
   // ---- Pattern set 3: Title + capitalized name anywhere ----
@@ -258,6 +258,12 @@ const deidentifyPrenote = (rawText) => {
   text = text.replace(/\bVA\d{8,}\b/g, (match) => {
     addFinding("identifier", match, "[VA ID removed]");
     return "[VA ID removed]";
+  });
+
+  // DOB labels — even if the date has been reduced, the DOB context itself is identifying
+  text = text.replace(/\bDOB:\s*\d{1,2}\/\d{4}\b/gi, (match) => {
+    addFinding("dob", match, "[DOB removed]");
+    return "[DOB removed]";
   });
 
   // Unlabeled numeric identifiers sitting next to the patient's replaced name.
