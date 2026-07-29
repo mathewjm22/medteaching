@@ -314,6 +314,176 @@ const deidentifyPrenote = (rawText) => {
 // Utility for building regex from arbitrary strings
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// ===== Prenote section extractor =====
+// Prenotes use a consistent format: sections separated by lines of dashes
+// (40+ hyphens), with the section title on its own line between two divider
+// lines. Example:
+//   ----------------------------------------------------------------
+//   WHAT TO KNOW ABOUT PATIENT NAME
+//   ----------------------------------------------------------------
+//   - Body content...
+//
+// Returns a map keyed by normalized section name → raw text content.
+// Section names are uppercased and stripped of trailing "ABOUT [name]"-style
+// suffixes so we can look them up reliably regardless of the exact wording.
+const extractPrenoteSections = (rawText) => {
+  if (!rawText || typeof rawText !== "string") return {};
+
+  const lines = rawText.split(/\r?\n/);
+  const sections = {};
+  const dividerRegex = /^-{20,}$/;
+
+  // Walk lines looking for the pattern: divider → title → divider → body...
+  // Body ends at the next divider that precedes another title (or end of file).
+  let i = 0;
+  while (i < lines.length) {
+    if (dividerRegex.test(lines[i].trim())) {
+      // Divider found. Next non-empty line should be the title.
+      let titleIdx = i + 1;
+      while (titleIdx < lines.length && !lines[titleIdx].trim()) titleIdx++;
+      if (titleIdx >= lines.length) break;
+
+      const title = lines[titleIdx].trim();
+      // Must be followed by another divider
+      let closingIdx = titleIdx + 1;
+      while (closingIdx < lines.length && !lines[closingIdx].trim()) closingIdx++;
+      if (closingIdx >= lines.length || !dividerRegex.test(lines[closingIdx].trim())) {
+        i = titleIdx + 1;
+        continue;
+      }
+
+      // Body starts after the closing divider
+      let bodyStart = closingIdx + 1;
+      let bodyEnd = bodyStart;
+
+      // Body extends until we hit the next section (divider→title→divider) or end of file
+      while (bodyEnd < lines.length) {
+        if (dividerRegex.test(lines[bodyEnd].trim())) {
+          // Is this the start of the next section? Look ahead for title+divider pattern
+          let peekTitle = bodyEnd + 1;
+          while (peekTitle < lines.length && !lines[peekTitle].trim()) peekTitle++;
+          if (peekTitle < lines.length && lines[peekTitle].trim().length > 0) {
+            let peekClose = peekTitle + 1;
+            while (peekClose < lines.length && !lines[peekClose].trim()) peekClose++;
+            if (peekClose < lines.length && dividerRegex.test(lines[peekClose].trim())) {
+              // Yes — next section starts here. Stop body before this divider.
+              break;
+            }
+          }
+        }
+        bodyEnd++;
+      }
+
+      const body = lines.slice(bodyStart, bodyEnd).join("\n").trim();
+      const normalizedTitle = normalizeSectionTitle(title);
+      if (normalizedTitle && body) {
+        // If duplicate section titles exist, keep the longer one
+        if (!sections[normalizedTitle] || body.length > sections[normalizedTitle].length) {
+          sections[normalizedTitle] = body;
+        }
+      }
+      i = bodyEnd;
+    } else {
+      i++;
+    }
+  }
+
+  return sections;
+};
+
+// Normalize a section title to a stable key. Strips patient-name suffixes so
+// e.g., "WHAT TO KNOW ABOUT JOHN DOE" and "WHAT TO KNOW ABOUT JANE" both map
+// to "WHAT_TO_KNOW_ABOUT".
+const normalizeSectionTitle = (title) => {
+  if (!title) return null;
+  let t = title.toUpperCase().trim();
+  // Strip trailing patient-name-style suffixes
+  t = t.replace(/\bABOUT\s+[A-Z][A-Z\s\.\-']+$/, "ABOUT");
+  t = t.replace(/\bFOR\s+[A-Z][A-Z\s\.\-']+$/, "FOR");
+  // Collapse whitespace and convert to underscore-key
+  t = t.replace(/\s+/g, "_").replace(/[^A-Z0-9_]/g, "");
+  return t || null;
+};
+
+// Convenience: get a section by trying multiple candidate keys
+const getSection = (sections, ...candidates) => {
+  for (const c of candidates) {
+    const key = normalizeSectionTitle(c);
+    if (key && sections[key]) return sections[key];
+  }
+  return null;
+};
+
+// Extract the "CURRENT MEDICATIONS" subsection out of the full MED REC text.
+// Stops at "RECENTLY DISCONTINUED" or "SIGNIFICANT HISTORICAL" or end of text.
+const extractCurrentMedsSubsection = (medRecText) => {
+  if (!medRecText) return "";
+  const lines = medRecText.split(/\r?\n/);
+  let inCurrent = false;
+  let started = false;
+  const out = [];
+  for (const line of lines) {
+    const upper = line.trim().toUpperCase();
+    if (/CURRENT\s+MEDICATIONS?/.test(upper)) {
+      inCurrent = true;
+      started = true;
+      continue;
+    }
+    if (started && (/RECENTLY\s+DISCONTINUED/.test(upper) || /SIGNIFICANT\s+HISTORICAL/.test(upper) || /HISTORICAL\s+MEDICATIONS?/.test(upper))) {
+      inCurrent = false;
+      break;
+    }
+    if (inCurrent) out.push(line);
+  }
+  // If no explicit CURRENT header found, treat the whole thing as current
+  return out.length > 0 ? out.join("\n").trim() : medRecText;
+};
+
+// Also extract discontinued and historical for the collapsible in-room dropdowns
+const extractMedSubsection = (medRecText, targetHeaderRegex, stopRegexes = []) => {
+  if (!medRecText) return "";
+  const lines = medRecText.split(/\r?\n/);
+  let inTarget = false;
+  const out = [];
+  for (const line of lines) {
+    const upper = line.trim().toUpperCase();
+    if (targetHeaderRegex.test(upper)) {
+      inTarget = true;
+      continue;
+    }
+    if (inTarget && stopRegexes.some(r => r.test(upper))) break;
+    if (inTarget) out.push(line);
+  }
+  return out.join("\n").trim();
+};
+
+// Parse medication names from a chunk of med-list text. Very forgiving —
+// looks for lines with a med-name-like pattern followed by a dose.
+// Returns just the generic/brand name (no dose, no route, no indication).
+const parseMedNames = (text) => {
+  if (!text) return [];
+  const names = new Set();
+  const lines = text.split(/\r?\n/);
+  for (const rawLine of lines) {
+    let line = rawLine.trim();
+    if (!line) continue;
+    // Strip bullet chars and specialty group markers
+    line = line.replace(/^[\-\*•●○▪▫►◆·]+\s*/, "");
+    line = line.replace(/^[A-Za-z\/\s]+:\s*$/, ""); // strip lines that are just "Endocrinology:"
+    if (!line) continue;
+    // Match: capitalized word (drug name) optionally followed by another word,
+    // then a dose+unit like "10 mg" or "25 mcg" or "0.5 mg"
+    const m = line.match(/([A-Z][a-zA-Z\-\/]+(?:\s+[a-zA-Z]+)?)\s+(\d+(?:\.\d+)?)\s*(mg|mcg|g|IU|units?|mL|meq|%)\b/i);
+    if (m) {
+      const name = m[1].trim();
+      // Skip obvious false positives
+      if (/^(Started|Stopped|Continue|Discontinued|Reason|Dose|Increased|Decreased|Active|Past)$/i.test(name)) continue;
+      names.add(name);
+    }
+  }
+  return Array.from(names);
+};
+
 // ===== Storage adapter =====
 // Wraps localStorage in an async API matching the shape we use throughout.
 // Falls back to no-op if storage is unavailable (private browsing, disabled, etc.)
@@ -2138,6 +2308,50 @@ Return ONLY valid JSON (no markdown fences):
     return { teachingCases, crossCuttingThemes, questionsForReflection, caseResults, themesStatus, themesError };
   };
 
+  // ===== Med descriptions (pre-visit only) =====
+  // Takes a list of medication names, returns a map keyed by name → short
+  // description ("what it treats / mechanism of action"). Used to annotate
+  // the medication list in the in-room document so the student sees why the
+  // patient is on each drug at a glance. One batch call to keep it cheap.
+  const generateMedDescriptions = async (medNames) => {
+    if (!aiEnabled || !medNames?.length) return {};
+
+    const sys = `You are a clinical pharmacist writing brief medication summaries for a medical student. For each medication provided, return ONE object with two very short strings:
+
+- "treats": common clinical indications for this drug, 3-8 words. E.g., "hypertension, heart failure" or "hypothyroidism, thyroid cancer suppression".
+- "mechanism": mechanism of action in plain language, 6-15 words. E.g., "ARB — blocks angiotensin II at the AT1 receptor to lower BP" or "synthetic T4 that gets converted to T3 in tissue".
+
+Keep descriptions FACTUAL and BRIEF. No filler, no caveats, no dosing info.
+
+Return ONLY valid JSON (no markdown fences):
+{
+  "medications": {
+    "medication_name_1": {"treats": "...", "mechanism": "..."},
+    "medication_name_2": {"treats": "...", "mechanism": "..."}
+  }
+}
+
+The keys in "medications" must EXACTLY match the medication names I provide (case-insensitive OK, but preserve spelling). If a name is a brand name, use it; if it's a generic, use it.`;
+
+    const user = `Provide brief descriptions for these medications:\n${medNames.map((m, i) => `${i + 1}. ${m}`).join("\n")}`;
+
+    try {
+      const response = await callAi(sys, user, 1500);
+      const parsed = extractJson(response);
+      const result = {};
+      // Normalize keys for reliable lookup
+      Object.entries(parsed.medications || {}).forEach(([name, desc]) => {
+        result[name.toLowerCase().trim()] = desc;
+      });
+      return result;
+    } catch (e) {
+      console.warn("[generateMedDescriptions] failed:", e.message);
+      return {};
+    }
+  };
+
+  // PubMed AI performs best here with a single, plain-language topic per prompt.
+
   // PubMed AI performs best here with a single, plain-language topic per prompt.
   const generatePubmedAiPrompt = (topic) => {
     const cleanTopic = String(topic || "")
@@ -2249,6 +2463,30 @@ I want to focus today's teaching on: ${focusText}.
       setAiStatus(prev => ({ ...prev, progress: "Generating teaching cases" }));
       try {
         aiContent = await generateAiTeachingContent(synthesized, cachedSuccessfulCases, retryFailedOnly);
+
+        // Pre-visit only: extract current-medications from the prenote and get brief
+        // descriptions for each. This annotates the top medication table in the in-room doc.
+        if (sessionMode === "pre") {
+          const sections = extractPrenoteSections(clinicalNote);
+          const medRec = getSection(sections, "MED REC", "MEDICATIONS", "MEDICATION LIST");
+          if (medRec) {
+            // Parse med names from the CURRENT MEDICATIONS subsection.
+            // Format is loose — meds may be bulleted, indented, or grouped by specialty.
+            // We look for medication-like tokens (capitalized word + dose unit like mg/mcg/units).
+            const currentMedSection = extractCurrentMedsSubsection(medRec);
+            const medNames = parseMedNames(currentMedSection);
+            if (medNames.length > 0) {
+              setAiStatus(prev => ({ ...prev, progress: `Getting descriptions for ${medNames.length} medications` }));
+              try {
+                const descriptions = await generateMedDescriptions(medNames);
+                aiContent.medDescriptions = descriptions;
+              } catch (e) {
+                console.warn("Med descriptions failed:", e);
+                aiContent.medDescriptions = {};
+              }
+            }
+          }
+        }
 
         // Record per-case outcomes
         (aiContent?.caseResults || []).forEach(cr => {
