@@ -7580,7 +7580,7 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                               <tr key={mi} className={mi > 0 ? "border-t border-slate-100" : ""}>
                                 <td className="px-3 py-1.5 font-medium text-slate-900">
                                   
-                                    href={utdUrl}
+                                    <a href={utdUrl}
                                     target="_blank"
                                     rel="noreferrer"
                                     className="text-indigo-700 hover:text-indigo-900 hover:underline"
