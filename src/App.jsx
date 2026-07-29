@@ -457,6 +457,94 @@ const extractMedSubsection = (medRecText, targetHeaderRegex, stopRegexes = []) =
   return out.join("\n").trim();
 };
 
+// Parse per-problem details out of the PAST MEDICAL HISTORY prenote section.
+// Each problem in a VA-style prenote is a block starting with a diagnosis
+// name followed by bulleted fields like "* Current status:", "* Medications - Current:", etc.
+// Returns a map keyed by lowercased problem name → structured fields.
+const parseProblemBlocks = (pmhText) => {
+  if (!pmhText) return {};
+
+  const blocks = {};
+  const lines = pmhText.split(/\r?\n/);
+
+  // A problem block starts with a line that looks like a diagnosis header:
+  // e.g., "Anxiety (F41.9)" or "Postsurgical hypothyroidism (stable)" —
+  // typically Capitalized, may contain parens with ICD or status, and is
+  // NOT indented and NOT bulleted.
+  const isProblemHeader = (line) => {
+    const t = line.trim();
+    if (!t || t.length > 120) return false;
+    if (/^[\*\-•●○▪▫►◆·]/.test(t)) return false;      // starts with bullet
+    if (/^[A-Z][A-Z0-9 /&\-,()]+$/.test(t)) return false; // ALL CAPS section header
+    if (/^(current|past|lab|recent|imaging|complications|care|what|status|consult|medications)\b/i.test(t)) return false; // field label
+    // Capitalized start, has letters, isn't a bullet or field
+    return /^[A-Z]/.test(t) && /[a-z]/.test(t);
+  };
+
+  let currentProblem = null;
+  let currentBuffer = [];
+
+  const flush = () => {
+    if (currentProblem && currentBuffer.length > 0) {
+      const body = currentBuffer.join("\n");
+      blocks[currentProblem.toLowerCase().trim()] = {
+        rawHeader: currentProblem,
+        rawBody: body,
+        currentMeds: extractField(body, /Medications?\s*-?\s*Current:?/i),
+        pastMeds: extractField(body, /Past:?/i, [/Lab trends/i, /Recent control/i, /Imaging/i]),
+        labTrends: extractField(body, /Lab trends relevant:?/i, [/Recent control/i, /Imaging/i, /Complications/i]),
+        recentControl: extractField(body, /Recent control(?:\/trends)?:?/i, [/Imaging/i, /Complications/i, /Care team/i]),
+        imaging: extractField(body, /Imaging(?:\/procedures)?:?/i, [/Complications/i, /Care team/i, /What this/i]),
+        careTeam: extractField(body, /Care team:?/i, [/What this/i, /Status notes/i, /Consult/i]),
+        currentStatus: extractField(body, /Current status:?/i, [/Medications/i, /Past:/i, /Lab trends/i]),
+        statusNotes: extractField(body, /Status notes:?/i, [/Consult/i]),
+      };
+    }
+    currentBuffer = [];
+  };
+
+  for (const line of lines) {
+    if (isProblemHeader(line)) {
+      flush();
+      currentProblem = line.trim();
+    } else if (currentProblem) {
+      currentBuffer.push(line);
+    }
+  }
+  flush();
+
+  return blocks;
+};
+
+// Extract the text of a single "* Field:" entry from a problem block.
+// Field header regex matches the label, stop regexes mark where content ends.
+const extractField = (blockText, fieldHeaderRegex, stopRegexes = []) => {
+  const lines = blockText.split(/\r?\n/);
+  let inField = false;
+  const out = [];
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/^\s*[\*\-•●○▪▫►◆·]?\s*/, "");
+    if (fieldHeaderRegex.test(line)) {
+      inField = true;
+      // Content on the same line as the label
+      const inline = line.replace(fieldHeaderRegex, "").trim();
+      if (inline) out.push(inline);
+      continue;
+    }
+    if (inField) {
+      // Stop if we hit any of the "next field" headers
+      if (stopRegexes.some(r => r.test(line))) break;
+      // Stop if we hit a new bullet-labeled field entirely
+      if (/^[A-Z][a-zA-Z\s\/]+:/.test(line.trim()) && !/^\s/.test(rawLine)) break;
+      out.push(rawLine);
+    }
+  }
+  const joined = out.join("\n").trim();
+  // Filter out "none", "none documented", "not documented" as empty
+  if (/^(none|none documented|not documented|not available)\.?$/i.test(joined)) return null;
+  return joined || null;
+};
+
 // Parse medication names from a chunk of med-list text. Very forgiving —
 // looks for lines with a med-name-like pattern followed by a dose.
 // Returns just the generic/brand name (no dose, no route, no indication).
@@ -6313,6 +6401,27 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
   const currentMedNames = parseMedNames(currentMedsText);
   const medDescriptions = doc.medDescriptions || {};
 
+  // Parse per-problem prenote details for use in cheat sheets. Keyed by lowercased problem name.
+  // Fuzzy-matches problem name against selected teaching cases so slight naming differences
+  // (e.g., "Hypothyroidism" vs "Postsurgical hypothyroidism") still find each other.
+  const problemBlocks = React.useMemo(() => parseProblemBlocks(pastMedHx || ""), [pastMedHx]);
+
+  const findProblemBlock = (problemName) => {
+    if (!problemName) return null;
+    const target = problemName.toLowerCase().trim();
+    // Try exact match first
+    if (problemBlocks[target]) return problemBlocks[target];
+    // Try substring match either direction
+    for (const [key, val] of Object.entries(problemBlocks)) {
+      if (key.includes(target) || target.includes(key)) return val;
+      // Try comparing significant tokens (ignore common stop-words + ICD parens)
+      const stripKey = key.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
+      const stripTarget = target.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
+      if (stripKey && stripTarget && (stripKey.includes(stripTarget) || stripTarget.includes(stripKey))) return val;
+    }
+    return null;
+  };
+
   // Helper to render a verbatim text block preserving whitespace/newlines
   const VerbatimBlock = ({ text }) => (
     <div
@@ -6332,28 +6441,6 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
       {children}
     </div>
   );
-
-  // Extract med list from note analysis if AI captured meds, otherwise fall back to what we have
-  const medList = React.useMemo(() => {
-    // AI analysis doesn't currently extract a structured med list per problem,
-    // but the note itself has meds. We surface what we have — teaching cases
-    // often reference meds in their treatmentApproach section.
-    const meds = new Map();
-    enabledCases.forEach(tc => {
-      const c = tc.data;
-      (c.treatmentApproach?.firstLine || []).forEach(t => {
-        if (t.treatment && !meds.has(t.treatment)) {
-          meds.set(t.treatment, {
-            name: t.treatment,
-            dosing: t.dosing || "",
-            forProblem: c.problem,
-            flagForReview: false,
-          });
-        }
-      });
-    });
-    return Array.from(meds.values());
-  }, [enabledCases]);
 
   // Build the priorities checklist from session goal + per-case key learning points
   const priorityItems = React.useMemo(() => {
@@ -7719,20 +7806,23 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                 </section>
               )}
 
-              {/* ==== 3. PROBLEM-BY-PROBLEM CHEAT SHEETS ==== */}
+              {/* ==== 5. PROBLEM-BY-PROBLEM CHEAT SHEETS ==== */}
               {enabledCases.map((tc, idx) => {
                 const c = tc.data;
                 const teachingExpanded = !!expandedTeaching[idx];
+                // Pull verbatim chart details from the prenote for this problem
+                const chartBlock = findProblemBlock(c.problem) || findProblemBlock(c.primaryDiagnosis?.name);
+
                 return (
                   <section key={idx} className="in-room-problem-card border-2 border-slate-200 rounded-lg overflow-hidden">
-                    {/* Problem header */}
+                    {/* Problem header — no more "Problem N of M" */}
                     <div className="bg-slate-800 text-white px-4 py-2.5">
                       <div className="flex items-center justify-between gap-2 flex-wrap">
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wider opacity-70">
-                            {c.kind === "tangential" ? "Tangential topic" : `Problem ${idx + 1} of ${enabledCases.length}`}
-                          </div>
-                          <div className="text-base font-semibold">{c.problem}</div>
+                        <div className="text-base font-semibold">
+                          {c.kind === "tangential" && (
+                            <span className="text-[10px] uppercase tracking-wider opacity-70 mr-2 font-normal">Tangential topic ·</span>
+                          )}
+                          {c.problem}
                         </div>
                         {c.primaryDiagnosis?.name && c.primaryDiagnosis.name !== c.problem && (
                           <div className="text-xs opacity-80 italic">{c.primaryDiagnosis.name}</div>
@@ -7741,128 +7831,175 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                     </div>
 
                     <div className="p-4 space-y-4 bg-white">
-                      {/* Current status */}
-                      {c.primaryDiagnosis?.briefDefinition && (
+
+                      {/* 1. Current status — one-liner */}
+                      {(chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition) && (
                         <div>
                           <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Current status</div>
-                          <p className="text-sm text-slate-800">{c.primaryDiagnosis.briefDefinition}</p>
+                          <p className="text-sm text-slate-800 whitespace-pre-wrap">
+                            {chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition}
+                          </p>
                         </div>
                       )}
 
-                      {/* Key questions to ask */}
-                      {c.focusedHistoryQuestions?.length > 0 && (
+                      {/* 2. Current management — active meds + past meds */}
+                      {(chartBlock?.currentMeds || chartBlock?.pastMeds || c.treatmentApproach?.firstLine?.length > 0) && (
                         <div>
-                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
-                            Questions to ask
-                          </div>
-                          <div className="bg-slate-50 rounded p-2 border border-slate-200">
-                            {c.focusedHistoryQuestions.map((hq, hi) => (
-                              <CheckboxItem
-                                key={hi}
-                                id={`case-${idx}-q-${hi}`}
-                                label={hq.question}
-                                sublabel={hq.rationale}
-                              />
-                            ))}
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Current management</div>
+                          <div className="bg-slate-50 rounded p-2.5 border border-slate-200 space-y-2">
+                            {chartBlock?.currentMeds && (
+                              <div>
+                                <div className="text-xs font-semibold text-slate-700 mb-0.5">Active:</div>
+                                <div className="text-sm text-slate-800 whitespace-pre-wrap">{chartBlock.currentMeds}</div>
+                              </div>
+                            )}
+                            {chartBlock?.pastMeds && (
+                              <div>
+                                <div className="text-xs font-semibold text-slate-700 mb-0.5">Past:</div>
+                                <div className="text-sm text-slate-700 whitespace-pre-wrap">{chartBlock.pastMeds}</div>
+                              </div>
+                            )}
+                            {!chartBlock?.currentMeds && c.treatmentApproach?.firstLine?.length > 0 && (
+                              <ul className="text-sm text-slate-800 space-y-1 pl-4">
+                                {c.treatmentApproach.firstLine.map((t, ti) => (
+                                  <li key={ti} className="list-disc">
+                                    <span className="font-medium">{t.treatment}</span>
+                                    {t.dosing && <span className="text-slate-700"> — {t.dosing}</span>}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
                           </div>
                         </div>
                       )}
 
-                      {/* Physical exam checklist */}
-                      {c.physicalExam?.maneuver && (
+                      {/* 3. Applicable labs & results + AI learning points */}
+                      {(chartBlock?.labTrends || chartBlock?.recentControl || c.keyLabsAndImaging?.length > 0) && (
                         <div>
-                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
-                            Physical exam
-                          </div>
-                          <div className="bg-slate-50 rounded p-2 border border-slate-200">
-                            <CheckboxItem
-                              id={`case-${idx}-exam`}
-                              label={c.physicalExam.maneuver}
-                              sublabel={c.physicalExam.interpretation}
-                            />
-                            {c.physicalExam.steps?.length > 0 && (
-                              <div className="ml-6 mt-1 text-xs text-slate-600">
-                                <span className="font-medium">Steps:</span> {c.physicalExam.steps.join(" → ")}
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Applicable labs & results</div>
+                          <div className="space-y-2">
+                            {chartBlock?.labTrends && (
+                              <div className="text-sm text-slate-800 whitespace-pre-wrap">{chartBlock.labTrends}</div>
+                            )}
+                            {chartBlock?.recentControl && (
+                              <div className="text-sm text-slate-700 whitespace-pre-wrap italic">
+                                <span className="font-semibold not-italic">Recent trend: </span>
+                                {chartBlock.recentControl}
+                              </div>
+                            )}
+                            {c.keyLabsAndImaging?.length > 0 && (
+                              <div className="bg-indigo-50/40 border border-indigo-200 rounded p-2.5 mt-2">
+                                <div className="text-[10px] uppercase tracking-wider text-indigo-800 font-semibold mb-1">💡 Why these labs matter for this problem</div>
+                                <ul className="text-sm text-slate-800 space-y-1.5 pl-4">
+                                  {c.keyLabsAndImaging.map((lab, li) => (
+                                    <li key={li} className="list-disc">
+                                      <span className="font-medium">{lab.study}</span>
+                                      {lab.purpose && <span className="text-slate-700"> — {lab.purpose}</span>}
+                                      {lab.interpretation && (
+                                        <div className="text-xs text-slate-600 italic mt-0.5">{lab.interpretation}</div>
+                                      )}
+                                    </li>
+                                  ))}
+                                </ul>
                               </div>
                             )}
                           </div>
                         </div>
                       )}
 
-                      {/* Labs / imaging for this problem */}
-                      {c.keyLabsAndImaging?.length > 0 && (
+                      {/* 4. Imaging done + teaching reasoning */}
+                      {chartBlock?.imaging && (
                         <div>
-                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
-                            Relevant labs / imaging
-                          </div>
-                          <ul className="text-sm text-slate-800 space-y-1 pl-4">
-                            {c.keyLabsAndImaging.map((lab, li) => (
-                              <li key={li} className="list-disc">
-                                <span className="font-medium">{lab.study}</span>
-                                {lab.purpose && <span className="text-slate-600"> — {lab.purpose}</span>}
-                              </li>
-                            ))}
-                          </ul>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Imaging / procedures done</div>
+                          <div className="text-sm text-slate-800 whitespace-pre-wrap">{chartBlock.imaging}</div>
                         </div>
                       )}
 
-                      {/* Meds for this problem */}
-                      {c.treatmentApproach?.firstLine?.length > 0 && (
+                      {/* 5. Care team */}
+                      {chartBlock?.careTeam && (
                         <div>
-                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">
-                            Current management
-                          </div>
-                          <ul className="text-sm text-slate-800 space-y-1 pl-4">
-                            {c.treatmentApproach.firstLine.map((t, ti) => (
-                              <li key={ti} className="list-disc">
-                                <span className="font-medium">{t.treatment}</span>
-                                {t.dosing && <span className="text-slate-700"> — {t.dosing}</span>}
-                              </li>
-                            ))}
-                          </ul>
+                          <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Care team</div>
+                          <div className="text-sm text-slate-800 whitespace-pre-wrap">{chartBlock.careTeam}</div>
                         </div>
                       )}
 
-                      {/* Red flags — screen for */}
-                      {doc.noteAnalysis?.redFlags?.length > 0 && idx === 0 && (
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wider text-red-700 font-semibold mb-1">
-                            🚩 Red flags — actively screen for
-                          </div>
-                          <div className="bg-red-50 rounded p-2 border border-red-200">
-                            {doc.noteAnalysis.redFlags.map((rf, ri) => (
-                              <CheckboxItem
-                                key={ri}
-                                id={`redflag-${ri}`}
-                                label={rf}
-                              />
-                            ))}
-                          </div>
+                      {/* ------ TEACHING SECTION divider ------ */}
+                      <div className="pt-3 mt-2 border-t-2 border-indigo-200">
+                        <div className="text-[10px] uppercase tracking-wider text-indigo-800 font-bold mb-3">
+                          📚 Teaching for this problem
                         </div>
-                      )}
 
-                      {/* Collapsed teaching content */}
-                      <div className="pt-2 border-t border-slate-200">
-                        <button
-                          onClick={() => setExpandedTeaching({ ...expandedTeaching, [idx]: !teachingExpanded })}
-                          className="in-room-teaching-toggle w-full flex items-center justify-between text-xs text-indigo-700 hover:text-indigo-900 font-medium py-1"
-                        >
-                          <span className="flex items-center gap-1">
-                            {teachingExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
-                            Teaching content for this problem (illness script, differential, learning points)
-                          </span>
-                          <span className="text-slate-400 italic text-[10px]">
-                            {teachingExpanded ? "hide" : "show"}
-                          </span>
-                        </button>
-                        {(teachingExpanded || false) && (
+                        {/* Questions to think about (reframed — NOT a checklist of literal questions) */}
+                        {c.focusedHistoryQuestions?.length > 0 && (
+                          <div className="mb-4">
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Questions to think about</div>
+                            <div className="bg-slate-50 rounded p-3 border border-slate-200 space-y-3">
+                              {c.focusedHistoryQuestions.map((hq, hi) => (
+                                <div key={hi} className="text-sm text-slate-800">
+                                  <div className="font-medium">{hq.question}</div>
+                                  {hq.rationale && (
+                                    <div className="text-xs text-slate-600 mt-1 leading-relaxed">{hq.rationale}</div>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Physical exam */}
+                        {c.physicalExam?.maneuver && (
+                          <div className="mb-4">
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-1">Physical exam</div>
+                            <div className="bg-slate-50 rounded p-3 border border-slate-200">
+                              <div className="text-sm font-medium text-slate-800">{c.physicalExam.maneuver}</div>
+                              {c.physicalExam.interpretation && (
+                                <div className="text-xs text-slate-600 mt-1 italic">{c.physicalExam.interpretation}</div>
+                              )}
+                              {c.physicalExam.steps?.length > 0 && (
+                                <div className="mt-1.5 text-xs text-slate-600">
+                                  <span className="font-medium">Steps:</span> {c.physicalExam.steps.join(" → ")}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Red flags (only shown on first card to avoid duplication) */}
+                        {doc.noteAnalysis?.redFlags?.length > 0 && idx === 0 && (
+                          <div className="mb-4">
+                            <div className="text-[10px] uppercase tracking-wider text-red-700 font-semibold mb-1">
+                              🚩 Red flags — actively screen for
+                            </div>
+                            <div className="bg-red-50 rounded p-3 border border-red-200">
+                              <ul className="text-sm text-red-900 space-y-1 pl-4">
+                                {doc.noteAnalysis.redFlags.map((rf, ri) => (
+                                  <li key={ri} className="list-disc">{rf}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Collapsible teaching: The classic picture + Differential + Learning points */}
+                        <div className="pt-1">
+                          <button
+                            onClick={() => setExpandedTeaching({ ...expandedTeaching, [idx]: !teachingExpanded })}
+                            className="in-room-teaching-toggle w-full flex items-center justify-between text-xs text-indigo-700 hover:text-indigo-900 font-medium py-1"
+                          >
+                            <span className="flex items-center gap-1">
+                              {teachingExpanded ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+                              The classic picture, differential, and learning points
+                            </span>
+                            <span className="text-slate-400 italic text-[10px]">
+                              {teachingExpanded ? "hide" : "show"}
+                            </span>
+                          </button>
                           <div className="mt-2 space-y-3 text-sm in-room-teaching-collapsed" style={{ display: teachingExpanded ? "block" : "none" }}>
-                            {/* Illness script */}
                             {c.illnessScript && (c.illnessScript.epidemiology || c.illnessScript.keySymptoms) && (
                               <div className="bg-slate-50 p-3 rounded border border-slate-200">
-                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1.5">Illness script</div>
+                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1.5">The classic picture</div>
                                 <div className="space-y-1 text-xs text-slate-700">
-                                  {c.illnessScript.epidemiology && <div><strong>Epidemiology:</strong> {c.illnessScript.epidemiology}</div>}
+                                  {c.illnessScript.epidemiology && <div><strong>Who gets it:</strong> {c.illnessScript.epidemiology}</div>}
                                   {c.illnessScript.timeCourse && <div><strong>Time course:</strong> {c.illnessScript.timeCourse}</div>}
                                   {c.illnessScript.keySymptoms && <div><strong>Key symptoms:</strong> {c.illnessScript.keySymptoms}</div>}
                                   {c.illnessScript.keySigns && <div><strong>Key signs:</strong> {c.illnessScript.keySigns}</div>}
@@ -7872,7 +8009,6 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                               </div>
                             )}
 
-                            {/* Differential */}
                             {c.differentialDiagnosis?.length > 0 && (
                               <div>
                                 <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Differential</div>
@@ -7886,64 +8022,28 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
                               </div>
                             )}
 
-                            {/* Learning points */}
                             {c.keyLearningPoints?.length > 0 && (
                               <div>
-                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">
-                                  Learning points
-                                </div>
+                                <div className="text-[10px] uppercase tracking-wider text-slate-600 font-semibold mb-1">Learning points</div>
                                 <ol className="text-xs text-slate-700 space-y-1 pl-5">
                                   {c.keyLearningPoints.map((lp, lpi) => (
                                     <li key={lpi} className="list-decimal">
                                       <strong>{lp.point}:</strong> {lp.explanation}
-                                      {lp.citation && (
-                                        <em className="text-slate-500 ml-1">
-                                          ({lp.citation})
-                                        </em>
-                                      )}
+                                      {lp.citation && <em className="text-slate-500 ml-1">({lp.citation})</em>}
                                     </li>
                                   ))}
                                 </ol>
                               </div>
                             )}
                           </div>
-                        )}
+                        </div>
                       </div>
                     </div>
                   </section>
                 );
               })}
 
-              {/* ==== 4. MED LIST ==== */}
-              {medList.length > 0 && (
-                <section>
-                  <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
-                    Current Medications (from teaching cases)
-                  </h2>
-                  <div className="bg-white border border-slate-200 rounded-lg overflow-hidden">
-                    <table className="w-full text-sm">
-                      <thead className="bg-slate-100 text-[10px] uppercase tracking-wider text-slate-600">
-                        <tr>
-                          <th className="text-left px-3 py-1.5">Medication</th>
-                          <th className="text-left px-3 py-1.5">Dosing</th>
-                          <th className="text-left px-3 py-1.5">For</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {medList.map((med, mi) => (
-                          <tr key={mi} className={mi > 0 ? "border-t border-slate-100" : ""}>
-                            <td className="px-3 py-1.5 font-medium text-slate-900">{med.name}</td>
-                            <td className="px-3 py-1.5 text-slate-700">{med.dosing || "—"}</td>
-                            <td className="px-3 py-1.5 text-slate-600 text-xs">{med.forProblem}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </section>
-              )}
-
-              {/* ==== 5. PATIENT QUOTES / CONTEXT ==== */}
+              {/* ==== 6. PATIENT QUOTES / CONTEXT ==== */}
               {doc.patientQuotes?.length > 0 && (
                 <section>
                   <h2 className="text-sm font-bold text-indigo-900 uppercase tracking-wider mb-2 pb-1 border-b-2 border-indigo-200">
