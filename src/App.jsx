@@ -3561,12 +3561,15 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
     const generateSourcePrompt = (source) => {
     // These are conservative app budgets, not claims about each service's
     // official limit. The completed instructions are never sliced.
+    // Caps bumped from prior version because the new output-structure block is
+    // longer, and the requested output is longer too. UpToDate stays tighter
+    // because it rejects long prompts more aggressively.
     const promptCaps = {
-      uptodate: 5200,
-      doxgpt: 6000,
-      openevidence: 7000,
-      dynamed: 7000,
-      other: 7000,
+      uptodate: 7500,
+      doxgpt: 7500,
+      openevidence: 8500,
+      dynamed: 8500,
+      other: 8500,
     };
 
     const promptCap =
@@ -3615,95 +3618,98 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
       .filter(Boolean)
       .slice(0, 6);
 
-    // The prior full benchmark paragraph consumed substantial prompt space.
-    // The phase name and month are sufficient to set learner level.
-    const learnerLine =
-      `Learner level: month ${phase.monthsIn} of a longitudinal integrated clerkship ` +
-      `(${phase.name}). Tailor the teaching to this level.`;
+    // Learner level — phase-aware framing that reads naturally to external tools.
+    // End-of-year students get shelf/PGY-1 framing; earlier students get their
+    // phase mentioned so the tool calibrates depth appropriately.
+    const learnerLine = phase.monthsIn >= 9
+      ? "Learner level: End-of-clerkship / incoming PGY-1 internal medicine. Tailor teaching to shelf exam preparation AND early residency clinical decision-making."
+      : phase.monthsIn >= 5
+      ? `Learner level: Mid-clerkship medical student (month ${phase.monthsIn} of longitudinal integrated clerkship). Tailor teaching to shelf exam preparation and developing clinical reasoning — assume solid basic sciences but developing clinical judgment.`
+      : `Learner level: Early clerkship medical student (month ${phase.monthsIn} of longitudinal integrated clerkship). Tailor teaching to foundational clinical reasoning and pattern recognition — assume strong basic sciences but limited clinical exposure.`;
 
-    const concernLine =
-      presentingConcern
-        ? `Presenting concern: ${presentingConcern}${
-            /[.!?]$/.test(presentingConcern)
-              ? ""
-              : "."
-          }`
-        : "";
+    const concernLine = presentingConcern
+      ? `Presenting concern: ${presentingConcern}${/[.!?]$/.test(presentingConcern) ? "" : "."}`
+      : "";
 
     const focusLine = focusText
       ? `Teaching focus: ${focusText}. Apply these areas where clinically relevant; do not force repetitive subsections.`
       : "Teaching focus: clinical reasoning, diagnostic workup, and management.";
 
+    // Multi-problem framing — enumerated as co-equal with an explicit demand
+    // that each problem gets comparable depth. This is what makes the model
+    // resist the "focus on the first problem, mention the rest" trap.
     let problemBlock = "";
-
     if (problems.length > 1) {
       const numberedProblems = problems
-        .map(
-          (problem, index) =>
-            `${index + 1}. ${problem}`
-        )
+        .map((problem, index) => `${index + 1}. ${problem}`)
         .join("\n");
-
       problemBlock =
-        `This is a MULTI-PROBLEM teaching case. Give each problem its own ` +
-        `section with comparable depth and attention. Do not treat one problem ` +
-        `merely as context for another. Identify clinically meaningful ` +
-        `relationships and explain how to recognize or evaluate them.\n\n` +
+        "This is a MULTI-PROBLEM teaching case. Give each problem its own section with comparable depth and attention. Do not treat one problem merely as context for another. Identify clinically meaningful relationships and explain them.\n\n" +
+        "Problems\n\n" +
         numberedProblems;
     } else if (problems.length === 1) {
-      problemBlock =
-        `Problem for teaching:\n` +
-        `1. ${problems[0]}`;
+      problemBlock = `Problem for teaching:\n1. ${problems[0]}`;
     } else {
-      problemBlock =
-        "Use the presenting concern above as the clinical problem for teaching.";
+      problemBlock = "Use the presenting concern above as the clinical problem for teaching.";
     }
 
     let topicsLine = topicItems.length
-      ? `Additional topics to incorporate only where relevant: ${topicItems.join("; ")}.`
+      ? `Additional topics to incorporate only where relevant\n${topicItems.join("; ")}.`
       : "";
 
     const lensName = {
-      geriatrics:
-        "geriatrics and deprescribing",
-      primary_care:
-        "primary care and prevention",
-      complex_multimorbidity:
-        "complex multimorbidity and competing priorities",
+      geriatrics: "geriatrics and deprescribing",
+      primary_care: "primary care and prevention",
+      complex_multimorbidity: "complex multimorbidity and competing priorities",
     }[teachingLens];
+    const lensLine = lensName ? `Teaching lens: ${lensName}.` : "";
 
-    const lensLine = lensName
-      ? `Teaching lens: ${lensName}.`
-      : "";
+    // The output-structure block — the heart of the new prompt. Explicit,
+    // numbered, with concrete examples of what "good" looks like. Same block
+    // for all sources except UpToDate, which gets a variant that respects
+    // its recommendation-grade convention.
+    const requestBlock = source === "uptodate"
+      ? `Output instructions
+For each problem, include ALL of the following:
 
-    // Keep the requested response comfortably below typical chatbot output
-    // limits even when several problems are selected.
-    const perProblemWordLimit =
-      problems.length >= 5
-        ? 170
-        : problems.length >= 3
-          ? 230
-          : 350;
+1. Shelf Exam Pearls — Board-testable pathophysiology, classifications, mnemonics, and key distinctions. Explain the physiologic reasoning, not just the fact.
+2. Diagnostic reasoning — Patient-specific interpretation of labs, imaging, or findings. Highlight when findings are discordant or unexpected and explain the differential for that discordance.
+3. Workup — Evidence-based next steps with UpToDate's current recommendations. Explain WHY each test is recommended.
+4. Management — Current UpToDate-recommended treatment, including decision thresholds, dosing principles, and when to escalate or refer. Include UpToDate recommendation grades where explicitly provided.
+5. Alternatives table — Where multiple treatment options exist, present a markdown table with columns for indication, efficacy, and key considerations.
+6. High-yield citations — Up to 5 per problem. Name the guideline/society/year for the underlying evidence UpToDate references.
+7. Practice-changing evidence — Note important updates from the last 2–3 years only when they materially affect care.
+${problems.length > 1 ? `
+After all problem sections, include:
+* Cross-Problem Interactions section — Identify every clinically meaningful relationship between problems. Explain the physiologic or management link (e.g., oxygen delivery equation with concurrent anemia and hypoxemia; comorbidity burden affecting cancer screening decisions; perioperative risk implications). This section should be substantive, not a brief afterthought.
+` : ""}
+Formatting rules:
+* Use current UpToDate recommendations; include a recommendation grade only when UpToDate explicitly supplies one.
+* Include relevant figures, algorithms, and tables where available.
+* Do not restate the full case history, invent patient facts, or repeat the same evidence across sections.
+* Use markdown tables for comparisons. Use bold for key terms and diagnoses.
+* Each problem section should be thorough but concise — prioritize clinical utility and scannability.`
+      : `Output instructions
+For each problem, include ALL of the following:
 
-    const sourceSpecificLine =
-      source === "uptodate"
-        ? "Use current UpToDate recommendations; include a recommendation grade only when UpToDate explicitly supplies one."
-        : "Use current guidelines and primary evidence. Name the guideline or society and year; for key studies, give author or trial name, year, and journal when available.";
-
-    const requestBlock =
-      `Provide a concise, evidence-based teaching summary. ${sourceSpecificLine}\n` +
-      `For each problem, include:\n` +
-      `1. Patient-specific diagnostic and management teaching aligned with the selected focus areas.\n` +
-      `2. Current guideline recommendations and when to escalate or refer.\n` +
-      `3. Up to three high-yield citations rather than an exhaustive bibliography.\n` +
-      `4. Important uncertainty or practice-changing evidence from the last 2-3 years only when it materially affects care.\n` +
-      `${
-        problems.length > 1
-          ? "After the problem sections, add one brief cross-problem interactions section.\n"
-          : ""
-      }` +
-      `Keep each problem section under about ${perProblemWordLimit} words. ` +
-      `Do not restate the full case history, invent patient facts, or repeat the same evidence across sections.`;
+1. Shelf Exam Pearls — Board-testable pathophysiology, classifications, mnemonics, and key distinctions (e.g., RDW in IDA vs. thalassemia; AHI severity classification; LaPlace's law for AAA). Explain the physiologic reasoning, not just the fact.
+2. Diagnostic reasoning — Patient-specific interpretation of labs, imaging, or findings. Highlight when findings are discordant or unexpected (e.g., mild obstruction with severe hypoxemia) and explain the differential for that discordance.
+3. Workup — Evidence-based next steps with guideline source (society, year). Explain why each test is recommended (e.g., bidirectional endoscopy because synchronous upper/lower GI pathology occurs in 1–10% of cases).
+4. Management — Current guideline-recommended treatment, including decision thresholds, dosing principles, and when to escalate or refer. Include landmark trial names (author, journal, year) for pivotal evidence (e.g., PIVOTAL trial for IV iron in CKD, NOTT/MRC for LTOT, ADAM trial for small AAA).
+5. Guideline comparison table — Where multiple societies have differing recommendations (e.g., PSA screening: USPSTF vs. AUA vs. NCCN), present a concise markdown table comparing them.
+6. Alternatives table — Where multiple treatment options exist (e.g., OSA alternatives to CPAP), present a markdown table with columns for indication, efficacy, and key considerations.
+7. High-yield citations — Up to 5 per problem. Name the guideline/society/year; for key studies, give author or trial name, year, and journal.
+8. Practice-changing evidence — Note important updates from the last 2–3 years only when they materially affect care.
+${problems.length > 1 ? `
+After all problem sections, include:
+* Cross-Problem Interactions section — Identify every clinically meaningful relationship between problems. Explain the physiologic or management link (e.g., oxygen delivery equation with concurrent anemia and hypoxemia; comorbidity burden affecting cancer screening decisions; perioperative risk implications). This section should be substantive, not a brief afterthought.
+` : ""}
+Formatting rules:
+* Use current guidelines and primary evidence. Name the guideline or society and year.
+* Include relevant figures, algorithms, and tables from the literature where available.
+* Do not restate the full case history, invent patient facts, or repeat the same evidence across sections.
+* Use markdown tables for comparisons. Use bold for key terms and diagnoses.
+* Each problem section should be thorough (no arbitrary word limit) but concise — prioritize clinical utility and scannability.`;
 
     // The teaching-focus line sits immediately before the problem framing.
     const renderPrompt = (contextBlock) =>
