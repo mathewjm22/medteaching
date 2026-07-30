@@ -7287,285 +7287,23 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 }
 
 // ============ IN-ROOM DOCUMENT COMPONENT (pre-visit mode) ============
-// Layout is optimized for the medical student to have open on a laptop
-// DURING the patient visit. Structure:
-//   1. Patient snapshot (top — always visible)
-//   2. Today's visit priorities checklist
-//   3. Per-problem cheat sheets (checklists + collapsed teaching)
-//   4. Medication list with review flags
-//   5. Full teaching material (moved to bottom — after-visit reading)
-// Plus a floating scratchpad on the right (hidden on print).
+// Renders the pre-visit reference doc for the student. Uses the shared
+// buildInRoomHtml() template so the preview is byte-for-byte identical to
+// what the export produces. The generated HTML is embedded via iframe so its
+// styles, tabs, theme toggle, and interactive elements all work exactly as
+// they will in the exported file — no drift, no double-maintenance.
 function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
-  // In-room interactive state is EPHEMERAL in the attending's preview.
-  // Checkboxes and scratchpad exist so the attending can see what the student
-  // will see, but nothing persists — this is a prep artifact for the student,
-  // not a data-collection tool for the attending.
-  const [checks, onCheck] = React.useState({});
-  const [scratchpad, onScratchpad] = React.useState("");
-  const [scratchpadCollapsed, setScratchpadCollapsed] = React.useState(false);
-  const [expandedTeaching, setExpandedTeaching] = React.useState({});
+  const iframeRef = React.useRef(null);
+  const [srcDoc, setSrcDoc] = React.useState("");
 
-  if (!doc) return null;
-  const s = doc.sections || {};
-  const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+  // Build the HTML whenever the underlying doc data changes
+  React.useEffect(() => {
+    if (!doc) return;
+    setSrcDoc(buildInRoomHtml(doc, session));
+  }, [doc, session]);
 
-  // Parse verbatim sections out of the prenote. All snapshot/context boxes
-  // render this raw text instead of AI-processed content.
-  const prenoteSections = React.useMemo(() => {
-    return extractPrenoteSections(doc.rawPrenote || doc.clinicalNote || "");
-  }, [doc.rawPrenote, doc.clinicalNote]);
-
-  const whatToKnow = getSection(prenoteSections, "WHAT TO KNOW ABOUT");
-  const updatesSince = getSection(prenoteSections, "UPDATES / RECENT VISITS", "UPDATES");
-  const vitalTrends = getSection(prenoteSections, "VITAL SIGNS TRENDS", "VITALS");
-  const labStudies = getSection(prenoteSections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS");
-  const imagingSection = getSection(prenoteSections, "IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES");
-  const socialHx = getSection(prenoteSections, "SOCIAL", "SOCIAL HISTORY");
-  const familyHx = getSection(prenoteSections, "FAMILY HISTORY");
-  const pastMedHx = getSection(prenoteSections, "PAST MEDICAL HISTORY", "PMH");
-  const surgicalHx = getSection(prenoteSections, "SURGICAL HISTORY");
-  const allergies = getSection(prenoteSections, "ALLERGIES");
-  const militaryHx = getSection(prenoteSections, "MILITARY HISTORY");
-  const preventiveMed = getSection(prenoteSections, "PREVENTIVE MEDICINE", "PREVENTION");
-  const medRec = getSection(prenoteSections, "MED REC", "MEDICATIONS", "MEDICATION LIST");
-
-  // Break MED REC into its three subsections for display
-  const currentMedsText = extractCurrentMedsSubsection(medRec);
-  const discontinuedMedsText = extractMedSubsection(
-    medRec,
-    /RECENTLY\s+DISCONTINUED/,
-    [/SIGNIFICANT\s+HISTORICAL/, /HISTORICAL\s+MEDICATIONS?/]
-  );
-  const historicalMedsText = extractMedSubsection(
-    medRec,
-    /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/,
-    []
-  );
-
-  // Parse current med names for the top table
-  const currentMedNames = parseMedNames(currentMedsText);
-  const medDescriptions = doc.medDescriptions || {};
-
-  // Parse per-problem prenote details for use in cheat sheets. Keyed by lowercased problem name.
-  // Fuzzy-matches problem name against selected teaching cases so slight naming differences
-  // (e.g., "Hypothyroidism" vs "Postsurgical hypothyroidism") still find each other.
-  const problemBlocks = React.useMemo(() => parseProblemBlocks(pastMedHx || ""), [pastMedHx]);
-
-  const findProblemBlock = (problemName) => {
-    if (!problemName) return null;
-    const target = problemName.toLowerCase().trim();
-    // Try exact match first
-    if (problemBlocks[target]) return problemBlocks[target];
-    // Try substring match either direction
-    for (const [key, val] of Object.entries(problemBlocks)) {
-      if (key.includes(target) || target.includes(key)) return val;
-      // Try comparing significant tokens (ignore common stop-words + ICD parens)
-      const stripKey = key.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
-      const stripTarget = target.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
-      if (stripKey && stripTarget && (stripKey.includes(stripTarget) || stripTarget.includes(stripKey))) return val;
-    }
-    return null;
-  };
-
-  // Helper to render a verbatim text block preserving whitespace/newlines.
-  // Kept for cases where formatting is intentionally raw (e.g., lab tables).
-  const VerbatimBlock = ({ text }) => (
-    <div
-      className="text-sm text-slate-800 whitespace-pre-wrap font-normal leading-relaxed"
-      style={{ fontFamily: "'Inter', system-ui, sans-serif" }}
-    >
-      {text}
-    </div>
-  );
-
-  // FormattedBlock — rule-based formatter for prenote text.
-  // Takes raw text and renders it as properly-structured content:
-  //   - Lines starting with "-" or "*" become bullets
-  //   - "Key: value" lines get bolded keys
-  //   - Inline "|"-separated tables can be optionally dropped
-  //   - Optional header stripping (removes a redundant first line matching boxTitle)
-  //   - Blank lines become paragraph breaks
-  //
-  // Options:
-  //   text: the raw text to format
-  //   boxTitle: title of the surrounding box — used to strip redundant leading headers
-  //   dropInlineTables: if true, drops any inline `|`-separated rows (used in Updates box)
-  const FormattedBlock = ({ text, boxTitle = null, dropInlineTables = false }) => {
-    if (!text) return null;
-
-    // Step 1: Strip redundant header — if first non-empty line closely matches boxTitle
-    let workingText = text.trim();
-    if (boxTitle) {
-      const lines = workingText.split(/\r?\n/);
-      const firstNonEmpty = lines.find(l => l.trim());
-      if (firstNonEmpty) {
-        // Normalize both for comparison
-        const normalize = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
-        const normalizedFirst = normalize(firstNonEmpty);
-        const normalizedTitle = normalize(boxTitle);
-        // Match if the line contains the box title, or vice versa, and is <2x longer
-        const similar =
-          (normalizedFirst.includes(normalizedTitle) && normalizedFirst.length < normalizedTitle.length * 2.5) ||
-          (normalizedTitle.includes(normalizedFirst) && normalizedFirst.length > 5);
-        // Also match specific redundant headers we've seen
-        const knownRedundant = [
-          /^(relevant\s+)?family\s+medical\s+(and\s+psychiatric\s+)?history:?$/i,
-          /^social(\s+history)?:?$/i,
-          /^past\s+medical\s+history:?$/i,
-          /^surgical\s+history:?$/i,
-          /^military\s+history:?$/i,
-          /^preventive\s+medicine:?$/i,
-          /^allergies:?$/i,
-        ];
-        const matchesKnown = knownRedundant.some(r => r.test(firstNonEmpty.trim()));
-        if (similar || matchesKnown) {
-          // Remove the first line
-          const idx = lines.indexOf(firstNonEmpty);
-          workingText = lines.slice(idx + 1).join("\n").trim();
-        }
-      }
-    }
-
-    // Step 2: Drop inline lab tables (used in Updates box). These look like:
-    //   COLLECTION | GLUCOSE | A1C | ... on one line
-    //   07/2026    | 98      | 5.8 | ... on the next
-    // Heuristic: any line containing 3+ pipe characters gets dropped, along with
-    // an optional header ending in a colon just before it.
-    if (dropInlineTables) {
-      const lines = workingText.split(/\r?\n/);
-      const filtered = [];
-      let skipUntilNonTable = false;
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        const pipeCount = (line.match(/\|/g) || []).length;
-        if (pipeCount >= 3) {
-          skipUntilNonTable = true;
-          // Also retroactively drop a trailing "- Most recent labs:" or similar header
-          while (filtered.length > 0) {
-            const last = filtered[filtered.length - 1].trim();
-            if (/most recent labs?:?$/i.test(last) || /^[\-\*]?\s*(labs?|laboratory)(\s+results?)?:?\s*$/i.test(last)) {
-              filtered.pop();
-            } else break;
-          }
-          continue;
-        }
-        // A table row can also be a trailing summary bullet ("- Lipids remain borderline...")
-        // We keep those; the "skipUntilNonTable" only applies to pipe rows themselves.
-        if (skipUntilNonTable && pipeCount === 0) {
-          skipUntilNonTable = false;
-        }
-        filtered.push(line);
-      }
-      workingText = filtered.join("\n");
-    }
-
-    if (!workingText.trim()) return null;
-
-    // Step 3: Parse structure. Walk lines and classify each as:
-    //   - bullet: starts with "-" or "*"
-    //   - keyvalue: "Word words: content"
-    //   - blank: empty line = paragraph break
-    //   - plain: everything else
-    const parseLines = (raw) => raw.split(/\r?\n/).map(l => {
-      const trimmed = l.trim();
-      if (!trimmed) return { type: "blank" };
-      // Bullet detection — strip leading marker
-      const bulletMatch = trimmed.match(/^[\-\*•●○▪▫►◆·]\s+(.+)$/);
-      if (bulletMatch) return { type: "bullet", content: bulletMatch[1] };
-      // Key-value detection — "Word words: content" where key is short
-      // Only treat as key-value if colon appears before ~35 chars and key is capitalized
-      const kvMatch = trimmed.match(/^([A-Z][A-Za-z0-9\s\/\-\(\)]{2,34}):\s+(.+)$/);
-      if (kvMatch) return { type: "keyvalue", key: kvMatch[1].trim(), value: kvMatch[2].trim() };
-      return { type: "plain", content: trimmed };
-    });
-
-    const items = parseLines(workingText);
-
-    // Step 4: Group consecutive bullets/keyvalues into lists, split by blank lines
-    const groups = [];
-    let currentGroup = null;
-    for (const item of items) {
-      if (item.type === "blank") {
-        if (currentGroup) { groups.push(currentGroup); currentGroup = null; }
-        continue;
-      }
-      if (!currentGroup) currentGroup = { type: item.type, items: [item] };
-      else if (currentGroup.type === item.type || (currentGroup.type === "bullet" && item.type === "keyvalue") || (currentGroup.type === "keyvalue" && item.type === "bullet")) {
-        // Bullets and keyvalues can mix in one group (unified list)
-        currentGroup.items.push(item);
-        currentGroup.type = "mixed";
-      } else {
-        groups.push(currentGroup);
-        currentGroup = { type: item.type, items: [item] };
-      }
-    }
-    if (currentGroup) groups.push(currentGroup);
-
-    // Step 5: Render
-    return (
-      <div className="text-sm text-slate-800 leading-relaxed space-y-2" style={{ fontFamily: "'Inter', system-ui, sans-serif" }}>
-        {groups.map((group, gi) => {
-          if (group.type === "plain") {
-            return group.items.map((it, ii) => (
-              <p key={`${gi}-${ii}`} className="text-slate-800">{it.content}</p>
-            ));
-          }
-          // bullet, keyvalue, or mixed — render as <ul>
-          return (
-            <ul key={gi} className="space-y-1 list-disc pl-5">
-              {group.items.map((it, ii) => {
-                if (it.type === "keyvalue") {
-                  return (
-                    <li key={ii} className="text-slate-800">
-                      <strong className="text-slate-900">{it.key}:</strong> {it.value}
-                    </li>
-                  );
-                }
-                return <li key={ii} className="text-slate-800">{it.content}</li>;
-              })}
-            </ul>
-          );
-        })}
-      </div>
-    );
-  };
-
-  // Helper: a titled content box used repeatedly in the snapshot
-  const InfoBox = ({ title, children, className = "" }) => (
-    <div className={`bg-slate-50 rounded-lg p-3 border border-slate-200 ${className}`}>
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-2">
-        {title}
-      </div>
-      {children}
-    </div>
-  );
-
-  // Build the priorities checklist from session goal + per-case key learning points
-  const priorityItems = React.useMemo(() => {
-    const items = [];
-    if (doc.sessionGoal) {
-      items.push({
-        id: "sess-goal",
-        label: doc.sessionGoal,
-        source: "Session goal",
-      });
-    }
-    enabledCases.forEach((tc, idx) => {
-      const c = tc.data;
-      if (c.clinicalPearl) {
-        items.push({
-          id: `pearl-${idx}`,
-          label: c.clinicalPearl,
-          source: `${c.problem} · pearl`,
-        });
-      }
-    });
-    return items;
-  }, [doc.sessionGoal, enabledCases]);
-
-  const toggleCheck = (id) => onCheck({ ...checks, [id]: !checks[id] });
-
-// Export the in-room doc as a standalone interactive HTML file. Uses the
+  // Export uses the same shared template — guaranteed byte-identical to preview
+  // Export the in-room doc as a standalone interactive HTML file. Uses the
   // shared buildInRoomHtml() template so the exported file is guaranteed to
   // match what the attending sees in the preview.
   const exportInRoomAsHtml = () => {
@@ -7593,7 +7331,724 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  
+
+  // Print handler — sends the iframe (not the whole app) to print so we get
+  // the pre-visit doc's own print CSS
+  const printDoc = () => {
+    if (iframeRef.current?.contentWindow) {
+      iframeRef.current.contentWindow.focus();
+      iframeRef.current.contentWindow.print();
+    } else {
+      window.print();
+    }
+  };
+
+  if (!doc) return null;
+
+  return (
+    <>
+      <style>{`
+        /* Iframe wrapper — takes full width, tall enough to feel like a real doc */
+        .in-room-iframe-wrap {
+          width: 100%;
+          height: calc(100vh - 200px);
+          min-height: 700px;
+          border: 1px solid var(--app-border, #e2e8f0);
+          border-radius: 12px;
+          overflow: hidden;
+          background: #0f1419;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+        }
+        .in-room-iframe-wrap iframe {
+          width: 100%;
+          height: 100%;
+          border: 0;
+          display: block;
+        }
+        /* Print — hide everything except the iframe content (the iframe prints itself) */
+        @media print {
+          .in-room-action-bar { display: none !important; }
+          .in-room-iframe-wrap { border: none; height: auto; min-height: 0; }
+        }
+      `}</style>
+
+      {/* Action bar */}
+      <div className="in-room-action-bar no-print flex gap-2 mb-4 items-center flex-wrap">
+        <button
+          onClick={exportInRoomAsHtml}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
+          title="Download a standalone interactive HTML file to give to the student"
+        >
+          <FileText className="w-4 h-4" />
+          <span className="hidden sm:inline">Export as Interactive HTML</span>
+          <span className="sm:hidden">Export HTML</span>
+        </button>
+        <button
+          onClick={printDoc}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
+          title="Print or save as PDF"
+        >
+          <Printer className="w-4 h-4" />
+          <span className="hidden sm:inline">Print / Save as PDF</span>
+          <span className="sm:hidden">Print / PDF</span>
+        </button>
+        <button
+          onClick={onEdit}
+          className="px-3 sm:px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm"
+        >
+          <span className="hidden sm:inline">← Back to preview</span>
+          <span className="sm:hidden">← Preview</span>
+        </button>
+        <div className="text-xs text-slate-500 italic ml-2 hidden lg:block">
+          This is what the student will see. Use the toggle inside the doc to test dark/light mode.
+        </div>
+      </div>
+
+      {/* The embedded document — identical to what the export produces */}
+      <div className="in-room-iframe-wrap">
+        <iframe
+          ref={iframeRef}
+          srcDoc={srcDoc}
+          title="Pre-visit reference sheet"
+          sandbox="allow-same-origin allow-scripts allow-popups"
+        />
+      </div>
+    </>
+  );
+}
+
+// ============ FINAL DOCUMENT COMPONENT ============
+function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
+  const [savedHtml, setSavedHtml] = React.useState(null);
+  const editableRef = React.useRef(null);
+
+  if (!doc) return null;
+  const s = doc.sections || {};
+  const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+
+  const applyFormat = (cmd) => {
+    document.execCommand(cmd, false, null);
+    if (editableRef.current) editableRef.current.focus();
+  };
+
+  const captureEdits = () => {
+    if (editableRef.current) {
+      setSavedHtml(editableRef.current.innerHTML);
+    }
+  };
+
+  const printDoc = () => {
+    // Ensure any pending edit is captured before print
+    if (editableRef.current) {
+      setSavedHtml(editableRef.current.innerHTML);
+    }
+    setTimeout(() => window.print(), 100);
+  };
+  // ============ HTML EXPORT ============
+  // Serialize the rendered document to a standalone .html file with interactive shelf questions
+  // and clickable navigation. Fully offline — no external dependencies.
+  const exportAsHtml = () => {
+    if (!editableRef.current) return;
+    // Capture any in-progress edits into savedHtml before exporting
+    setSavedHtml(editableRef.current.innerHTML);
+
+    const docHtml = editableRef.current.innerHTML;
+    const student = doc.student || "Student";
+    const sessionDate = session.sessionDate || new Date().toISOString().split("T")[0];
+    const title = `Teaching Document — ${student} — ${sessionDate}`;
+
+    // Inline stylesheet: design tokens, doc styles, plus interactive-only additions
+    const inlineStyles = `
+      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap');
+
+      :root {
+        --doc-navy: #0F2A44;
+        --doc-navy-mid: #1E5B94;
+        --doc-paper: #F5F1EA;
+        --doc-surface: #FFFFFF;
+        --doc-warm-gray: #5C6470;
+        --doc-terracotta: #B85C2E;
+        --doc-consensus: #0F7A5A;
+        --doc-majority: #1E5B94;
+        --doc-single: #8B7355;
+        --doc-conflict: #B85C2E;
+        --doc-hairline: #D8D3CA;
+      }
+
+      * { box-sizing: border-box; }
+      body { margin: 0; padding: 0; background: var(--doc-paper); }
+
+      .doc-body {
+        font-family: 'Inter', system-ui, -apple-system, sans-serif;
+        font-size: 15px;
+        line-height: 1.65;
+        color: #1a1a1a;
+        background: var(--doc-paper);
+        max-width: 900px;
+        margin: 0 auto;
+        box-shadow: 0 0 40px rgba(0,0,0,0.08);
+      }
+      .doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 {
+        font-family: 'Inter', system-ui, sans-serif;
+        font-weight: 600;
+        color: var(--doc-navy);
+        line-height: 1.25;
+      }
+      .doc-serif { font-family: 'Source Serif 4', Georgia, serif; }
+      .doc-meta-label {
+        font-family: 'Inter', sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        font-weight: 500;
+        font-size: 0.65rem;
+        color: var(--doc-warm-gray);
+      }
+      .doc-cover {
+        background: linear-gradient(135deg, #0F2A44 0%, #1a3d5c 50%, #0F2A44 100%);
+        color: white;
+        padding: 3rem 3rem 2.25rem;
+      }
+      .doc-cover .cover-eyebrow {
+        font-family: 'Inter', sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.24em;
+        font-size: 0.68rem;
+        font-weight: 500;
+        color: rgba(255,255,255,0.7);
+        margin-bottom: 0.75rem;
+      }
+      .doc-cover .cover-title {
+        font-family: 'Inter', sans-serif;
+        font-weight: 500;
+        font-size: 2.25rem;
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+        color: #fff;
+      }
+      .doc-cover .cover-rule { height: 1px; background: rgba(255,255,255,0.25); margin: 1.75rem 0 1.5rem; }
+      .doc-cover .cover-docket { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; }
+      .doc-cover .cover-docket .label {
+        font-family: 'Inter', sans-serif; text-transform: uppercase; letter-spacing: 0.16em;
+        font-size: 0.6rem; font-weight: 500; color: rgba(255,255,255,0.6); margin-bottom: 0.25rem;
+      }
+      .doc-cover .cover-docket .value {
+        font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 500; color: #fff;
+      }
+      .doc-h2 {
+        font-family: 'Inter', sans-serif; font-size: 1.0625rem; font-weight: 600;
+        color: var(--doc-navy); letter-spacing: -0.005em; margin: 0 0 1rem;
+        padding-bottom: 0.5rem; border-bottom: 2px solid var(--doc-navy);
+      }
+      .doc-subsection-label {
+        font-family: 'Inter', sans-serif; text-transform: uppercase; letter-spacing: 0.11em;
+        font-size: 0.88rem; font-weight: 700; color: var(--doc-navy);
+        padding: 0.5rem 0 0.5rem 0.75rem; border-left: 3px solid var(--doc-navy-mid);
+        margin-bottom: 0.85rem;
+        background: linear-gradient(90deg, rgba(30, 91, 148, 0.06) 0%, transparent 60%);
+      }
+      .doc-case-wrap { margin-top: 3rem; scroll-margin-top: 20px; }
+      .doc-case-banner {
+        background: linear-gradient(135deg, var(--doc-navy) 0%, #1a3d5c 100%);
+        color: white; padding: 1.25rem 1.5rem; margin: 0 -1.5rem 1.75rem;
+        border-radius: 2px; box-shadow: 0 1px 3px rgba(15, 42, 68, 0.15);
+      }
+      .doc-case-banner .doc-case-numeral {
+        font-family: 'Inter', sans-serif; font-weight: 600; font-size: 0.65rem;
+        letter-spacing: 0.28em; color: rgba(255, 255, 255, 0.7);
+        text-transform: uppercase; margin-bottom: 0.35rem;
+      }
+      .doc-case-banner .doc-case-title {
+        font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.5rem;
+        line-height: 1.2; color: white; letter-spacing: -0.015em; margin: 0;
+      }
+      .doc-table {
+        width: 100%; border-collapse: collapse; font-size: 0.875rem;
+        border-top: 2px solid var(--doc-navy); border-bottom: 2px solid var(--doc-navy);
+      }
+      .doc-table thead th {
+        font-family: 'Inter', sans-serif; text-transform: uppercase; letter-spacing: 0.12em;
+        font-size: 0.62rem; font-weight: 600; color: var(--doc-warm-gray); text-align: left;
+        padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--doc-navy); background: transparent;
+      }
+      .doc-table tbody td {
+        padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--doc-hairline);
+        vertical-align: top; color: #1a1a1a;
+      }
+      .doc-table tbody tr:last-child td { border-bottom: none; }
+      .doc-table .row-label { font-weight: 500; color: var(--doc-navy); width: 30%; padding-right: 1rem; }
+      .doc-callout-pearl {
+        background: linear-gradient(90deg, rgba(184, 92, 46, 0.09) 0%, rgba(184, 92, 46, 0.03) 100%);
+        border-left: 3px solid var(--doc-terracotta); padding: 1rem 1.25rem; margin: 1.25rem 0;
+      }
+      .doc-callout-pearl .label {
+        font-family: 'Inter', sans-serif; font-size: 0.7rem; color: var(--doc-terracotta);
+        text-transform: uppercase; letter-spacing: 0.16em; font-weight: 700; margin-bottom: 0.4rem;
+      }
+      .doc-callout-quote {
+        background: linear-gradient(90deg, rgba(30, 91, 148, 0.09) 0%, rgba(30, 91, 148, 0.03) 100%);
+        border-left: 3px solid var(--doc-navy); padding: 1rem 1.25rem 1rem 2.5rem;
+        margin: 1.25rem 0; position: relative;
+      }
+      .doc-callout-quote::before {
+        content: '"'; position: absolute; left: 0.75rem; top: 0.35rem;
+        font-family: 'Source Serif 4', serif; font-size: 2.75rem; font-weight: 400;
+        color: var(--doc-navy); line-height: 1; opacity: 0.5;
+      }
+      .doc-callout-quote .quote-text {
+        font-family: 'Source Serif 4', serif; font-style: italic;
+        font-size: 0.95rem; line-height: 1.55; color: #1a1a1a;
+      }
+      .doc-callout-quote .label {
+        font-family: 'Inter', sans-serif; font-size: 0.7rem; color: var(--doc-navy);
+        text-transform: uppercase; letter-spacing: 0.16em; font-weight: 700; margin-bottom: 0.4rem;
+      }
+      .doc-callout-goal {
+        background: linear-gradient(180deg, var(--doc-paper) 0%, #fff 100%);
+        border-left: 3px solid var(--doc-navy-mid); padding: 1rem 1.25rem;
+      }
+      .doc-strength {
+        display: inline-flex; align-items: center; gap: 0.4rem;
+        font-family: 'Inter', sans-serif; font-size: 0.65rem; text-transform: uppercase;
+        letter-spacing: 0.12em; font-weight: 600; color: var(--doc-warm-gray);
+      }
+      .doc-strength .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+      .doc-strength.consensus .dot { background: var(--doc-consensus); }
+      .doc-strength.majority .dot { background: var(--doc-majority); }
+      .doc-strength.single-source .dot { background: var(--doc-single); }
+      .doc-strength.conflict .dot { background: var(--doc-conflict); }
+      .doc-strength.consensus { color: var(--doc-consensus); }
+      .doc-strength.majority { color: var(--doc-majority); }
+      .doc-strength.single-source { color: var(--doc-single); }
+      .doc-strength.conflict { color: var(--doc-conflict); }
+      .doc-shelf-q { border-top: 1px solid var(--doc-hairline); padding: 1rem 0; scroll-margin-top: 20px; }
+      .doc-shelf-q:first-child { border-top: none; padding-top: 0.25rem; }
+      .doc-shelf-answer {
+        margin-top: 0.75rem; padding: 0.75rem 1rem; background: var(--doc-paper);
+        border-left: 2px solid var(--doc-consensus);
+      }
+      .doc-shelf-answer .label {
+        font-family: 'Inter', sans-serif; font-size: 0.65rem; text-transform: uppercase;
+        letter-spacing: 0.14em; font-weight: 600; color: var(--doc-consensus); margin-bottom: 0.3rem;
+      }
+      .doc-footer {
+        margin-top: 3rem; padding-top: 1.25rem; border-top: 2px solid var(--doc-navy);
+        text-align: center; font-family: 'Inter', sans-serif; font-size: 0.7rem;
+        color: var(--doc-warm-gray); letter-spacing: 0.02em;
+      }
+
+      /* Interactive-only additions */
+      .interactive-banner {
+        background: linear-gradient(90deg, #eef2ff 0%, #fefce8 100%);
+        border-bottom: 1px solid #e0e7ff;
+        padding: 0.75rem 1.25rem;
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.78rem;
+        color: #4338ca;
+      }
+      .interactive-banner strong { color: #312e81; }
+
+      /* Make "Problems in focus" list items look clickable and add anchor behavior */
+      .doc-body td ul li a.problem-jump {
+        color: var(--doc-navy-mid);
+        text-decoration: none;
+        border-bottom: 1px dotted var(--doc-navy-mid);
+        cursor: pointer;
+        transition: color 0.15s;
+      }
+      .doc-body td ul li a.problem-jump:hover {
+        color: var(--doc-terracotta);
+        border-bottom-color: var(--doc-terracotta);
+      }
+      .doc-body td ul li a.problem-jump::before {
+        content: "↓ ";
+        opacity: 0.5;
+      }
+
+      /* Interactive shelf question styles */
+      .shelf-choices-interactive {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 0.5rem;
+        padding-left: 2.2rem;
+        margin-bottom: 0.5rem;
+      }
+      @media (min-width: 640px) {
+        .shelf-choices-interactive {
+          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+          column-gap: 1.5rem;
+        }
+      }
+      .shelf-option-btn {
+        text-align: left;
+        padding: 0.6rem 0.85rem;
+        background: white;
+        border: 1.5px solid var(--doc-hairline);
+        border-radius: 6px;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.87rem;
+        color: #1a1a1a;
+        cursor: pointer;
+        transition: all 0.15s;
+        line-height: 1.45;
+      }
+      .shelf-option-btn:hover:not(:disabled) {
+        border-color: var(--doc-navy-mid);
+        background: #f8fafc;
+      }
+      .shelf-option-btn:disabled { cursor: default; }
+      .shelf-option-btn .letter { font-weight: 600; margin-right: 0.4rem; }
+      .shelf-option-btn.chosen-correct {
+        background: #ecfdf5;
+        border-color: var(--doc-consensus);
+        color: #064e3b;
+        font-weight: 500;
+      }
+      .shelf-option-btn.chosen-wrong {
+        background: #fef2f2;
+        border-color: #dc2626;
+        color: #7f1d1d;
+        font-weight: 500;
+      }
+      .shelf-option-btn.revealed-correct {
+        background: #ecfdf5;
+        border-color: var(--doc-consensus);
+        color: #064e3b;
+      }
+      .shelf-option-btn.revealed-wrong {
+        background: #fafafa;
+        border-color: var(--doc-hairline);
+        color: #737373;
+        text-decoration: line-through;
+      }
+      .shelf-option-btn .indicator {
+        display: none;
+        font-size: 0.75rem;
+        margin-left: 0.5rem;
+        font-weight: 600;
+      }
+      .shelf-option-btn.chosen-correct .indicator,
+      .shelf-option-btn.revealed-correct .indicator { display: inline; color: var(--doc-consensus); }
+      .shelf-option-btn.chosen-wrong .indicator { display: inline; color: #dc2626; }
+
+      .shelf-answer-interactive {
+        margin-top: 0.75rem;
+        margin-left: 2.2rem;
+        padding: 0.75rem 1rem;
+        background: var(--doc-paper);
+        border-left: 2px solid var(--doc-consensus);
+        opacity: 0;
+        max-height: 0;
+        overflow: hidden;
+        transition: opacity 0.3s, max-height 0.3s;
+      }
+      .shelf-answer-interactive.revealed {
+        opacity: 1;
+        max-height: 1000px;
+      }
+      .shelf-answer-interactive .label {
+        font-family: 'Inter', sans-serif;
+        font-size: 0.65rem;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        font-weight: 600;
+        color: var(--doc-consensus);
+        margin-bottom: 0.3rem;
+      }
+      .shelf-reset-btn {
+        display: inline-block;
+        margin-top: 0.5rem;
+        margin-left: 2.2rem;
+        padding: 0.25rem 0.6rem;
+        background: transparent;
+        border: 1px solid var(--doc-hairline);
+        border-radius: 4px;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.7rem;
+        color: var(--doc-warm-gray);
+        cursor: pointer;
+      }
+      .shelf-reset-btn:hover { background: white; color: var(--doc-navy); border-color: var(--doc-navy-mid); }
+      .shelf-reset-btn.hidden { display: none; }
+
+      /* Sticky case-nav pill at the top of teaching cases */
+      .case-nav-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.75rem 1rem;
+        background: var(--doc-paper);
+        border-radius: 8px;
+        margin-bottom: 1.5rem;
+        border: 1px solid var(--doc-hairline);
+      }
+      .case-nav-pills .nav-label {
+        font-family: 'Inter', sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 0.11em;
+        font-size: 0.62rem;
+        font-weight: 600;
+        color: var(--doc-warm-gray);
+        align-self: center;
+        margin-right: 0.5rem;
+      }
+      .case-nav-pills a.case-jump {
+        display: inline-block;
+        padding: 0.35rem 0.75rem;
+        background: white;
+        border: 1px solid var(--doc-hairline);
+        border-radius: 999px;
+        font-family: 'Inter', sans-serif;
+        font-size: 0.78rem;
+        font-weight: 500;
+        color: var(--doc-navy);
+        text-decoration: none;
+        transition: all 0.15s;
+      }
+      .case-nav-pills a.case-jump:hover {
+        background: var(--doc-navy);
+        color: white;
+        border-color: var(--doc-navy);
+      }
+
+      /* Print — restore printed doc feel from the HTML */
+      @media print {
+        body { background: white; }
+        .doc-body { max-width: none; box-shadow: none; margin: 0; }
+        .interactive-banner, .case-nav-pills, .shelf-reset-btn { display: none !important; }
+        .shelf-answer-interactive { opacity: 1 !important; max-height: none !important; }
+        .shelf-option-btn { border-color: var(--doc-hairline) !important; }
+        .shelf-option-btn.correct-print { background: #ecfdf5 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .doc-cover { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+        .doc-callout-pearl, .doc-callout-quote, .doc-callout-goal, .doc-shelf-answer {
+          -webkit-print-color-adjust: exact; print-color-adjust: exact;
+        }
+        p, li, div { orphans: 3; widows: 3; }
+        h1, h2, h3, h4, h5, h6 { page-break-after: avoid; }
+        .keep-together { page-break-inside: avoid; }
+        .doc-cover { page-break-after: always; }
+      }
+      @page { margin: 0.55in; }
+    `;
+
+    // Process the DOM: give cases IDs, make problems clickable, transform shelf questions.
+    // We do this on a temporary document so we don't mess with the live editable.
+    const parser = new DOMParser();
+    const tempDoc = parser.parseFromString(`<div>${docHtml}</div>`, "text/html");
+    const root = tempDoc.body.firstChild;
+
+    // 1. Assign IDs to case sections and build case-nav pill data
+    const caseSections = root.querySelectorAll(".doc-case-wrap");
+    const caseNav = [];
+    caseSections.forEach((section, idx) => {
+      const id = `case-${idx + 1}`;
+      section.id = id;
+      const title = section.querySelector(".doc-case-title")?.textContent?.trim() || `Case ${idx + 1}`;
+      caseNav.push({ id, title });
+    });
+
+    // 2. Make "Problems in focus" list items clickable if we have cases
+    if (caseNav.length > 0) {
+      const problemRows = root.querySelectorAll("td");
+      problemRows.forEach(td => {
+        const ul = td.querySelector("ul");
+        if (!ul) return;
+        // Check if this is the "problems in focus" list (heuristic: preceded by row-label containing "focus")
+        const row = td.closest("tr");
+        const label = row?.querySelector(".row-label")?.textContent?.toLowerCase() || "";
+        if (!label.includes("focus")) return;
+        ul.querySelectorAll("li").forEach(li => {
+          const text = li.textContent.trim();
+          // Match this problem to a case title (fuzzy: any case whose title contains the problem text or vice versa)
+          const match = caseNav.find(c =>
+            c.title.toLowerCase().includes(text.toLowerCase()) ||
+            text.toLowerCase().includes(c.title.toLowerCase())
+          );
+          if (match) {
+            li.innerHTML = `<a class="problem-jump" href="#${match.id}">${text}</a>`;
+          }
+        });
+      });
+    }
+
+    // 3. Insert case-nav pill list at the top of the first case
+    if (caseNav.length > 1 && caseSections[0]) {
+      const nav = tempDoc.createElement("div");
+      nav.className = "case-nav-pills";
+      nav.innerHTML = `<span class="nav-label">Jump to case</span>` +
+        caseNav.map(c => `<a class="case-jump" href="#${c.id}">${c.title}</a>`).join("");
+      caseSections[0].parentNode.insertBefore(nav, caseSections[0]);
+    }
+
+    // 4. Transform shelf questions into interactive versions
+    const shelfQs = root.querySelectorAll(".doc-shelf-q");
+    shelfQs.forEach((qDiv, qIdx) => {
+      // Find the options grid and the answer block
+      const optionsGrid = qDiv.querySelector('div[style*="grid-template-columns"]');
+      const answerBlock = qDiv.querySelector(".doc-shelf-answer");
+      if (!optionsGrid || !answerBlock) return;
+
+      // Extract correct answer letter from the answer block label ("Answer · A")
+      const labelText = answerBlock.querySelector(".label")?.textContent || "";
+      const correctMatch = labelText.match(/Answer\s*·?\s*([A-E])/i);
+      if (!correctMatch) return;
+      const correctLetter = correctMatch[1].toUpperCase();
+
+      // Build interactive replacement
+      const qId = `q-${qIdx}`;
+      const optionDivs = Array.from(optionsGrid.children);
+      const options = optionDivs.map(div => {
+        // Each option div contains: <span letter>A)</span>OptionText
+        const html = div.innerHTML;
+        // Extract letter and body
+        const letterMatch = html.match(/<span[^>]*>([A-E])\)<\/span>(.*)/is);
+        if (!letterMatch) return null;
+        return { letter: letterMatch[1].toUpperCase(), body: letterMatch[2].trim() };
+      }).filter(Boolean);
+
+      // Replace options grid with interactive buttons
+      const interactive = tempDoc.createElement("div");
+      interactive.className = "shelf-choices-interactive";
+      interactive.dataset.qid = qId;
+      interactive.dataset.correct = correctLetter;
+      interactive.innerHTML = options.map(opt => `
+        <button type="button" class="shelf-option-btn" data-qid="${qId}" data-letter="${opt.letter}" data-correct-letter="${correctLetter}">
+          <span class="letter">${opt.letter})</span>${opt.body}<span class="indicator"></span>
+        </button>
+      `).join("");
+      optionsGrid.parentNode.replaceChild(interactive, optionsGrid);
+
+      // Wrap answer block as revealed-on-click
+      const wrappedAnswer = tempDoc.createElement("div");
+      wrappedAnswer.className = "shelf-answer-interactive";
+      wrappedAnswer.id = `answer-${qId}`;
+      wrappedAnswer.innerHTML = answerBlock.innerHTML;
+      answerBlock.parentNode.replaceChild(wrappedAnswer, answerBlock);
+
+      // Add reset button
+      const resetBtn = tempDoc.createElement("button");
+      resetBtn.type = "button";
+      resetBtn.className = "shelf-reset-btn hidden";
+      resetBtn.id = `reset-${qId}`;
+      resetBtn.textContent = "↺ Try again";
+      resetBtn.dataset.qid = qId;
+      wrappedAnswer.parentNode.insertBefore(resetBtn, wrappedAnswer.nextSibling);
+    });
+
+    // 5. Interactive script injected inline
+    const script = `
+      document.addEventListener("click", function(e) {
+        // Shelf question option clicks
+        if (e.target.closest(".shelf-option-btn") && !e.target.closest(".shelf-option-btn").disabled) {
+          const btn = e.target.closest(".shelf-option-btn");
+          const qid = btn.dataset.qid;
+          const chosen = btn.dataset.letter;
+          const correct = btn.dataset.correctLetter;
+          const isCorrect = chosen === correct;
+
+          // Disable all options in this question, mark states
+          const allBtns = document.querySelectorAll(\`.shelf-option-btn[data-qid="\${qid}"]\`);
+          allBtns.forEach(b => {
+            b.disabled = true;
+            const bLetter = b.dataset.letter;
+            const indicator = b.querySelector(".indicator");
+            if (b === btn) {
+              b.classList.add(isCorrect ? "chosen-correct" : "chosen-wrong");
+              indicator.textContent = isCorrect ? "✓ Your answer" : "✗ Your answer";
+            } else if (bLetter === correct) {
+              b.classList.add("revealed-correct", "correct-print");
+              indicator.textContent = "✓ Correct";
+            } else {
+              b.classList.add("revealed-wrong");
+            }
+          });
+
+          // Reveal answer explanation
+          const answer = document.getElementById(\`answer-\${qid}\`);
+          if (answer) answer.classList.add("revealed");
+          const reset = document.getElementById(\`reset-\${qid}\`);
+          if (reset) reset.classList.remove("hidden");
+        }
+
+        // Reset button
+        if (e.target.classList && e.target.classList.contains("shelf-reset-btn")) {
+          const qid = e.target.dataset.qid;
+          const allBtns = document.querySelectorAll(\`.shelf-option-btn[data-qid="\${qid}"]\`);
+          allBtns.forEach(b => {
+            b.disabled = false;
+            b.classList.remove("chosen-correct", "chosen-wrong", "revealed-correct", "revealed-wrong", "correct-print");
+            const indicator = b.querySelector(".indicator");
+            if (indicator) indicator.textContent = "";
+          });
+          const answer = document.getElementById(\`answer-\${qid}\`);
+          if (answer) answer.classList.remove("revealed");
+          e.target.classList.add("hidden");
+        }
+      });
+
+      // Smooth scroll for anchor links (case-jump, problem-jump)
+      document.addEventListener("click", function(e) {
+        const link = e.target.closest("a[href^='#']");
+        if (!link) return;
+        const targetId = link.getAttribute("href").slice(1);
+        const target = document.getElementById(targetId);
+        if (!target) return;
+        e.preventDefault();
+        target.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    `;
+
+    // Assemble the full HTML file
+    const fullHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title.replace(/</g, "&lt;")}</title>
+  <style>${inlineStyles}</style>
+</head>
+<body>
+  <div class="interactive-banner">
+    <span>🎓</span>
+    <div>
+      <strong>Interactive teaching document.</strong> Click any answer choice on practice questions to see if you got it right. Click problem names in "Case at a Glance" to jump to that case.
+    </div>
+  </div>
+  ${root.innerHTML}
+  <script>${script}<\/script>
+  <!--
+    LIC Teaching Document Generator
+    Session ID: ${doc.sessionId || "unsaved"}
+    Session title: ${doc.sessionTitle || "(untitled)"}
+    Generated: ${doc.generatedIso || ""}
+    Reopen in app: ${doc.appOrigin || ""}?session=${doc.sessionId || ""}
+  -->
+</body>
+</html>`;
+
+    // Trigger download
+    const blob = new Blob([fullHtml], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    // Use the session title (sanitized) if we have one, otherwise fall back to student+date
+    const titleSlug = (doc.sessionTitle || "")
+      .replace(/·/g, "-")
+      .replace(/[^a-z0-9\s-]/gi, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .slice(0, 80);
+    const filename = titleSlug
+      ? `teaching-${titleSlug}.html`
+      : `teaching-document-${student.replace(/[^a-z0-9]/gi, "_")}-${sessionDate}.html`;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   // Strips leading action verbs like "Continue", "Start", "Initiate", "Add",
 // "Consider" that the AI sometimes prepends to medication names when framing
 // treatment as ongoing management. Preserves the actual drug name.
