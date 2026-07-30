@@ -10397,6 +10397,811 @@ const renderContent = () => {
     return <DocumentContent doc={doc} phase={phase} session={session} />;
   };
 
+  // ============================================================================
+// SHARED IN-ROOM DOCUMENT TEMPLATE
+// ============================================================================
+// Produces a complete standalone HTML document (CSS + body + JS) driven by
+// the app's data model. Used by BOTH:
+//   1. exportInRoomAsHtml() — writes to a .html file the attending downloads
+//   2. InRoomDocument React component — embeds via iframe/dangerouslySetInnerHTML
+//      for the in-app preview
+// This guarantees the preview and export can never drift apart.
+//
+// Input: doc object containing everything the template needs
+//   - doc.sessionTitle, doc.student, doc.phase, doc.selectedProblems
+//   - doc.noteAnalysis (oneLiner, patientDescriptor, patientBadges, scPercentages,
+//     activeProblems with category/status/shortSubtitle, labTrendsSummary,
+//     diagnosticsSummary, visitPlan, perProblemRedFlags)
+//   - doc.sections.teachingCases (with new suggestedQuestions + dontMiss fields)
+//   - doc.medDescriptions, doc.lightweightTeaching, doc.rawPrenote
+// ============================================================================
+const buildInRoomHtml = (doc, session) => {
+  if (!doc) return "<div>No document data</div>";
+
+  const s = doc.sections || {};
+  const na = doc.noteAnalysis || {};
+  const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+  const sessionDate = session?.sessionDate || new Date().toISOString().split("T")[0];
+  const student = doc.student || "Student";
+  const sessionId = doc.sessionId || "no-id";
+  const title = doc.sessionTitle || `Pre-visit — ${student} — ${sessionDate}`;
+
+  // Escape HTML for safe string interpolation
+  const esc = (str) => String(str ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+  // Parse prenote sections (verbatim data source for labs, vitals, etc.)
+  const prenoteSections = extractPrenoteSections(doc.rawPrenote || doc.clinicalNote || "");
+  const getSec = (...names) => getSection(prenoteSections, ...names);
+
+  const vitalsText = getSec("VITAL SIGNS TRENDS", "VITALS");
+  const labsText = getSec("LABORATORY STUDIES", "LABS", "LABORATORY RESULTS");
+  const imagingText = getSec("IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES");
+  const socialText = getSec("SOCIAL", "SOCIAL HISTORY");
+  const familyText = getSec("FAMILY HISTORY");
+  const surgicalText = getSec("SURGICAL HISTORY");
+  const allergiesText = getSec("ALLERGIES");
+  const militaryText = getSec("MILITARY HISTORY");
+  const preventiveText = getSec("PREVENTIVE MEDICINE", "PREVENTION");
+  const updatesText = getSec("UPDATES / RECENT VISITS", "UPDATES");
+  const pmhText = getSec("PAST MEDICAL HISTORY", "PMH");
+  const medRecText = getSec("MED REC", "MEDICATIONS", "MEDICATION LIST");
+
+  const currentMedsText = extractCurrentMedsSubsection(medRecText);
+  const discontinuedMedsText = extractMedSubsection(medRecText, /RECENTLY\s+DISCONTINUED/, [/SIGNIFICANT\s+HISTORICAL/, /HISTORICAL\s+MEDICATIONS?/]);
+  const historicalMedsText = extractMedSubsection(medRecText, /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/, []);
+  const currentMedNames = parseMedNames(currentMedsText);
+  const medDesc = doc.medDescriptions || {};
+
+  const problemBlocks = parseProblemBlocks(pmhText || "");
+
+  // Fuzzy match a case problem to a PMH block
+  const findBlockFor = (problemName) => {
+    if (!problemName) return null;
+    const target = problemName.toLowerCase().trim();
+    if (problemBlocks[target]) return problemBlocks[target];
+    for (const [k, v] of Object.entries(problemBlocks)) {
+      if (k.includes(target) || target.includes(k)) return v;
+      const cleanK = k.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
+      const cleanT = target.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
+      if (cleanK && cleanT && (cleanK.includes(cleanT) || cleanT.includes(cleanK))) return v;
+    }
+    return null;
+  };
+
+  // Category → icon class + FontAwesome icon
+  const categoryIcon = {
+    mental: { cls: "mental", icon: "fa-brain" },
+    skin: { cls: "skin", icon: "fa-hand" },
+    gi: { cls: "gi", icon: "fa-stomach" },
+    pain: { cls: "pain", icon: "fa-bone" },
+    ent: { cls: "ent", icon: "fa-tooth" },
+    neuro: { cls: "neuro", icon: "fa-head-side-virus" },
+    social: { cls: "social", icon: "fa-users" },
+    lab: { cls: "lab", icon: "fa-flask-vial" },
+    cardiac: { cls: "pain", icon: "fa-heart-pulse" },
+    pulm: { cls: "neuro", icon: "fa-lungs" },
+    endocrine: { cls: "ent", icon: "fa-droplet" },
+    renal: { cls: "gi", icon: "fa-filter" },
+    vascular: { cls: "pain", icon: "fa-heart-pulse" },
+    other: { cls: "social", icon: "fa-notes-medical" },
+  };
+
+  // Status → badge class + label
+  const statusBadge = {
+    active: { cls: "sp-active", label: "Active" },
+    stable: { cls: "sp-stable", label: "Stable" },
+    remission: { cls: "sp-stable", label: "In Remission" },
+    resolved: { cls: "sp-resolved", label: "Resolved" },
+    registry: { cls: "sp-reg", label: "Registry Only" },
+    controlled: { cls: "sp-stable", label: "Controlled" },
+  };
+
+  const badgeTypeCls = {
+    info: "badge-v",
+    warning: "badge-sc",
+    alert: "badge-a",
+  };
+
+  // ─────────────────────────────────────────────────────────────
+  // Formatter for prenote text blocks (bullets, key:value, paragraphs)
+  // ─────────────────────────────────────────────────────────────
+  const fmtHtml = (text, opts = {}) => {
+    if (!text) return "";
+    let working = text.trim();
+    if (opts.stripHeader) {
+      const lines = working.split(/\r?\n/);
+      const first = lines.find(l => l.trim());
+      if (first) {
+        const norm = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+        const nf = norm(first);
+        const nt = norm(opts.stripHeader);
+        if ((nf.includes(nt) && nf.length < nt.length * 2.5) || (nt.includes(nf) && nf.length > 5)) {
+          working = lines.slice(lines.indexOf(first) + 1).join("\n").trim();
+        }
+      }
+    }
+    if (opts.dropTables) {
+      const lines = working.split(/\r?\n/);
+      const kept = [];
+      let skip = false;
+      for (const line of lines) {
+        const pipes = (line.match(/\|/g) || []).length;
+        if (pipes >= 3) { skip = true; while (kept.length && /labs?:?$/i.test(kept[kept.length-1].trim())) kept.pop(); continue; }
+        if (skip && pipes === 0) skip = false;
+        kept.push(line);
+      }
+      working = kept.join("\n");
+    }
+    if (!working.trim()) return "";
+
+    const items = working.split(/\r?\n/).map(l => {
+      const t = l.trim();
+      if (!t) return { type: "blank" };
+      const bullet = t.match(/^[\-\*•●○▪▫►◆·]\s+(.+)$/);
+      if (bullet) return { type: "bullet", content: bullet[1] };
+      const kv = t.match(/^([A-Z][A-Za-z0-9\s\/\-\(\)]{2,34}):\s+(.+)$/);
+      if (kv) return { type: "kv", key: kv[1].trim(), value: kv[2].trim() };
+      return { type: "plain", content: t };
+    });
+
+    const groups = [];
+    let cur = null;
+    for (const it of items) {
+      if (it.type === "blank") { if (cur) { groups.push(cur); cur = null; } continue; }
+      if (!cur) cur = { type: it.type, items: [it] };
+      else if (cur.type === it.type || (cur.type !== "plain" && it.type !== "plain")) {
+        cur.items.push(it);
+        if (cur.type !== it.type) cur.type = "mixed";
+      } else { groups.push(cur); cur = { type: it.type, items: [it] }; }
+    }
+    if (cur) groups.push(cur);
+
+    let html = `<div class="fmt-block">`;
+    for (const g of groups) {
+      if (g.type === "plain") {
+        html += g.items.map(it => `<p>${esc(it.content)}</p>`).join("");
+      } else {
+        html += `<ul>`;
+        for (const it of g.items) {
+          if (it.type === "kv") html += `<li><strong>${esc(it.key)}:</strong> ${esc(it.value)}</li>`;
+          else html += `<li>${esc(it.content)}</li>`;
+        }
+        html += `</ul>`;
+      }
+    }
+    html += `</div>`;
+    return html;
+  };
+
+  const verbatim = (text) => text ? `<pre class="verbatim">${esc(text)}</pre>` : "";
+  const infoBox = (title, content) => content ? `<div class="info-box"><div class="info-box-title">${esc(title)}</div>${content}</div>` : "";
+
+  // ─────────────────────────────────────────────────────────────
+  // BUILD HEADER
+  // ─────────────────────────────────────────────────────────────
+  let headerHtml = `<div class="patient-header">`;
+  headerHtml += `<div class="header-top"><div>`;
+  headerHtml += `<div class="patient-name">${esc(title)}`;
+  if (na.patientDescriptor) headerHtml += ` <span>${esc(na.patientDescriptor)}</span>`;
+  headerHtml += `</div>`;
+
+  if (Array.isArray(na.patientBadges) && na.patientBadges.length > 0) {
+    headerHtml += `<div class="badge-row">`;
+    na.patientBadges.forEach(b => {
+      const cls = badgeTypeCls[b.type] || "badge-v";
+      headerHtml += `<span class="badge ${cls}">${esc(b.text)}</span>`;
+    });
+    headerHtml += `</div>`;
+  }
+
+  if (Array.isArray(na.scPercentages) && na.scPercentages.length > 0) {
+    headerHtml += `<div class="sc-row">`;
+    na.scPercentages.forEach(sc => {
+      headerHtml += `<span class="sc-c">${esc(sc.condition)} ${esc(sc.percent)}%</span>`;
+    });
+    headerHtml += `</div>`;
+  }
+
+  headerHtml += `</div></div>`;
+  headerHtml += `<div class="hgrid">`;
+  headerHtml += `<div class="hs"><span class="hs-l">Session Date</span><span class="hs-v">${esc(sessionDate)}</span></div>`;
+  if (doc.phase?.monthsIn !== undefined) headerHtml += `<div class="hs"><span class="hs-l">LIC Month</span><span class="hs-v">Month ${esc(doc.phase.monthsIn)}</span></div>`;
+  if (doc.phase?.name) headerHtml += `<div class="hs"><span class="hs-l">Phase</span><span class="hs-v">${esc(doc.phase.name)}</span></div>`;
+  if (student) headerHtml += `<div class="hs"><span class="hs-l">Student</span><span class="hs-v">${esc(student)}</span></div>`;
+  headerHtml += `</div></div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // ONE-LINER
+  // ─────────────────────────────────────────────────────────────
+  const oneLinerHtml = na.oneLiner
+    ? `<div class="oneliner">${esc(na.oneLiner)}</div>`
+    : "";
+
+  // ─────────────────────────────────────────────────────────────
+  // QUICK REFERENCE PANELS
+  // ─────────────────────────────────────────────────────────────
+  let qrHtml = `<div class="qr-grid">`;
+
+  // PMH list
+  qrHtml += `<div class="qr-panel"><div class="qr-head"><i class="fa-solid fa-list-check"></i> Past Medical History</div><div class="qr-body"><ul class="pmh-list">`;
+  const problemsForPMH = na.activeProblems?.length ? na.activeProblems : Object.values(problemBlocks).map(b => ({ problem: b.rawHeader, status: "active" }));
+  problemsForPMH.forEach(p => {
+    const dot = p.status === "resolved" ? "resolved" : "active";
+    const scTag = p.scPercent ? `<span class="sc-tag">${esc(p.scPercent)}% SC</span>` : "";
+    qrHtml += `<li><span class="pmh-dot ${dot}"></span>${esc(p.problem)}${scTag}</li>`;
+  });
+  qrHtml += `</ul></div></div>`;
+
+  // Clinical Reference Data
+  qrHtml += `<div class="qr-panel"><div class="qr-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="qr-body">`;
+  if (surgicalText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${esc(surgicalText.slice(0, 400))}</div></div>`;
+  if (allergiesText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield-virus"></i> Allergies</div><div class="ref-text">${esc(allergiesText.slice(0, 200))}</div></div>`;
+  if (familyText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${esc(familyText.slice(0, 400))}</div></div>`;
+  if (na.diagnosticsSummary) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
+  if (na.labTrendsSummary) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
+  qrHtml += `</div></div></div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // VITALS CARD
+  // ─────────────────────────────────────────────────────────────
+  let vitalsHtml = "";
+  if (vitalsText) {
+    // Try to parse individual vital values with simple regex
+    const vitals = [];
+    const bpMatch = vitalsText.match(/BP[:\s]+(\d{2,3}\/\d{2,3})/i);
+    if (bpMatch) vitals.push({ l: "BP", v: bpMatch[1] });
+    const hrMatch = vitalsText.match(/HR[:\s]+(\d{2,3})/i) || vitalsText.match(/Pulse[:\s]+(\d{2,3})/i);
+    if (hrMatch) vitals.push({ l: "HR", v: hrMatch[1] });
+    const tempMatch = vitalsText.match(/Temp[:\s]+([\d.]+\s*°?[FC]?)/i);
+    if (tempMatch) vitals.push({ l: "Temp", v: tempMatch[1] });
+    const spo2Match = vitalsText.match(/S[pP]O2[:\s]+(\d{1,3}%?)/i);
+    if (spo2Match) vitals.push({ l: "SpO2", v: spo2Match[1] });
+    const wtMatch = vitalsText.match(/W[Tt][:\s]+([\d.]+\s*(?:lb|kg))/i);
+    if (wtMatch) vitals.push({ l: "Weight", v: wtMatch[1] });
+    const bmiMatch = vitalsText.match(/BMI[:\s]+([\d.]+)/i);
+    if (bmiMatch) vitals.push({ l: "BMI", v: bmiMatch[1] });
+
+    vitalsHtml += `<div class="card open" style="margin-bottom:16px"><div class="ch" onclick="toggleCard(this)">`;
+    vitalsHtml += `<div class="ch-l"><div class="ci lab"><i class="fa-solid fa-heart-pulse"></i></div><div><div class="ct">Vital Signs</div><div class="cs">From chart</div></div></div>`;
+    vitalsHtml += `<div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div>`;
+    vitalsHtml += `<div class="cb"><div class="cbi">`;
+    if (vitals.length > 0) {
+      vitalsHtml += `<div class="vr">`;
+      vitals.forEach(v => vitalsHtml += `<div class="vc"><div class="vc-l">${esc(v.l)}</div><div class="vc-v">${esc(v.v)}</div></div>`);
+      vitalsHtml += `</div>`;
+    } else {
+      vitalsHtml += verbatim(vitalsText);
+    }
+    vitalsHtml += `</div></div></div>`;
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // NAV TABS
+  // ─────────────────────────────────────────────────────────────
+  const navHtml = `<div class="nav-tabs" role="tablist">
+  <button class="nav-tab active" onclick="switchTab('problems',this)"><i class="fa-solid fa-stethoscope"></i> Problems</button>
+  <button class="nav-tab" onclick="switchTab('meds',this)"><i class="fa-solid fa-pills"></i> Meds</button>
+  <button class="nav-tab" onclick="switchTab('labs',this)"><i class="fa-solid fa-flask"></i> Labs</button>
+  <button class="nav-tab" onclick="switchTab('social',this)"><i class="fa-solid fa-users"></i> Social</button>
+  <button class="nav-tab" onclick="switchTab('timeline',this)"><i class="fa-solid fa-clock-rotate-left"></i> Timeline</button>
+  <button class="nav-tab" onclick="switchTab('preventive',this)"><i class="fa-solid fa-shield-heart"></i> Preventive</button>
+  <button class="nav-tab" onclick="switchTab('checklist',this)"><i class="fa-solid fa-clipboard-check"></i> Visit Plan</button>
+  <button class="nav-tab" onclick="switchTab('practice',this)"><i class="fa-solid fa-lightbulb"></i> Practice Q's</button>
+</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // PROBLEMS TAB — one card per selected teaching case + non-selected
+  // ─────────────────────────────────────────────────────────────
+  let problemsTab = `<div id="tab-problems" class="section active">`;
+  problemsTab += `<div class="sec-row"><div class="sec-title">Active Problems — Full Detail &amp; Teaching</div><button class="toggle-all" onclick="toggleAll('tab-problems')">Expand All</button></div>`;
+
+  const buildProblemCard = (tc, idx, isSelected) => {
+    const c = tc.data || tc;
+    const problemName = c.problem || c.rawHeader || "Problem";
+    // Find category/status from noteAnalysis.activeProblems if not on the case itself
+    const apMatch = (na.activeProblems || []).find(ap => ap.problem?.toLowerCase().trim() === problemName.toLowerCase().trim());
+    const category = c.category || apMatch?.category || "other";
+    const status = c.status || apMatch?.status || (isSelected ? "active" : "stable");
+    const shortSub = c.shortSubtitle || apMatch?.shortSubtitle || c.primaryDiagnosis?.name || "";
+    const icon = categoryIcon[category] || categoryIcon.other;
+    const badge = statusBadge[status] || statusBadge.active;
+    const chartBlock = findBlockFor(problemName) || findBlockFor(c.primaryDiagnosis?.name);
+    const perProbRedFlags = na.perProblemRedFlags?.[problemName] || [];
+
+    let html = `<div class="card${idx === 0 ? " open" : ""}"><div class="ch" onclick="toggleCard(this)">`;
+    html += `<div class="ch-l"><div class="ci ${icon.cls}"><i class="fa-solid ${icon.icon}"></i></div>`;
+    html += `<div><div class="ct">${esc(problemName)}</div>`;
+    if (shortSub) html += `<div class="cs">${esc(shortSub)}</div>`;
+    html += `</div></div><div class="ch-r"><span class="sp ${badge.cls}">${esc(badge.label)}</span><i class="fa-solid fa-chevron-down chev"></i></div></div>`;
+
+    html += `<div class="cb"><div class="cbi">`;
+
+    // Current status paragraph
+    if (chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition) {
+      html += `<p>${esc(chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition)}</p>`;
+    }
+
+    // Current management
+    if (chartBlock?.currentMeds || chartBlock?.pastMeds || c.treatmentApproach?.firstLine?.length > 0) {
+      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-pills"></i> Medications</div>`;
+      if (chartBlock?.currentMeds) html += `<p><strong>Current:</strong> ${esc(chartBlock.currentMeds)}</p>`;
+      if (chartBlock?.pastMeds) html += `<p><strong>Past:</strong> ${esc(chartBlock.pastMeds)}</p>`;
+      if (!chartBlock?.currentMeds && c.treatmentApproach?.firstLine?.length > 0) {
+        html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
+        c.treatmentApproach.firstLine.forEach(t => {
+          const treatment = stripTreatmentVerb(t.treatment || "");
+          html += `<li><strong>${esc(treatment)}</strong>${t.dosing ? ` — ${esc(t.dosing)}` : ""}</li>`;
+        });
+        html += `</ul>`;
+      }
+      html += `</div>`;
+    }
+
+    // Labs / trends
+    if (chartBlock?.labTrends || chartBlock?.recentControl || c.keyLabsAndImaging?.length > 0) {
+      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-flask"></i> Labs &amp; Trends</div>`;
+      if (chartBlock?.labTrends) html += `<p>${esc(chartBlock.labTrends)}</p>`;
+      if (chartBlock?.recentControl) html += `<p><strong>Recent trend:</strong> ${esc(chartBlock.recentControl)}</p>`;
+      if (c.keyLabsAndImaging?.length > 0) {
+        html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
+        c.keyLabsAndImaging.forEach(lab => {
+          html += `<li><strong>${esc(lab.study)}</strong>${lab.purpose ? ` — ${esc(lab.purpose)}` : ""}`;
+          if (lab.interpretation) html += `<div style="font-size:.8rem;color:var(--fg-d);margin-top:2px;font-style:italic;">${esc(lab.interpretation)}</div>`;
+          html += `</li>`;
+        });
+        html += `</ul>`;
+      }
+      html += `</div>`;
+    }
+
+    // Imaging
+    if (chartBlock?.imaging) {
+      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-x-ray"></i> Imaging / Procedures</div><p>${esc(chartBlock.imaging)}</p></div>`;
+    }
+
+    // Care team
+    if (chartBlock?.careTeam) {
+      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-user-doctor"></i> Care Team</div><p>${esc(chartBlock.careTeam)}</p></div>`;
+    }
+
+    // Teaching content for selected problems
+    if (isSelected) {
+      // Suggested questions (ASK box)
+      if (c.suggestedQuestions?.length > 0) {
+        html += `<div class="tbox ask"><div class="tbox-l"><i class="fa-solid fa-comment-medical"></i> Suggested Questions</div><ul>`;
+        c.suggestedQuestions.forEach(q => html += `<li>${esc(q)}</li>`);
+        html += `</ul></div>`;
+      }
+
+      // Key learning points (TEACH box)
+      if (c.keyLearningPoints?.length > 0) {
+        html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-graduation-cap"></i> Teaching Points</div><ul>`;
+        c.keyLearningPoints.forEach(lp => {
+          html += `<li><strong>${esc(lp.point)}:</strong> ${esc(lp.explanation)}`;
+          if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
+          html += `</li>`;
+        });
+        html += `</ul></div>`;
+      }
+
+      // Don't miss (WARN box)
+      if (c.dontMiss?.trim()) {
+        html += `<div class="tbox warn"><div class="tbox-l"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div><p>${esc(c.dontMiss)}</p></div>`;
+      }
+
+      // Per-problem red flags from analysis
+      if (perProbRedFlags.length > 0) {
+        html += `<div class="tbox warn"><div class="tbox-l"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul>`;
+        perProbRedFlags.forEach(rf => html += `<li>${esc(rf)}</li>`);
+        html += `</ul></div>`;
+      }
+
+      // Clinical pearl (TEACH box)
+      if (c.clinicalPearl) {
+        html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p>${esc(c.clinicalPearl)}</p></div>`;
+      }
+    } else {
+      // Non-selected: lightweight teaching if available
+      const lwtKey = problemName.toLowerCase().trim();
+      let lwt = doc.lightweightTeaching?.[lwtKey];
+      if (!lwt && doc.lightweightTeaching) {
+        for (const [k, v] of Object.entries(doc.lightweightTeaching)) {
+          if (lwtKey.includes(k) || k.includes(lwtKey)) { lwt = v; break; }
+        }
+      }
+      if (lwt) {
+        if (lwt.theClassicPicture) {
+          html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-graduation-cap"></i> Quick Background</div><p>${esc(lwt.theClassicPicture)}</p></div>`;
+        }
+        if (lwt.oneKeyLearningPoint) {
+          html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p><strong>${esc(lwt.oneKeyLearningPoint.point)}:</strong> ${esc(lwt.oneKeyLearningPoint.explanation)}`;
+          if (lwt.oneKeyLearningPoint.citation) html += ` <em style="opacity:.75;">(${esc(lwt.oneKeyLearningPoint.citation)})</em>`;
+          html += `</p></div>`;
+        }
+        if (lwt.clinicalPearl) {
+          html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-lightbulb"></i> Pearl</div><p>${esc(lwt.clinicalPearl)}</p></div>`;
+        }
+      }
+    }
+
+    html += `</div></div></div>`;
+    return html;
+  };
+
+  // Render selected teaching cases
+  enabledCases.forEach((tc, idx) => {
+    problemsTab += buildProblemCard(tc, idx, true);
+  });
+
+  // Render non-selected problems from PMH
+  const selectedNames = new Set(enabledCases.map(tc => (tc.data?.problem || tc.problem || "").toLowerCase().trim()));
+  Object.entries(problemBlocks).forEach(([key, block], idx) => {
+    const headerLower = block.rawHeader.toLowerCase().trim();
+    let alreadyCovered = false;
+    for (const sel of selectedNames) {
+      if (headerLower.includes(sel) || sel.includes(headerLower)) { alreadyCovered = true; break; }
+    }
+    if (!alreadyCovered) {
+      problemsTab += buildProblemCard({ data: { problem: block.rawHeader } }, enabledCases.length + idx, false);
+    }
+  });
+
+  problemsTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // MEDS TAB
+  // ─────────────────────────────────────────────────────────────
+  let medsTab = `<div id="tab-meds" class="section">`;
+  medsTab += `<div class="sec-title">Current Medications</div>`;
+  if (currentMedNames.length > 0) {
+    medsTab += `<div class="med-table-wrap" style="margin-bottom:20px;"><table class="med-table"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
+    currentMedNames.forEach(name => {
+      const desc = medDesc[name.toLowerCase().trim()] || {};
+      const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(name)}`;
+      medsTab += `<tr><td class="drug-name"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)} ↗</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
+    });
+    medsTab += `</tbody></table></div>`;
+  } else if (currentMedsText) {
+    medsTab += infoBox("Current medications (verbatim)", verbatim(currentMedsText));
+  } else {
+    medsTab += `<p style="color:var(--fg-d);font-style:italic;">No current medications documented.</p>`;
+  }
+
+  if (discontinuedMedsText) {
+    medsTab += `<div class="sec-title" style="margin-top:24px;">Recently Discontinued</div>`;
+    medsTab += `<div class="med-table-wrap">${verbatim(discontinuedMedsText)}</div>`;
+  }
+  if (historicalMedsText) {
+    medsTab += `<div class="sec-title" style="margin-top:24px;">Historical Medications</div>`;
+    medsTab += `<div class="med-table-wrap">${verbatim(historicalMedsText)}</div>`;
+  }
+  medsTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // LABS TAB
+  // ─────────────────────────────────────────────────────────────
+  let labsTab = `<div id="tab-labs" class="section">`;
+  labsTab += `<div class="sec-title">Laboratory Results</div>`;
+  if (na.labTrendsSummary) labsTab += `<div class="oneliner" style="margin-bottom:14px;">${esc(na.labTrendsSummary)}</div>`;
+  if (labsText) labsTab += `<div class="card open"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-flask-vial"></i></div><div><div class="ct">Full Lab Results</div><div class="cs">Verbatim from chart</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${verbatim(labsText)}</div></div></div>`;
+  if (imagingText && !/no imaging/i.test(imagingText)) {
+    labsTab += `<div class="card"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-x-ray"></i></div><div><div class="ct">Imaging &amp; Procedures</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${verbatim(imagingText)}</div></div></div>`;
+  }
+  labsTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // SOCIAL TAB
+  // ─────────────────────────────────────────────────────────────
+  let socialTab = `<div id="tab-social" class="section">`;
+  socialTab += `<div class="sec-title">Social History &amp; Context</div>`;
+  if (socialText) socialTab += infoBox("Social History", fmtHtml(socialText, { stripHeader: "Social History" }));
+  if (familyText) socialTab += infoBox("Family History", fmtHtml(familyText, { stripHeader: "Family History" }));
+  if (militaryText) socialTab += infoBox("Military History", fmtHtml(militaryText, { stripHeader: "Military History" }));
+  if (!socialText && !familyText && !militaryText) socialTab += `<p style="color:var(--fg-d);font-style:italic;">No social history documented.</p>`;
+  socialTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // TIMELINE TAB
+  // ─────────────────────────────────────────────────────────────
+  let timelineTab = `<div id="tab-timeline" class="section"><div class="sec-title">Recent Visit Timeline</div>`;
+  if (updatesText) {
+    timelineTab += `<div class="card open"><div class="cb" style="max-height:none;"><div class="cbi">${fmtHtml(updatesText, { stripHeader: "Updates", dropTables: true })}</div></div></div>`;
+  } else {
+    timelineTab += `<p style="color:var(--fg-d);font-style:italic;">No recent visit updates documented.</p>`;
+  }
+  timelineTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // PREVENTIVE TAB
+  // ─────────────────────────────────────────────────────────────
+  let preventiveTab = `<div id="tab-preventive" class="section"><div class="sec-title">Preventive Care Status</div>`;
+  if (preventiveText) {
+    preventiveTab += `<div class="card open"><div class="cb" style="max-height:none;"><div class="cbi">${fmtHtml(preventiveText, { stripHeader: "Preventive Medicine" })}</div></div></div>`;
+  } else {
+    preventiveTab += `<p style="color:var(--fg-d);font-style:italic;">No preventive care data documented.</p>`;
+  }
+  preventiveTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // VISIT PLAN TAB (checklist from na.visitPlan)
+  // ─────────────────────────────────────────────────────────────
+  let checklistTab = `<div id="tab-checklist" class="section"><div class="sec-title">Today's Visit Plan</div>`;
+  if (Array.isArray(na.visitPlan) && na.visitPlan.length > 0) {
+    checklistTab += `<div class="card open"><div class="cb" style="max-height:none;"><div class="cbi"><ul class="cl">`;
+    na.visitPlan.forEach(item => {
+      checklistTab += `<li onclick="toggleCK(this)"><div class="cbx"><i class="fa-solid fa-check"></i></div><span>${esc(item)}</span></li>`;
+    });
+    checklistTab += `</ul></div></div></div>`;
+  } else {
+    checklistTab += `<p style="color:var(--fg-d);font-style:italic;">No visit plan generated.</p>`;
+  }
+  if (na.redFlags?.length > 0) {
+    checklistTab += `<div class="tbox warn"><div class="tbox-l"><i class="fa-solid fa-triangle-exclamation"></i> Red Flags — Actively Screen For</div><ul>`;
+    na.redFlags.forEach(rf => checklistTab += `<li>${esc(rf)}</li>`);
+    checklistTab += `</ul></div>`;
+  }
+  checklistTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // PRACTICE QUESTIONS TAB
+  // ─────────────────────────────────────────────────────────────
+  let practiceTab = `<div id="tab-practice" class="section"><div class="sec-title">Practice Questions</div>`;
+  let qNum = 0;
+  enabledCases.forEach(tc => {
+    const c = tc.data || tc;
+    if (!c.shelfQuestions?.length) return;
+    practiceTab += `<div class="sec-title" style="margin-top:20px;">${esc(c.problem)}</div>`;
+    c.shelfQuestions.forEach(q => {
+      qNum++;
+      practiceTab += `<div class="pq-card" onclick="togglePQ(this)"><div class="pq-q"><div class="pq-num">${qNum}</div><div class="pq-text">${esc(q.vignette)}</div><i class="fa-solid fa-chevron-down pq-chev"></i></div><div class="pq-a"><div class="pq-ai">`;
+      if (q.options) {
+        practiceTab += `<ul class="pq-opts">`;
+        Object.entries(q.options).forEach(([letter, opt]) => {
+          const cls = q.correctAnswer === letter ? "pq-correct" : "";
+          practiceTab += `<li class="${cls}"><span class="pq-letter">${esc(letter)}.</span>${esc(opt)}</li>`;
+        });
+        practiceTab += `</ul>`;
+      }
+      practiceTab += `<p><strong>Answer: <span class="pq-correct">${esc(q.correctAnswer)}</span></strong></p><p>${esc(q.explanation)}</p>`;
+      practiceTab += `</div></div></div>`;
+    });
+  });
+  if (qNum === 0) practiceTab += `<p style="color:var(--fg-d);font-style:italic;">No practice questions generated.</p>`;
+  practiceTab += `</div>`;
+
+  // ─────────────────────────────────────────────────────────────
+  // ASSEMBLE FULL HTML DOCUMENT
+  // ─────────────────────────────────────────────────────────────
+  const cssBlock = `
+:root{--bg:#0f1419;--bg-el:#161c22;--card:#1c242c;--card-h:#212a34;--brd:#2a3542;--brd-l:#344155;--fg:#e8edf3;--fg-m:#8899aa;--fg-d:#5c7080;--acc:#38bdf8;--acc-d:rgba(56,189,248,.12);--tch:#f59e0b;--tch-bg:rgba(245,158,11,.08);--tch-br:rgba(245,158,11,.25);--wrn:#f87171;--wrn-bg:rgba(248,113,113,.08);--wrn-br:rgba(248,113,113,.25);--suc:#34d399;--suc-bg:rgba(52,211,153,.08);--suc-br:rgba(52,211,153,.25);--inf:#818cf8;--inf-bg:rgba(129,140,248,.08);--inf-br:rgba(129,140,248,.25);--rx:#c084fc;--rx-bg:rgba(192,132,252,.08);--rx-br:rgba(192,132,252,.25);--pq:#2dd4bf;--pq-bg:rgba(45,212,191,.08);--pq-br:rgba(45,212,191,.25);--shadow:0 1px 3px rgba(0,0,0,.3);--toggle-bg:#2a3542;--toggle-knob:#e8edf3;--toggle-icon:#8899aa}
+body.light{--bg:#f3f4f8;--bg-el:#e9ebf0;--card:#fff;--card-h:#f7f8fa;--brd:#d8dce5;--brd-l:#c5cad6;--fg:#1a1f2e;--fg-m:#5a6275;--fg-d:#8b92a5;--acc:#0284c7;--acc-d:rgba(2,132,199,.08);--tch:#d97706;--tch-bg:rgba(217,119,6,.06);--tch-br:rgba(217,119,6,.2);--wrn:#dc2626;--wrn-bg:rgba(220,38,38,.05);--wrn-br:rgba(220,38,38,.18);--suc:#059669;--suc-bg:rgba(5,150,105,.06);--suc-br:rgba(5,150,105,.18);--inf:#6366f1;--inf-bg:rgba(99,102,241,.06);--inf-br:rgba(99,102,241,.18);--rx:#9333ea;--rx-bg:rgba(147,51,234,.06);--rx-br:rgba(147,51,234,.18);--pq:#0d9488;--pq-bg:rgba(13,148,136,.06);--pq-br:rgba(13,148,136,.18);--shadow:0 1px 3px rgba(0,0,0,.08);--toggle-bg:#cbd5e1;--toggle-knob:#fff;--toggle-icon:#64748b}
+*{margin:0;padding:0;box-sizing:border-box}
+html{scroll-behavior:smooth;font-size:15px}
+body{font-family:'DM Sans','Inter',system-ui,sans-serif;background:var(--bg);color:var(--fg);line-height:1.6;min-height:100vh;transition:background .3s,color .3s}
+.theme-toggle-wrap{position:fixed;top:16px;right:16px;z-index:1000;display:flex;align-items:center;gap:10px}
+.theme-toggle{position:relative;width:56px;height:30px;cursor:pointer;display:flex;align-items:center}
+.theme-toggle input{display:none}
+.toggle-track{position:absolute;inset:0;background:var(--toggle-bg);border-radius:15px;transition:background .3s;border:1px solid var(--brd)}
+.toggle-knob{position:absolute;left:3px;top:3px;width:24px;height:24px;background:var(--toggle-knob);border-radius:50%;transition:transform .3s,background .3s;box-shadow:0 1px 4px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center}
+.toggle-knob i{font-size:12px;color:var(--toggle-icon)}
+.theme-toggle input:checked~.toggle-knob{transform:translateX(26px)}
+.theme-toggle input:checked~.toggle-knob i.fa-moon{display:none}
+.theme-toggle input:not(:checked)~.toggle-knob i.fa-sun{display:none}
+.toggle-label{font-size:.72rem;font-weight:600;color:var(--fg-d);text-transform:uppercase;letter-spacing:.06em}
+@media(max-width:640px){.theme-toggle-wrap{top:10px;right:10px}.toggle-label{display:none}}
+.container{max-width:960px;margin:0 auto;padding:24px 20px 80px}
+.patient-header{background:var(--card);border:1px solid var(--brd);border-radius:14px;padding:28px 32px;margin-bottom:16px;position:relative;overflow:hidden;box-shadow:var(--shadow)}
+.patient-header::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--acc),var(--tch),var(--suc))}
+.header-top{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;margin-bottom:14px}
+.patient-name{font-size:1.6rem;font-weight:700;letter-spacing:-.02em}
+.patient-name span{color:var(--fg-m);font-weight:400;font-size:.92rem;margin-left:10px}
+.badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:.76rem;font-weight:600;white-space:nowrap}
+.badge-v{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
+.badge-sc{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
+.badge-a{background:var(--wrn-bg);color:var(--wrn);border:1px solid var(--wrn-br)}
+.sc-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
+.sc-c{font-size:.68rem;padding:2px 8px;border-radius:4px;background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br);font-weight:500}
+.hgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:14px}
+.hs{display:flex;flex-direction:column;gap:2px}
+.hs-l{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:600}
+.hs-v{font-size:.9rem;color:var(--fg);font-weight:500}
+.oneliner{background:var(--acc-d);border:1px solid rgba(56,189,248,.15);border-radius:10px;padding:14px 20px;margin-bottom:16px;font-size:.9rem;line-height:1.65}
+.qr-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
+@media(max-width:700px){.qr-grid{grid-template-columns:1fr}}
+.qr-panel{background:var(--card);border:1px solid var(--brd);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
+.qr-head{padding:12px 18px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-d);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px}
+.qr-body{padding:14px 18px}
+.pmh-list{list-style:none;padding:0}
+.pmh-list li{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--brd);font-size:.84rem;color:var(--fg-m)}
+.pmh-list li:last-child{border-bottom:none}
+.pmh-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.pmh-dot.active{background:var(--suc)}
+.pmh-dot.resolved{background:var(--fg-d)}
+.pmh-list li .sc-tag{margin-left:auto;font-size:.65rem;padding:1px 7px;border-radius:4px;background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br);font-weight:600}
+.ref-item{margin-bottom:12px}.ref-item:last-child{margin-bottom:0}
+.ref-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.ref-text{font-size:.84rem;color:var(--fg-m);line-height:1.6}
+.nav-tabs{display:flex;gap:4px;padding:6px;background:var(--bg-el);border:1px solid var(--brd);border-radius:12px;margin-bottom:18px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.nav-tab{padding:9px 14px;border-radius:8px;border:none;background:transparent;color:var(--fg-m);font-family:inherit;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap;display:flex;align-items:center;gap:6px}
+.nav-tab:hover{color:var(--fg);background:var(--card)}
+.nav-tab.active{background:var(--card);color:var(--acc);box-shadow:var(--shadow)}
+.section{display:none}.section.active{display:block}
+.sec-title{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-d);margin-bottom:14px;padding-left:4px}
+.sec-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
+.toggle-all{background:none;border:1px solid var(--brd);color:var(--fg-m);font-family:inherit;font-size:.74rem;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .2s}
+.toggle-all:hover{color:var(--fg);border-color:var(--brd-l);background:var(--card)}
+.card{background:var(--card);border:1px solid var(--brd);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow);transition:border-color .2s}
+.card:hover{border-color:var(--brd-l)}
+.ch{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;cursor:pointer;user-select:none;transition:background .15s;gap:12px}
+.ch:hover{background:var(--card-h)}
+.ch-l{display:flex;align-items:center;gap:11px;min-width:0}
+.ci{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.82rem;flex-shrink:0}
+.ci.mental{background:var(--inf-bg);color:var(--inf);border:1px solid var(--inf-br)}
+.ci.skin{background:var(--rx-bg);color:var(--rx);border:1px solid var(--rx-br)}
+.ci.gi{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
+.ci.pain{background:var(--wrn-bg);color:var(--wrn);border:1px solid var(--wrn-br)}
+.ci.ent{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
+.ci.neuro{background:var(--inf-bg);color:var(--inf);border:1px solid var(--inf-br)}
+.ci.social{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
+.ci.lab{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
+.ct{font-size:.9rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cs{font-size:.73rem;color:var(--fg-m);margin-top:1px}
+.ch-r{display:flex;align-items:center;gap:10px;flex-shrink:0}
+.sp{padding:3px 10px;border-radius:12px;font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.sp-active{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
+.sp-resolved{background:rgba(136,153,170,.1);color:var(--fg-m);border:1px solid rgba(136,153,170,.2)}
+.sp-stable{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
+.sp-reg{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
+.chev{color:var(--fg-d);font-size:.72rem;transition:transform .25s}
+.card.open .chev{transform:rotate(180deg)}
+.cb{max-height:0;overflow:hidden;transition:max-height .35s ease}
+.card.open .cb{max-height:8000px}
+.cbi{padding:0 18px 18px}
+.cbi p{font-size:.86rem;color:var(--fg-m);line-height:1.65;margin-bottom:8px}
+.cbi p:last-child{margin-bottom:0}
+.cbi p strong{color:var(--fg);font-weight:600}
+.cbi ul{padding-left:1.25rem;margin-bottom:8px}
+.cbi ul li{font-size:.86rem;color:var(--fg-m);line-height:1.6;margin-bottom:4px}
+.cond-sub{margin-top:14px;border-top:1px solid var(--brd);padding-top:12px}
+.cond-sub:first-child{margin-top:0;border-top:none;padding-top:0}
+.cond-sub-label{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.tbox{border-radius:10px;padding:14px 18px;margin-top:14px;position:relative}
+.tbox::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0}
+.tbox.teach{background:var(--tch-bg);border:1px solid var(--tch-br)}
+.tbox.teach::before{background:var(--tch)}
+.tbox.ask{background:var(--inf-bg);border:1px solid var(--inf-br)}
+.tbox.ask::before{background:var(--inf)}
+.tbox.warn{background:var(--wrn-bg);border:1px solid var(--wrn-br)}
+.tbox.warn::before{background:var(--wrn)}
+.tbox-l{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;display:flex;align-items:center;gap:6px}
+.tbox.teach .tbox-l{color:var(--tch)}
+.tbox.ask .tbox-l{color:var(--inf)}
+.tbox.warn .tbox-l{color:var(--wrn)}
+.tbox ul{margin:0;padding-left:18px}
+.tbox li{font-size:.81rem;color:var(--fg-m);line-height:1.65;margin-bottom:4px}
+.tbox li strong{color:var(--fg);font-weight:600}
+.tbox p{font-size:.81rem;color:var(--fg-m);line-height:1.65}
+.med-table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--brd);box-shadow:var(--shadow)}
+.med-table{width:100%;border-collapse:collapse;font-size:.82rem}
+.med-table th{background:var(--bg-el);color:var(--fg-d);font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;padding:10px 14px;text-align:left;border-bottom:1px solid var(--brd);white-space:nowrap}
+.med-table td{padding:10px 14px;border-bottom:1px solid var(--brd);color:var(--fg-m);vertical-align:top;line-height:1.55}
+.med-table tr:last-child td{border-bottom:none}
+.med-table .drug-name{color:var(--rx);font-weight:600;white-space:nowrap}
+.verbatim{font-family:inherit;font-size:.83rem;white-space:pre-wrap;color:var(--fg-m);line-height:1.55;padding:12px 16px;background:var(--bg-el);border-radius:6px;overflow-x:auto}
+.fmt-block p{font-size:.86rem;color:var(--fg-m);line-height:1.65;margin-bottom:8px}
+.fmt-block p:last-child{margin-bottom:0}
+.fmt-block ul{padding-left:1.25rem;margin-bottom:8px}
+.fmt-block ul:last-child{margin-bottom:0}
+.fmt-block li{font-size:.85rem;color:var(--fg-m);line-height:1.6;margin-bottom:4px}
+.fmt-block li strong{color:var(--fg);font-weight:600}
+.vr{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-top:10px}
+.vc{background:var(--bg-el);border:1px solid var(--brd);border-radius:8px;padding:10px 14px;text-align:center}
+.vc-l{font-size:.64rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:600;margin-bottom:3px}
+.vc-v{font-family:monospace;font-size:.95rem;font-weight:500;color:var(--fg)}
+.info-box{background:var(--bg-el);border:1px solid var(--brd);border-radius:8px;padding:12px 16px;margin-bottom:12px}
+.info-box:last-child{margin-bottom:0}
+.info-box-title{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:700;margin-bottom:6px}
+.cl{list-style:none;padding:0}
+.cl li{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--brd);font-size:.86rem;color:var(--fg-m);cursor:pointer;transition:color .15s}
+.cl li:last-child{border-bottom:none}
+.cl li:hover{color:var(--fg)}
+.cbx{width:20px;height:20px;border-radius:5px;border:2px solid var(--brd-l);flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;transition:all .2s}
+.cbx i{font-size:.62rem;color:transparent;transition:color .2s}
+.cl li.ck .cbx{background:var(--suc);border-color:var(--suc)}
+.cl li.ck .cbx i{color:#fff}
+.cl li.ck{color:var(--fg-d);text-decoration:line-through}
+.pq-card{background:var(--card);border:1px solid var(--brd);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
+.pq-q{padding:16px 18px;cursor:pointer;transition:background .15s;display:flex;align-items:flex-start;gap:14px}
+.pq-q:hover{background:var(--card-h)}
+.pq-num{background:var(--pq-bg);color:var(--pq);border:1px solid var(--pq-br);width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:700;flex-shrink:0;font-family:monospace}
+.pq-text{font-size:.87rem;color:var(--fg);line-height:1.6;flex:1}
+.pq-chev{color:var(--fg-d);font-size:.72rem;transition:transform .25s;margin-top:4px;flex-shrink:0}
+.pq-card.open .pq-chev{transform:rotate(180deg)}
+.pq-a{max-height:0;overflow:hidden;transition:max-height .35s ease}
+.pq-card.open .pq-a{max-height:3000px}
+.pq-ai{padding:16px 18px;border-top:1px solid var(--brd)}
+.pq-ai p{font-size:.84rem;color:var(--fg-m);line-height:1.65;margin-bottom:8px}
+.pq-ai p:last-child{margin-bottom:0}
+.pq-ai strong{color:var(--fg);font-weight:600}
+.pq-ai .pq-correct{color:var(--suc);font-weight:700}
+.pq-opts{list-style:none;padding:0;margin:8px 0}
+.pq-opts li{padding:5px 0;font-size:.84rem;color:var(--fg-m)}
+.pq-opts li.pq-correct{color:var(--suc);font-weight:600}
+.pq-opts li .pq-letter{font-weight:700;margin-right:6px;color:var(--fg-d)}
+.pq-opts li.pq-correct .pq-letter{color:var(--suc)}
+::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--brd-l);border-radius:3px}
+@media print{body{background:#fff!important;color:#111!important}.card,.qr-panel,.pq-card{border-color:#ddd!important;background:#fff!important}.nav-tabs{display:none}.section{display:block!important}.cb,.pq-a{max-height:none!important}.chev,.pq-chev{display:none}.tbox{break-inside:avoid}.theme-toggle-wrap{display:none!important}}
+@media(max-width:640px){.container{padding:12px 10px 60px}.patient-header{padding:20px 16px}.patient-name{font-size:1.3rem}.hgrid{grid-template-columns:repeat(2,1fr)}.ch{padding:12px 14px}.cbi{padding:0 14px 14px}.vr{grid-template-columns:repeat(2,1fr)}.nav-tab{padding:8px 12px;font-size:.76rem}}
+`;
+
+  const jsBlock = `
+(function(){
+  var STORAGE_KEY='inroom-${sessionId}-theme';
+  var CHECKLIST_KEY='inroom-${sessionId}-checks';
+  var sw=document.getElementById('themeSwitch');
+  if(sw){
+    try{var saved=localStorage.getItem(STORAGE_KEY);if(saved==='light'){sw.checked=true;document.body.classList.add('light')}}catch(e){}
+    sw.addEventListener('change',function(){
+      if(this.checked){document.body.classList.add('light');try{localStorage.setItem(STORAGE_KEY,'light')}catch(e){}}
+      else{document.body.classList.remove('light');try{localStorage.setItem(STORAGE_KEY,'dark')}catch(e){}}
+    });
+  }
+  try{var savedChecks=JSON.parse(localStorage.getItem(CHECKLIST_KEY)||'{}');
+    document.querySelectorAll('.cl li').forEach(function(li,i){if(savedChecks[i])li.classList.add('ck')});
+  }catch(e){}
+})();
+function switchTab(id,btn){document.querySelectorAll('.nav-tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.section').forEach(function(s){s.classList.remove('active')});btn.classList.add('active');document.getElementById('tab-'+id).classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}
+function toggleCard(h){h.parentElement.classList.toggle('open')}
+function toggleAll(sid){var s=document.getElementById(sid);var cs=s.querySelectorAll('.card');var allO=Array.from(cs).every(function(c){return c.classList.contains('open')});cs.forEach(function(c){if(allO)c.classList.remove('open');else c.classList.add('open')});var b=s.querySelector('.toggle-all');if(b)b.textContent=allO?'Expand All':'Collapse All'}
+function toggleCK(li){li.classList.toggle('ck');try{var lis=Array.from(document.querySelectorAll('.cl li'));var checks={};lis.forEach(function(l,i){if(l.classList.contains('ck'))checks[i]=true});localStorage.setItem('inroom-${sessionId}-checks',JSON.stringify(checks))}catch(e){}}
+function togglePQ(card){card.classList.toggle('open')}
+`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>${esc(title)}</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>${cssBlock}</style>
+</head>
+<body>
+<div class="theme-toggle-wrap">
+  <span class="toggle-label">Theme</span>
+  <label class="theme-toggle" aria-label="Toggle theme">
+    <input type="checkbox" id="themeSwitch">
+    <div class="toggle-track"></div>
+    <div class="toggle-knob">
+      <i class="fa-solid fa-moon"></i>
+      <i class="fa-solid fa-sun"></i>
+    </div>
+  </label>
+</div>
+<div class="container">
+${headerHtml}
+${oneLinerHtml}
+${qrHtml}
+${vitalsHtml}
+${navHtml}
+${problemsTab}
+${medsTab}
+${labsTab}
+${socialTab}
+${timelineTab}
+${preventiveTab}
+${checklistTab}
+${practiceTab}
+</div>
+<script>${jsBlock}<\/script>
+</body>
+</html>`;
+};
+
   return (
     <>
       <div className="no-print flex gap-2 mb-4 items-center flex-wrap">
