@@ -4,35 +4,16 @@ import { FileText, Printer, Copy, Check, Plus, X, BookOpen, Target, Stethoscope,
 // ===== Hardcoded config =====
 const WORKER_URL = "https://medteachingtool.sweet-dream-0ed6.workers.dev/";
 const DEFAULT_MODEL = "gpt-oss-120b";
-// ===== Session helpers =====
-// A session ID is short, sortable, and human-readable:
-//   s-2026-07-27-a3f2   (date + 4 random chars)
-// Sortable-by-string means date-based sorting Just Works without parsing.
-const generateSessionId = () => {
-  const date = new Date().toISOString().slice(0, 10);
-  const rand = Math.random().toString(36).slice(2, 6);
-  return `s-${date}-${rand}`;
-};
-
-// Auto-derive a session title from what we know. Attending can override.
-// Priority: explicit title → working dx + date → chief concern + date → "Untitled" + date
-const deriveSessionTitle = ({ explicitTitle, workingDx, chiefConcern, sessionDate }) => {
-  if (explicitTitle?.trim()) return explicitTitle.trim();
+// ===== Doc title helper =====
+// Used only for the exported HTML filename and the doc footer.
+const deriveDocTitle = ({ workingDx, chiefConcern, sessionDate }) => {
   const date = sessionDate || new Date().toISOString().slice(0, 10);
   if (workingDx?.trim()) return `${workingDx.trim()} · ${date}`;
   if (chiefConcern?.trim()) {
     const short = chiefConcern.length > 40 ? chiefConcern.slice(0, 40).trim() + "…" : chiefConcern.trim();
     return `${short} · ${date}`;
   }
-  return `Untitled session · ${date}`;
-};
-
-// Session status derived from state — used to render badges in the session list
-const deriveSessionStatus = ({ clinicalNote, generatedDoc, previewData }) => {
-  if (generatedDoc) return "generated";
-  if (previewData) return "preview";
-  if (clinicalNote?.trim()) return "draft";
-  return "empty";
+  return `Untitled · ${date}`;
 };
 
 // ===== PHI de-identification =====
@@ -823,25 +804,11 @@ export default function App() {
     storage.set("theme", next).catch(() => {});
   };
 
- // ===== Session identity =====
-  // activeSessionId: which session is currently loaded in the editor.
-  // sessionsIndex: array of session metadata objects for the "Recent sessions" panel.
-  // sessionTitle: explicit attending-set title (overrides auto-derived).
-  // Session IDs are set on first meaningful save; before that, we operate in a "pending" state.
-  const [activeSessionId, setActiveSessionId] = useState(null);
-  const [sessionsIndex, setSessionsIndex] = useState([]); // [{id, title, workingDx, sessionDate, status, updatedAt, createdAt}]
-  const [sessionTitle, setSessionTitle] = useState("");
-
-  // ===== Session mode =====
-  // "post" (default) = existing behavior: attending pastes clinical note AFTER visit,
-  //                    AI teaches retrospectively with "our patient today" framing.
-  // "pre" = new pre-visit mode: attending pastes prenote/chart summary BEFORE visit,
-  //         AI generates in-room reference doc + anticipatory teaching prep.
-  //
-  // linkedSessionId reserved for future merge feature (Phase 3): links a "post"
-  // session back to its originating "pre" session so we can render prediction-vs-reality.
+ // ===== Session mode =====
+  // "post" = attending pastes clinical note AFTER visit; AI teaches retrospectively.
+  // "pre" = attending pastes prenote BEFORE visit; AI generates in-room reference doc.
+  // Ephemeral state — resets on page refresh.
   const [sessionMode, setSessionMode] = useState("post");
-  const [linkedSessionId, setLinkedSessionId] = useState(null);
 
   // De-identification review state.
   // rawPrenote: what the attending pasted before de-identification.
@@ -862,9 +829,6 @@ export default function App() {
   // component, resets on navigation). In the student's exported HTML: state
   // persists in the STUDENT's browser localStorage only.
 
-  // Cap on how many sessions we keep in storage. Prevents localStorage overflow.
-  // Oldest sessions get pruned when a new one would push us over.
-  const MAX_SESSIONS = 20;
   const [aiStatus, setAiStatus] = useState({ analyzing: false, generating: false, error: null, progress: null });
 
   // Per-unit generation tracking. Persists across "Generate" clicks so we can
@@ -964,54 +928,9 @@ const [customTopics, setCustomTopics] = useState([]);
   // Preview/edit mode - each section has {enabled, content}
   const [previewMode, setPreviewMode] = useState(false);
   const [previewData, setPreviewData] = useState(null);
-  // ===== Auto-save / restore =====
-  const [restoredSession, setRestoredSession] = useState(null);
-  const [hasRestored, setHasRestored] = useState(false);
-  const [saveStatus, setSaveStatus] = useState({ state: "idle", lastSavedAt: null, error: null });
-  const [nowTick, setNowTick] = useState(Date.now()); // forces "N seconds ago" to update
-
-  // Tick every 15s so the "Saved · X ago" display stays current
-  useEffect(() => {
-    const t = setInterval(() => setNowTick(Date.now()), 15000);
-    return () => clearInterval(t);
-  }, []);
-
-  const saveTimers = React.useRef({});
-  const pendingWrites = React.useRef(new Set()); // track in-flight writes across all keys
-  const debouncedSave = React.useCallback((key, value) => {
-    if (saveTimers.current[key]) clearTimeout(saveTimers.current[key]);
-    // Immediately flip to "saving" so the pill reflects pending work
-    setSaveStatus(prev => ({ ...prev, state: "saving", error: null }));
-    saveTimers.current[key] = setTimeout(async () => {
-      pendingWrites.current.add(key);
-      try {
-        await storage.set(key, JSON.stringify(value));
-        pendingWrites.current.delete(key);
-        // Only flip to "saved" when ALL pending writes have completed
-        if (pendingWrites.current.size === 0) {
-          setSaveStatus({ state: "saved", lastSavedAt: Date.now(), error: null });
-        }
-      } catch (e) {
-        pendingWrites.current.delete(key);
-        console.warn(`[autosave] Failed to save ${key}:`, e.message);
-        setSaveStatus({ state: "error", lastSavedAt: saveStatus.lastSavedAt, error: e.message.slice(0, 80) });
-      }
-    }, 1000);
-  }, []);
-
-  // Helper: format "just now / N minutes ago / at HH:MM"
-  const formatSaveTime = (ts) => {
-    if (!ts) return "";
-    const diff = Math.floor((nowTick - ts) / 1000);
-    if (diff < 5) return "just now";
-    if (diff < 60) return `${diff}s ago`;
-    if (diff < 3600) return `${Math.floor(diff / 60)}m ago`;
-    if (diff < 86400) return `${Math.floor(diff / 3600)}h ago`;
-    return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
-
-
-  // Load persisted state (durable + a specific session's in-progress data)
+  
+  // Load only the persistent bits: long-term goals + student name.
+  // Everything else starts blank on each page load.
   useEffect(() => {
     (async () => {
       const safeGet = async (key) => {
@@ -1021,269 +940,73 @@ const [customTopics, setCustomTopics] = useState([]);
         } catch { return null; }
       };
 
-      // Durable state (across all sessions)
+      // Long-term learning goals — small, meant to accumulate across visits
       const g = await safeGet("longTermGoals");
       if (g) setLongTermGoals(g);
+
+      // Student name and LIC start month — nice-to-have autofill from prior use.
+      // Session date always defaults to today (set in initial state).
       const durSession = await safeGet("session");
-      if (durSession) setSession(durSession);
+      if (durSession) {
+        setSession(prev => ({
+          ...prev,
+          studentName: durSession.studentName || prev.studentName,
+          licStartMonth: durSession.licStartMonth || prev.licStartMonth,
+          // sessionDate stays as today (already set in initial state)
+        }));
+      }
 
-      // Load the sessions index
-      let index = await safeGet("sessions_index") || [];
-
-      // ONE-TIME MIGRATION: if legacy "inProgress" key exists and no sessions index does,
-      // migrate the old single-slot data into a new session so nothing is lost.
-      const legacyInProgress = await safeGet("inProgress");
-      if (legacyInProgress?.timestamp && index.length === 0) {
-        console.log("[migration] Migrating legacy single-slot session into new format");
-        const migratedId = generateSessionId();
-        const legacySources = await safeGet("inProgress_sourceResponses");
-        const legacyPdfs = await safeGet("inProgress_pdfs");
-        const legacyImages = await safeGet("inProgress_images");
-        const legacyBytes = await safeGet("inProgress_imageBytes");
-        const legacyGen = await safeGet("inProgress_generated");
-
-        try {
-          await storage.set(`session:${migratedId}:inProgress`, JSON.stringify(legacyInProgress));
-          if (legacySources) await storage.set(`session:${migratedId}:sourceResponses`, JSON.stringify(legacySources));
-          if (legacyPdfs) await storage.set(`session:${migratedId}:pdfs`, JSON.stringify(legacyPdfs));
-          if (legacyImages) await storage.set(`session:${migratedId}:images`, JSON.stringify(legacyImages));
-          if (legacyBytes !== null) await storage.set(`session:${migratedId}:imageBytes`, JSON.stringify(legacyBytes));
-          if (legacyGen) await storage.set(`session:${migratedId}:generated`, JSON.stringify(legacyGen));
-
-          const migratedTitle = deriveSessionTitle({
-            workingDx: legacyInProgress.workingDx,
-            chiefConcern: legacyInProgress.chiefConcern,
-            sessionDate: durSession?.sessionDate,
-          });
-          const migratedStatus = deriveSessionStatus({
-            clinicalNote: legacyInProgress.clinicalNote,
-            generatedDoc: legacyGen?.generatedDoc,
-            previewData: legacyGen?.previewData,
-          });
-          index = [{
-            id: migratedId,
-            title: migratedTitle,
-            workingDx: legacyInProgress.workingDx || "",
-            chiefConcern: legacyInProgress.chiefConcern || "",
-            sessionDate: durSession?.sessionDate,
-            status: migratedStatus,
-            updatedAt: legacyInProgress.timestamp,
-            createdAt: legacyInProgress.timestamp,
-          }];
-          await storage.set("sessions_index", JSON.stringify(index));
-
-          // Delete legacy keys so they don't get re-migrated on next load
-          await storage.delete("inProgress").catch(() => {});
-          await storage.delete("inProgress_sourceResponses").catch(() => {});
-          await storage.delete("inProgress_pdfs").catch(() => {});
-          await storage.delete("inProgress_images").catch(() => {});
-          await storage.delete("inProgress_imageBytes").catch(() => {});
-          await storage.delete("inProgress_generated").catch(() => {});
-        } catch (e) {
-          console.warn("[migration] Failed:", e.message);
+      // One-time cleanup: purge any old session data from the multi-session era
+      // so it stops occupying quota. Safe to remove after a few weeks.
+      try {
+        const legacyKeys = Object.keys(localStorage).filter(k =>
+          k.startsWith("session:") ||
+          k === "sessions_index" ||
+          k === "inProgress" ||
+          k.startsWith("inProgress_")
+        );
+        if (legacyKeys.length > 0) {
+          console.log(`[cleanup] Purging ${legacyKeys.length} legacy session keys`);
+          legacyKeys.forEach(k => localStorage.removeItem(k));
         }
-      }
-
-      setSessionsIndex(index);
-
-      // Decide which session to load. Priority:
-      // 1. URL ?session= param
-      // 2. Most recently updated session in the index
-      // 3. Create a new empty session
-      const urlParams = new URLSearchParams(window.location.search);
-      const urlSessionId = urlParams.get("session");
-      let idToLoad = null;
-      if (urlSessionId && index.some(s => s.id === urlSessionId)) {
-        idToLoad = urlSessionId;
-      } else if (index.length > 0) {
-        const mostRecent = [...index].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""))[0];
-        idToLoad = mostRecent.id;
-      }
-
-      if (idToLoad) {
-        await loadSessionData(idToLoad, safeGet);
-      } else {
-        // No sessions exist yet — create a fresh one so auto-save has a slot
-        const newId = generateSessionId();
-        setActiveSessionId(newId);
-      }
-
-      // Mark load complete — from now on, changes will trigger auto-save
-      setHasRestored(true);
+      } catch {}
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Load a specific session's data into state. Extracted so it can be called
-  // both from the initial load and from the "Recent sessions" panel.
-  const loadSessionData = async (sessionId, safeGetFn = null) => {
-    const safeGet = safeGetFn || (async (key) => {
-      try {
-        const r = await storage.get(key);
-        return r?.value ? JSON.parse(r.value) : null;
-      } catch { return null; }
-    });
-
-    const inProgress = await safeGet(`session:${sessionId}:inProgress`);
-    if (inProgress) {
-      if (inProgress.sessionTitle) setSessionTitle(inProgress.sessionTitle);
-      setSessionMode(inProgress.sessionMode || "post"); // legacy sessions default to post
-      setLinkedSessionId(inProgress.linkedSessionId || null);
-      setPrevisitEmphasis(inProgress.previsitEmphasis || "auto");
-      setClinicalNote(inProgress.clinicalNote || "");
-      setChiefConcern(inProgress.chiefConcern || "");
-      setWorkingDx(inProgress.workingDx || "");
-      setExtractedTopics(inProgress.extractedTopics || []);
-      setNoteAnalysis(inProgress.noteAnalysis || null);
-      setActiveProblems(inProgress.activeProblems || []);
-      setSelectedProblems(inProgress.selectedProblems || []);
-      setPatientQuotes(inProgress.patientQuotes || []);
-      setLabTrends(inProgress.labTrends || []);
-      setTeachingLens(inProgress.teachingLens || "general_im");
-      setFocusAreas(inProgress.focusAreas || { history: false, physicalExam: false, differential: false, workup: false, management: false, patientContext: false, ebm: false, communication: false });
-      setAiSuggestedFocus(inProgress.aiSuggestedFocus || null);
-      setCustomTopics(inProgress.customTopics || []);
-      setSources(inProgress.sources || { openevidence: false, uptodate: false, dynamed: false, doxgpt: false, pubmedai: false, other: false });
-      setSessionGoal(inProgress.sessionGoal || "");
-      if (inProgress.aiEnabled !== undefined) setAiEnabled(inProgress.aiEnabled);
-      setRestoredSession({ timestamp: inProgress.timestamp });
-    }
-    const sr = await safeGet(`session:${sessionId}:sourceResponses`);
-    setSourceResponses(sr || {
-      openevidence: { html: "", images: [] },
-      uptodate: { html: "", images: [] },
-      dynamed: { html: "", images: [] },
-      doxgpt: { html: "", images: [] },
-      other: { html: "", images: [] },
-      pubmedai: {},
-    });
-    const pdfs = await safeGet(`session:${sessionId}:pdfs`);
-    setPdfAttachments(pdfs || []);
-    const imgs = await safeGet(`session:${sessionId}:images`);
-    setImageAttachments(imgs || []);
-    const bytes = await safeGet(`session:${sessionId}:imageBytes`);
-    setSessionImageBytes(bytes !== null ? bytes : 0);
-    const gen = await safeGet(`session:${sessionId}:generated`);
-    if (gen) {
-      setAiTeachingContent(gen.aiTeachingContent || null);
-      setSynthesizedEvidence(gen.synthesizedEvidence || null);
-      setGeneratedDoc(gen.generatedDoc || null);
-      setPreviewData(gen.previewData || null);
-      setGenerationAttempts(gen.generationAttempts || { synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
-    } else {
-      setAiTeachingContent(null);
-      setSynthesizedEvidence(null);
-      setGeneratedDoc(null);
-      setPreviewData(null);
-      setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
-    }
-
-        setActiveSessionId(sessionId);
-
-    // Lets openSession decide which screen should be shown after restoration.
-    return { inProgress, gen };
-  };
-
-  // ===== Session management =====
-  // Keeps the sessionsIndex in sync with the currently-active session's state.
-  // Called after saves and on meaningful state changes.
-  const updateSessionIndexEntry = React.useCallback(async () => {
-    if (!activeSessionId) return;
-    const title = deriveSessionTitle({
-      explicitTitle: sessionTitle,
-      workingDx,
-      chiefConcern,
-      sessionDate: session.sessionDate,
-    });
-    const status = deriveSessionStatus({ clinicalNote, generatedDoc, previewData });
-    const now = new Date().toISOString();
-
-    setSessionsIndex(prev => {
-      const existing = prev.find(s => s.id === activeSessionId);
-      const entry = {
-        id: activeSessionId,
-        title,
-        mode: sessionMode,
-        linkedSessionId: linkedSessionId || null,
-        workingDx: workingDx || "",
-        chiefConcern: chiefConcern || "",
-        sessionDate: session.sessionDate,
-        status,
-        updatedAt: now,
-        createdAt: existing?.createdAt || now,
-      };
-      const next = existing
-        ? prev.map(s => s.id === activeSessionId ? entry : s)
-        : [entry, ...prev];
-      // Persist the index (non-debounced — small object, worth writing eagerly)
-      storage.set("sessions_index", JSON.stringify(next)).catch(e => console.warn("[sessions_index] save failed:", e.message));
-      return next;
-    });
-  }, [activeSessionId, sessionTitle, sessionMode, linkedSessionId, workingDx, chiefConcern, session.sessionDate, clinicalNote, generatedDoc, previewData]);
-
-  // Auto-save watchers — each runs when the relevant piece of state changes.
-  // Keys are namespaced per session so multiple sessions can coexist in storage.
-  // Also updates the session index metadata (title, status, updatedAt) after each write.
+  // Persist student name / LIC start month when they change. Small (<1KB).
   useEffect(() => {
-    if (!hasRestored || !activeSessionId) return;
-    debouncedSave(`session:${activeSessionId}:inProgress`, {
-      timestamp: new Date().toISOString(),
-      sessionTitle,
-      sessionMode,
-      linkedSessionId,
-      previsitEmphasis,
-      clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
-      activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
-      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
-    });
-    updateSessionIndexEntry();
-  }, [hasRestored, activeSessionId, sessionTitle, sessionMode, linkedSessionId, previsitEmphasis, clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
-      activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
-      focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled, debouncedSave, updateSessionIndexEntry]);
+    if (!session.studentName && !session.licStartMonth) return;
+    storage.set("session", JSON.stringify({
+      studentName: session.studentName,
+      licStartMonth: session.licStartMonth,
+    })).catch(() => {});
+  }, [session.studentName, session.licStartMonth]);
 
+  // beforeunload warning if there's meaningful in-progress work
   useEffect(() => {
-    if (!hasRestored || !activeSessionId) return;
-    debouncedSave(`session:${activeSessionId}:sourceResponses`, sourceResponses);
-  }, [hasRestored, activeSessionId, sourceResponses, debouncedSave]);
+    const hasWork = clinicalNote?.trim() || rawPrenote?.trim() || generatedDoc || previewData;
+    if (!hasWork) return;
+    const handler = (e) => {
+      e.preventDefault();
+      e.returnValue = "You have work in progress that will be lost. Are you sure you want to leave?";
+      return e.returnValue;
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [clinicalNote, rawPrenote, generatedDoc, previewData]);
 
-  useEffect(() => {
-    if (!hasRestored || !activeSessionId) return;
-    debouncedSave(`session:${activeSessionId}:pdfs`, pdfAttachments);
-  }, [hasRestored, activeSessionId, pdfAttachments, debouncedSave]);
-
-  useEffect(() => {
-    if (!hasRestored || !activeSessionId) return;
-    debouncedSave(`session:${activeSessionId}:images`, imageAttachments);
-  }, [hasRestored, activeSessionId, imageAttachments, debouncedSave]);
-
-  useEffect(() => {
-    if (!hasRestored || !activeSessionId) return;
-    debouncedSave(`session:${activeSessionId}:imageBytes`, sessionImageBytes);
-  }, [hasRestored, activeSessionId, sessionImageBytes, debouncedSave]);
-
-  useEffect(() => {
-    if (!hasRestored || !activeSessionId) return;
-    debouncedSave(`session:${activeSessionId}:generated`, {
-      aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts,
-    });
-    updateSessionIndexEntry();
-  }, [hasRestored, activeSessionId, aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts, debouncedSave, updateSessionIndexEntry]);
-
-  // Reset all editor state to blank defaults (without touching storage).
-  // Used by both "start new session" (which then creates a new session ID)
-  // and by loadSessionData indirectly (which sets state from stored values).
-  const resetEditorState = () => {
-    setSessionTitle("");
+  
+  // Clear all editor state to blank defaults. Preserves student name / LIC start
+  // month / long-term goals (those live in their own localStorage keys).
+  const clearEditor = () => {
+    if (!confirm("Clear all fields and start over? Any unsaved work will be lost.")) return;
     setSessionMode("post");
-    setLinkedSessionId(null);
     setPrevisitEmphasis("auto");
     setRawPrenote("");
     setDeidPreview(null);
     setShowDeidReviewer(false);
-        setDeidStatus({
-      running: false,
-      error: "",
-    });
+    setDeidStatus({ running: false, error: "" });
     setClinicalNote(""); setChiefConcern(""); setWorkingDx("");
     setNewActiveProblem("");
     setExtractedTopics([]); setNoteAnalysis(null);
@@ -1313,78 +1036,9 @@ const [customTopics, setCustomTopics] = useState([]);
     setPreviewData(null);
     setPreviewMode(false);
     setGenerationAttempts({ synthesis: null, cases: {}, themes: null, lastRunAt: null, errors: [] });
-    setRestoredSession(null);
-  };
-
-  // Start a new session: create a new session ID, blank the editor, keep the old
-  // session preserved in the sessions index. Optionally prune old sessions if we're
-  // over the cap.
-    const startNewSession = async () => {
-    // Flush the current session before clearing the editor.
-    await saveNow();
-
-    // No confirm needed — old session is preserved, not lost
-    resetEditorState();
-    const newId = generateSessionId();
-    setActiveSessionId(newId);
+    // Reset session date to today
+    setSession(prev => ({ ...prev, sessionDate: new Date().toISOString().split('T')[0] }));
     setActiveTab("setup");
-    // Clear the URL query param if we came in via ?session=
-    if (window.history?.replaceState) {
-      const url = new URL(window.location.href);
-      url.searchParams.delete("session");
-      window.history.replaceState({}, "", url.toString());
-    }
-    // Prune sessions in the background if we're over the cap
-    await pruneOldSessions();
-  };
-
-   // Open an existing session from the Recent Sessions panel
-  const openSession = async (sessionId) => {
-    if (!sessionId || sessionId === activeSessionId) return;
-
-    // Save the session we are leaving and cancel its pending debounce timers.
-    // This prevents the temporary reset state from overwriting that session.
-    await saveNow();
-
-    // Pause autosave while the old editor state is cleared and the selected
-    // session is restored.
-    setHasRestored(false);
-    resetEditorState();
-
-    try {
-      const loaded = await loadSessionData(sessionId);
-
-      const hasGeneratedDocument = Boolean(loaded?.gen?.generatedDoc);
-      const hasPreview = Boolean(loaded?.gen?.previewData);
-
-      // Reopen the most useful screen rather than always returning to Setup.
-      setPreviewMode(hasPreview && !hasGeneratedDocument);
-
-      if (hasGeneratedDocument || hasPreview) {
-        setActiveTab("output");
-      } else if (loaded?.inProgress?.clinicalNote?.trim()) {
-        setActiveTab("note");
-      } else {
-        setActiveTab("setup");
-      }
-
-      // Reflect the selected session in the URL.
-      if (window.history?.replaceState) {
-        const url = new URL(window.location.href);
-        url.searchParams.set("session", sessionId);
-        window.history.replaceState({}, "", url.toString());
-      }
-    } catch (error) {
-      console.error("[openSession] Failed to open session:", error);
-      setSaveStatus(prev => ({
-        ...prev,
-        state: "error",
-        error: "Could not open that session.",
-      }));
-    } finally {
-      // Autosave may resume now that the selected session is fully restored.
-      setHasRestored(true);
-    }
   };
 
   // ===== Phase logic =====
@@ -4081,9 +3735,8 @@ Formatting rules:
     const preview = {
       generated: new Date().toLocaleString(),
       generatedIso: new Date().toISOString(),
-      sessionId: activeSessionId,
-      sessionTitle: deriveSessionTitle({
-        explicitTitle: sessionTitle,
+      sessionId: `s-${new Date().toISOString().slice(0, 10)}-${Math.random().toString(36).slice(2, 6)}`,  // one-off ID for footer/filename
+      sessionTitle: deriveDocTitle({
         workingDx,
         chiefConcern,
         sessionDate: session.sessionDate,
@@ -4185,83 +3838,6 @@ Formatting rules:
   };
 
     
-
-  // Manual "Save now" — cancels any pending debounced writes and immediately flushes
-  // every slice of state to storage. Used by the header save-status pill.
-  const saveNow = async () => {
-    // Cancel all pending debounced saves so we don't double-write
-    Object.values(saveTimers.current).forEach(t => clearTimeout(t));
-    saveTimers.current = {};
-    pendingWrites.current.clear();
-
-    setSaveStatus(prev => ({ ...prev, state: "saving", error: null }));
-
-    if (!activeSessionId) {
-      console.warn("[saveNow] No active session — nothing to save");
-      setSaveStatus({ state: "idle", lastSavedAt: null, error: null });
-      return;
-    }
-
-    const slices = [
-      ["session", session],
-      ["longTermGoals", longTermGoals],
-      [`session:${activeSessionId}:inProgress`, {
-        timestamp: new Date().toISOString(),
-        sessionTitle,
-        sessionMode,
-        linkedSessionId,
-        previsitEmphasis,
-        clinicalNote, chiefConcern, workingDx, extractedTopics, noteAnalysis,
-        activeProblems, selectedProblems, patientQuotes, labTrends, teachingLens,
-        focusAreas, aiSuggestedFocus, customTopics, sources, sessionGoal, aiEnabled,
-      }],
-      [`session:${activeSessionId}:sourceResponses`, sourceResponses],
-      [`session:${activeSessionId}:pdfs`, pdfAttachments],
-      [`session:${activeSessionId}:images`, imageAttachments],
-      [`session:${activeSessionId}:imageBytes`, sessionImageBytes],
-      [`session:${activeSessionId}:generated`, { aiTeachingContent, synthesizedEvidence, generatedDoc, previewData, generationAttempts }],
-      ];
-
-    try {
-      await Promise.all(slices.map(([key, value]) => storage.set(key, JSON.stringify(value))));
-      setSaveStatus({ state: "saved", lastSavedAt: Date.now(), error: null });
-      // After a save, refresh the session index entry for this session
-      await updateSessionIndexEntry();
-    } catch (e) {
-      console.warn("[saveNow] Failed:", e.message);
-      setSaveStatus(prev => ({ state: "error", lastSavedAt: prev.lastSavedAt, error: e.message.slice(0, 80) }));
-    }
-  };
-
-  // Delete a session and all its associated storage keys
-  const deleteSession = async (sessionId) => {
-    const keysToDelete = [
-      `session:${sessionId}:inProgress`,
-      `session:${sessionId}:sourceResponses`,
-      `session:${sessionId}:pdfs`,
-      `session:${sessionId}:images`,
-      `session:${sessionId}:imageBytes`,
-      `session:${sessionId}:generated`,
-    ];
-    await Promise.all(keysToDelete.map(k => storage.delete(k).catch(() => {})));
-    setSessionsIndex(prev => {
-      const next = prev.filter(s => s.id !== sessionId);
-      storage.set("sessions_index", JSON.stringify(next)).catch(() => {});
-      return next;
-    });
-  };
-
-  // Prune the oldest sessions if we're over MAX_SESSIONS.
-  // Returns the list of pruned session IDs (for logging / notification).
-  const pruneOldSessions = async () => {
-    const sorted = [...sessionsIndex].sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
-    if (sorted.length <= MAX_SESSIONS) return [];
-    const toPrune = sorted.slice(MAX_SESSIONS).filter(s => s.id !== activeSessionId);
-    for (const s of toPrune) {
-      await deleteSession(s.id);
-    }
-    return toPrune.map(s => s.id);
-  };
 
   const addPdfAttachments = async (files) => {
     if (!files || files.length === 0) return;
@@ -5373,65 +4949,13 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   </svg>
                 )}
               </button>
-              {hasRestored && (
-                <button
-                  onClick={saveNow}
-                  disabled={saveStatus.state === "saving"}
-                  className={`flex items-center gap-1.5 px-2 sm:px-2.5 py-1.5 rounded-lg text-xs transition flex-shrink-0 ${
-                    saveStatus.state === "error"
-                      ? "bg-amber-50 border border-amber-200 text-amber-800 hover:bg-amber-100"
-                      : saveStatus.state === "saving"
-                      ? "bg-indigo-50 border border-indigo-200 text-indigo-700 cursor-wait"
-                      : saveStatus.lastSavedAt
-                      ? "bg-emerald-50 border border-emerald-200 text-emerald-800 hover:bg-emerald-100"
-                      : "bg-slate-50 border border-slate-200 text-slate-500 hover:bg-slate-100"
-                  }`}
-                  title={
-                    saveStatus.state === "saving"
-                      ? "Saving now..."
-                      : saveStatus.error
-                      ? `${saveStatus.error} — click to retry`
-                      : saveStatus.lastSavedAt
-                      ? `Last saved ${new Date(saveStatus.lastSavedAt).toLocaleString()} — click to save now`
-                      : "Auto-save enabled — click to save now"
-                  }
-                >
-                  {saveStatus.state === "saving" && (
-                    <>
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      <span className="hidden sm:inline">Saving...</span>
-                    </>
-                  )}
-                  {saveStatus.state === "saved" && (
-                    <>
-                      <Check className="w-3.5 h-3.5" />
-                      {/* Full label on desktop, just "Saved" on mobile to save space */}
-                      <span className="hidden sm:inline">Saved · {formatSaveTime(saveStatus.lastSavedAt)}</span>
-                      <span className="sm:hidden">Saved</span>
-                    </>
-                  )}
-                  {saveStatus.state === "error" && (
-                    <>
-                      <AlertCircle className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Save failed · Retry</span>
-                      <span className="sm:hidden">Retry</span>
-                    </>
-                  )}
-                  {saveStatus.state === "idle" && (
-                    <>
-                      <Save className="w-3.5 h-3.5" />
-                      <span className="hidden sm:inline">Save now</span>
-                    </>
-                  )}
-                </button>
-              )}
               <button
-                onClick={startNewSession}
+                onClick={clearEditor}
                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition flex-shrink-0"
-                title="Start a fresh session. The current session is preserved in Recent Sessions."
+                title="Clear all fields and start a new case. Long-term goals and your name are preserved."
               >
-                <Plus className="w-4 h-4" />
-                <span className="hidden sm:inline">New session</span>
+                <Trash2 className="w-4 h-4" />
+                <span className="hidden sm:inline">Clear</span>
               </button>
             </div>
           </div>
@@ -5541,27 +5065,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             )}
           </div>
         </details>
-        {restoredSession && (
-          <div className="no-print mb-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg text-sm text-emerald-900 flex items-center gap-2">
-            <Save className="w-4 h-4 flex-shrink-0 text-emerald-700" />
-            <div className="flex-1">
-              <strong>Session restored</strong> from {new Date(restoredSession.timestamp).toLocaleString()}. Your work continues to save automatically.
-            </div>
-            <button
-              onClick={startNewSession}
-              className="text-xs px-2 py-1 bg-white border border-emerald-300 text-emerald-800 hover:bg-emerald-100 rounded"
-            >
-              Start new session
-            </button>
-            <button
-              onClick={() => setRestoredSession(null)}
-              className="text-emerald-600 hover:text-emerald-900"
-              title="Dismiss"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          </div>
-        )}
+        
         {aiStatus.progress && (
           <div className="no-print mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded-lg text-sm text-indigo-800 flex items-center gap-2">
             <Loader2 className="w-4 h-4 flex-shrink-0 animate-spin text-indigo-600" />
@@ -5646,51 +5150,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
               )}
             </div>
 
-            {/* Recent Sessions — shown when there's more than the current session */}
-            {sessionsIndex.filter(s => s.id !== activeSessionId).length > 0 && (
-              <RecentSessionsPanel
-                sessions={sessionsIndex}
-                activeSessionId={activeSessionId}
-                onOpen={openSession}
-                onDelete={async (id) => {
-                  if (!confirm("Delete this session permanently? This can't be undone.")) return;
-                  await deleteSession(id);
-                }}
-                onRename={(id, newTitle) => {
-                  setSessionsIndex(prev => {
-                    const next = prev.map(s => s.id === id ? { ...s, title: newTitle } : s);
-                    storage.set("sessions_index", JSON.stringify(next)).catch(() => {});
-                    return next;
-                  });
-                  // If this is the active session, also update the local sessionTitle state
-                  if (id === activeSessionId) setSessionTitle(newTitle);
-                }}
-              />
-            )}
-
-            {/* Session title — attending can override the auto-derived title */}
-            <div className="bg-white rounded-xl border border-slate-200 p-6">
-              <div className="flex items-start justify-between gap-3 flex-wrap">
-                <div className="flex-1 min-w-0">
-                  <label className="block text-sm font-semibold text-slate-800 mb-1">Session title</label>
-                  <p className="text-xs text-slate-500 mb-2">
-                    Shown in Recent Sessions and in the exported document footer. Auto-derived from the working diagnosis if left blank.
-                  </p>
-                  <input
-                    type="text"
-                    value={sessionTitle}
-                    onChange={e => setSessionTitle(e.target.value)}
-                    placeholder={deriveSessionTitle({ workingDx, chiefConcern, sessionDate: session.sessionDate })}
-                    className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none text-sm"
-                  />
-                  {activeSessionId && (
-                    <div className="mt-2 text-xs text-slate-400 font-mono">Session ID: {activeSessionId}</div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* AI toggle - clean, single toggle only */}
+                    {/* AI toggle - clean, single toggle only */}
             <div className="bg-white rounded-xl border border-slate-200 p-6">
               <div className="flex items-center justify-between">
                 <div>
@@ -11260,159 +10720,6 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-// ============ RECENT SESSIONS PANEL ============
-function RecentSessionsPanel({ sessions, activeSessionId, onOpen, onDelete, onRename }) {
-  const [editingId, setEditingId] = React.useState(null);
-  const [editingTitle, setEditingTitle] = React.useState("");
-  const [expanded, setExpanded] = React.useState(false);
-
-  // Sort by most recently updated; exclude the active session (it's already loaded)
-  const otherSessions = React.useMemo(() => {
-    return [...sessions]
-      .filter(s => s.id !== activeSessionId)
-      .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
-  }, [sessions, activeSessionId]);
-
-  // Collapsed by default; show first 3, expand to see all
-  const shown = expanded ? otherSessions : otherSessions.slice(0, 3);
-  const hiddenCount = otherSessions.length - shown.length;
-
-  const statusColors = {
-    empty: { bg: "bg-slate-100", text: "text-slate-500", label: "Empty" },
-    draft: { bg: "bg-amber-100", text: "text-amber-800", label: "Draft" },
-    preview: { bg: "bg-indigo-100", text: "text-indigo-800", label: "Preview" },
-    generated: { bg: "bg-emerald-100", text: "text-emerald-800", label: "Complete" },
-  };
-
-  const modeBadge = (mode) => {
-    if (mode === "pre") return { bg: "bg-purple-100", text: "text-purple-800", label: "Pre-visit" };
-    return { bg: "bg-slate-100", text: "text-slate-700", label: "Post-visit" };
-  };
-
-  const formatRelative = (iso) => {
-    if (!iso) return "";
-    const diff = Date.now() - new Date(iso).getTime();
-    const mins = Math.floor(diff / 60000);
-    if (mins < 1) return "just now";
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    if (hrs < 24) return `${hrs}h ago`;
-    const days = Math.floor(hrs / 24);
-    if (days < 7) return `${days}d ago`;
-    return new Date(iso).toLocaleDateString();
-  };
-
-  const startRename = (session) => {
-    setEditingId(session.id);
-    setEditingTitle(session.title);
-  };
-
-  const commitRename = () => {
-    if (editingTitle.trim() && editingId) {
-      onRename(editingId, editingTitle.trim());
-    }
-    setEditingId(null);
-    setEditingTitle("");
-  };
-
-  return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-        <div>
-          <h2 className="text-base font-semibold text-slate-900">Recent Sessions</h2>
-          <p className="text-xs text-slate-500 mt-0.5">
-            {otherSessions.length} previous session{otherSessions.length !== 1 ? "s" : ""} · Click to reopen
-          </p>
-        </div>
-      </div>
-      <div className="divide-y divide-slate-100">
-        {shown.map(s => {
-          const status = statusColors[s.status] || statusColors.empty;
-          const isEditing = editingId === s.id;
-          return (
-            <div key={s.id} className="group flex items-center gap-3 px-6 py-3 hover:bg-slate-50 transition">
-              <div className="flex-1 min-w-0">
-                {isEditing ? (
-                  <input
-                    type="text"
-                    value={editingTitle}
-                    onChange={e => setEditingTitle(e.target.value)}
-                    onBlur={commitRename}
-                    onKeyDown={e => {
-                      if (e.key === "Enter") commitRename();
-                      if (e.key === "Escape") { setEditingId(null); setEditingTitle(""); }
-                    }}
-                    autoFocus
-                    className="w-full px-2 py-1 border border-indigo-300 rounded text-sm font-medium"
-                  />
-                ) : (
-                  <button
-                    onClick={() => onOpen(s.id)}
-                    className="text-left w-full min-w-0"
-                  >
-                    <div className="text-sm font-medium text-slate-900 truncate hover:text-indigo-700 transition">
-                      {s.title}
-                    </div>
-                    <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-2 flex-wrap">
-                      {s.mode && (() => {
-                        const m = modeBadge(s.mode);
-                        return (
-                          <span className={`inline-block px-1.5 py-0.5 rounded ${m.bg} ${m.text} font-medium`}>
-                            {m.label}
-                          </span>
-                        );
-                      })()}
-                      <span className={`inline-block px-1.5 py-0.5 rounded ${status.bg} ${status.text} font-medium`}>
-                        {status.label}
-                      </span>
-                      <span>Updated {formatRelative(s.updatedAt)}</span>
-                      <span className="font-mono text-slate-400 truncate">· {s.id}</span>
-                    </div>
-                  </button>
-                )}
-              </div>
-              {!isEditing && (
-                <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition">
-                  <button
-                    onClick={() => startRename(s)}
-                    className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded"
-                    title="Rename"
-                  >
-                    <FileText className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    onClick={() => onDelete(s.id)}
-                    className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-100 rounded"
-                    title="Delete session"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-      {hiddenCount > 0 && (
-        <button
-          onClick={() => setExpanded(true)}
-          className="w-full px-6 py-2.5 text-xs text-indigo-600 hover:bg-indigo-50 border-t border-slate-100 font-medium transition"
-        >
-          Show {hiddenCount} more session{hiddenCount !== 1 ? "s" : ""} ↓
-        </button>
-      )}
-      {expanded && otherSessions.length > 3 && (
-        <button
-          onClick={() => setExpanded(false)}
-          className="w-full px-6 py-2.5 text-xs text-slate-500 hover:bg-slate-50 border-t border-slate-100 font-medium transition"
-        >
-          Collapse
-        </button>
-      )}
     </div>
   );
 }
