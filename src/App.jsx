@@ -84,14 +84,13 @@ const deidentifyPrenote = (rawText) => {
 
   // ---- Pattern set 1: Header phrases followed by names ----
   // These are triggers that reliably precede a patient name in VA prenotes.
-  const triggers = [
+    const triggers = [
     "Summary Since Last Visit for",
     "WHAT TO KNOW ABOUT",
     "Patient:",
     "PATIENT:",
     "Name:",
     "NAME:",
-    "for", // last-resort; less specific
   ];
 
   triggers.forEach(trigger => {
@@ -144,7 +143,47 @@ if (naturalMatch) addCandidate(naturalMatch[1]);
   while ((tm = titledPattern.exec(text)) !== null) {
     addCandidate(tm[1]);
   }
+  // ---- Pattern set 4: ordinary Title Case patient names ----
+  // Catches:
+  //   Patient: First Last
+  //   WHAT TO KNOW ABOUT First Last
+  //   First Last is a 60-year-old ...
+  const titleCaseNameToken =
+    "[A-Z][A-Za-z'’-]{1,}";
 
+  const labeledTitleCaseRe =
+    new RegExp(
+      `\\b(?:Patient Name|Patient|Name|Summary Since Last Visit for|WHAT TO KNOW ABOUT|PATIENT SUMMARY FOR)[ \\t]*:?[ \\t]*(${titleCaseNameToken}(?:[ \\t]+(?:[A-Z]\\.?|${titleCaseNameToken})){1,3})\\b`,
+      "g"
+    );
+
+  let titleCaseMatch;
+
+  while (
+    (
+      titleCaseMatch =
+        labeledTitleCaseRe.exec(text)
+    ) !== null
+  ) {
+    addCandidate(titleCaseMatch[1]);
+  }
+
+  // Restrict the sentence-leading pattern to an age construction so a
+  // diagnosis such as "Chronic Hypercapnia is..." is not mistaken for a name.
+  const sentenceLeadAgeRe =
+    new RegExp(
+      `(?:^|\\n)[ \\t]*[*•-]?[ \\t]*(${titleCaseNameToken}(?:[ \\t]+(?:[A-Z]\\.?|${titleCaseNameToken})){1,3})[ \\t]+(?=(?:is|was)[ \\t]+(?:an?[ \\t]+)?(?:\\d{1,3}[- ]year[- ]old|\\d{1,3}[ \\t]*(?:y\\/o|yo))\\b)`,
+      "gm"
+    );
+
+  while (
+    (
+      titleCaseMatch =
+        sentenceLeadAgeRe.exec(text)
+    ) !== null
+  ) {
+    addCandidate(titleCaseMatch[1]);
+  }
   // Pick the primary candidate — longest one is usually the full name
   const sortedCandidates = [...candidateNames].sort((a, b) => b.length - a.length);
   let patientName = sortedCandidates[0] || null;
@@ -156,22 +195,15 @@ if (naturalMatch) addCandidate(naturalMatch[1]);
     patientLastName = parts[parts.length - 1];
   }
 
-  // DEBUG: log what we detected so you can see if it's finding the right names
-  console.log("[deidentify] Name candidates detected:", sortedCandidates);
-  if (patientName) console.log(`[deidentify] Primary: "${patientName}" (first="${patientFirstName}", last="${patientLastName}")`);
+ 
 
-
-  // ---- STEP 2: Detect sex from pronouns for title selection ----
-  const maleCount = (text.match(/\b(he|him|his|himself)\b/gi) || []).length;
-  const femaleCount = (text.match(/\b(she|her|hers|herself)\b/gi) || []).length;
-  let title = "Mx.";
-  if (maleCount > femaleCount * 1.5) title = "Mr.";
-  else if (femaleCount > maleCount * 1.5) title = "Ms.";
+    // ---- STEP 2: Use a non-identifying replacement ----
+  // Initials are not retained because they can still identify the patient
+  // when combined with the surrounding chart context.
 
   // ---- STEP 3: Replace patient name occurrences ----
   if (patientName && patientFirstName && patientLastName) {
-    const initials = `${patientFirstName[0]}${patientLastName[0]}`;
-    const replacement = `${title === "Mx." ? "" : title + " "}${initials}`.trim() || initials;
+       const replacement = "the patient";
 
     // Step 3a: Replace EVERY candidate name we found in its full form.
     // This handles headers that list the name in multiple orders (e.g., "Mr. RW, RYAN DUANE"
@@ -271,17 +303,29 @@ if (naturalMatch) addCandidate(naturalMatch[1]);
   // (last-4 of SSN, station ID, etc.) that appears adjacent to the name.
   // Match 3-6 digit numbers immediately following our name replacement,
   // as long as they're not followed by clinical units (BPM, mg, mmHg, etc.)
-  if (patientName && patientFirstName && patientLastName) {
-    const nameReplacementInitials = `${patientFirstName[0]}${patientLastName[0]}`;
-    const idPattern = new RegExp(
-      `(${escapeRegex(nameReplacementInitials)})\\s+(\\d{3,6})(?!\\s*(?:mg|mcg|mL|mmHg|BPM|bpm|kg|lb|cm|mm|%|/|\\.\\d))`,
-      "g"
+    if (
+    patientName &&
+    patientFirstName &&
+    patientLastName
+  ) {
+    const idPattern =
+      /\b(the patient)\s+(\d{3,6})(?!\s*(?:mg|mcg|mL|mmHg|BPM|bpm|kg|lb|cm|mm|%|\/|\.\d))/gi;
+
+    text = text.replace(
+      idPattern,
+      (match, patientLabel, number) => {
+        addFinding(
+          "identifier",
+          number,
+          "[ID removed]",
+          "unlabeled ID next to patient label"
+        );
+
+        return `${patientLabel} [ID removed]`;
+      }
     );
-    text = text.replace(idPattern, (match, name, num) => {
-      addFinding("identifier", num, "[ID removed]", `unlabeled ID next to name`);
-      return `${name} [ID removed]`;
-    });
   }
+  
 
   // ---- STEP 8: Family member name stripping ----
   // Attending spec: use relationship not name for family members.
@@ -316,7 +360,16 @@ if (naturalMatch) addCandidate(naturalMatch[1]);
     addFinding("location", match, "[location removed]");
     return "[location removed]";
   });
+  // Restore natural capitalization after name replacement.
+  text = text.replace(
+    /(^|\n)([ \t]*)the patient\b/g,
+    "$1$2The patient"
+  );
 
+  text = text.replace(
+    /([.!?]\s+)the patient\b/g,
+    "$1The patient"
+  );
   return { deidentified: text, findings };
 };
 
@@ -727,7 +780,10 @@ export default function App() {
   const [rawPrenote, setRawPrenote] = useState("");
   const [deidPreview, setDeidPreview] = useState(null);
   const [showDeidReviewer, setShowDeidReviewer] = useState(false);
-
+  const [deidStatus, setDeidStatus] = useState({
+    running: false,
+    error: "",
+  });
   // NOTE: In-room checkbox and scratchpad state are intentionally NOT stored here.
   // The in-room document is a PREP ARTIFACT for the student, not a tracking tool
   // for the attending. Interactive elements exist for the student's convenience
@@ -1154,6 +1210,10 @@ const [customTopics, setCustomTopics] = useState([]);
     setRawPrenote("");
     setDeidPreview(null);
     setShowDeidReviewer(false);
+        setDeidStatus({
+      running: false,
+      error: "",
+    });
     setClinicalNote(""); setChiefConcern(""); setWorkingDx("");
     setNewActiveProblem("");
     setExtractedTopics([]); setNoteAnalysis(null);
@@ -1626,7 +1686,88 @@ For each problem, generate ONE focused query prioritizing recent guidelines, lan
     }
     setFetchingPubmed(false);
   };
+  const openDeidentificationReview = async (
+    textToReview
+  ) => {
+    const input = String(
+      textToReview || ""
+    );
 
+    if (
+      !input.trim() ||
+      deidStatus.running
+    ) {
+      return;
+    }
+
+    setDeidStatus({
+      running: true,
+      error: "",
+    });
+
+    // Give React time to paint the loading state before running the synchronous
+    // regex passes on a long prenote.
+    await new Promise((resolve) => {
+      const afterPaint = () =>
+        setTimeout(resolve, 0);
+
+      if (
+        typeof window !== "undefined" &&
+        typeof window.requestAnimationFrame ===
+          "function"
+      ) {
+        window.requestAnimationFrame(
+          afterPaint
+        );
+      } else {
+        afterPaint();
+      }
+    });
+
+    try {
+      const result =
+        deidentifyPrenote(input);
+
+      if (
+        !result ||
+        typeof result.deidentified !==
+          "string"
+      ) {
+        throw new Error(
+          "The de-identification function returned an invalid result."
+        );
+      }
+
+      setDeidPreview({
+        ...result,
+        reviewId:
+          `${Date.now()}-${Math.random()}`,
+      });
+
+      setShowDeidReviewer(true);
+    } catch (error) {
+      console.error(
+        "[deidentification] Could not prepare review:",
+        error
+      );
+
+      setDeidStatus({
+        running: false,
+        error:
+          `Could not prepare the anonymized review: ${
+            error?.message ||
+            "unknown error"
+          }`,
+      });
+
+      return;
+    } finally {
+      setDeidStatus((previous) => ({
+        ...previous,
+        running: false,
+      }));
+    }
+  };
   // ===== Analyze note with AI =====
 const analyzeNote = async () => {
     if (!clinicalNote.trim()) return;
@@ -2630,168 +2771,694 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
     return t.trim();
   };
 
-    // Break a chief concern into symptom-level teaching items while preserving
-  // text inside parentheses.
-  const splitChiefConcernForPrompt = (text) => {
-    const clean = String(text || "")
-      .replace(/^focus:\s*/i, "")
-      .replace(/[.!?]+$/, "")
+     // ===== External evidence prompt helpers =====
+
+  // ICD codes are useful inside the app, but they add little to an external
+  // evidence search and can be actively confusing if a code and label do not
+  // agree. Keep the clinical label and omit only a trailing ICD-style code.
+  const stripIcdCodeForPrompt = (value) =>
+    String(value || "")
+      .replace(/\s*\(([A-Z]\d{2}(?:\.\d{1,4})?)\)\s*$/i, "")
+      .replace(/\s+/g, " ")
       .trim();
 
-    if (!clean) return [];
 
-    // Temporarily protect parenthetical text so commas or "and" inside
-    // parentheses do not create accidental splits.
-    const parentheticals = [];
-    const protectedText = clean.replace(/\([^()]*\)/g, (match) => {
-      const token = `__PAREN_${parentheticals.length}__`;
-      parentheticals.push(match);
-      return token;
-    });
+  const normalizeProblemForPrompt = (value) =>
+    stripIcdCodeForPrompt(value)
+      .toLowerCase()
+      .replace(
+        /\b(?:active|stable|in remission|of unknown etiology|unspecified)\b/g,
+        " "
+      )
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
 
-    return protectedText
-      .split(/\s*(?:\n+|[;,]+|\bwith\b|\band\b)\s*/i)
-      .map((part) =>
-        part.replace(
-          /__PAREN_(\d+)__/g,
-          (_, index) => parentheticals[Number(index)] || ""
-        )
-      )
-      .map((part) =>
-        part.replace(/^[\s,;:.\-]+|[\s,;:.\-]+$/g, "").trim()
-      )
-      // Do not turn explicitly absent symptoms into teaching problems.
-      .filter(
-        (part) =>
-          part && !/^(?:no|denies?|without)\b/i.test(part)
-      );
+
+  const uniqueProblemsForPrompt = (items) => {
+    const seen = new Set();
+
+    return (items || [])
+      .map(stripIcdCodeForPrompt)
+      .filter(Boolean)
+      .filter((item) => {
+        const key = normalizeProblemForPrompt(item);
+        if (!key || seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
   };
 
 
-  // Remove administrative details that do not help an external evidence tool:
-  // event dates, provider names, named care locations, and service-connection
-  // information. Preserve the type of care when it can be identified.
-  const scrubPatientContextForPrompt = (text) => {
-    if (!text) return "";
+  // Deliberately abbreviate at a natural boundary. Do not add "[truncated]",
+  // because external tools then reasonably conclude that required information
+  // is missing.
+  const clipPromptText = (value, maxChars) => {
+    const text = String(value || "")
+      .replace(/[ \t]+/g, " ")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
 
-    const specialtyPattern =
-      /\b(?:primary care|family medicine|internal medicine|geriatrics?|cardiology|neurology|ophthalmology|optometry|orthopedics?|endocrinology|nephrology|pulmonology|gastroenterology|rheumatology|hematology|oncology|infectious diseases?|dermatology|urology|gynecology|obstetrics|general surgery|vascular surgery|cardiothoracic surgery|neurosurgery|psychiatry|psychology|pain management|palliative care|physical therapy|occupational therapy|speech therapy|podiatry|emergency medicine|urgent care)\b/i;
+    if (!maxChars || maxChars < 1) return "";
+    if (text.length <= maxChars) return text;
 
+    const head = text.slice(0, maxChars + 1);
+    const candidates = [
+      head.lastIndexOf(". "),
+      head.lastIndexOf("; "),
+      head.lastIndexOf("\n"),
+      head.lastIndexOf(", "),
+      head.lastIndexOf(" "),
+    ];
+
+    const boundary = Math.max(...candidates);
+    const cut =
+      boundary >= Math.floor(maxChars * 0.55)
+        ? boundary + 1
+        : maxChars;
+
+    return head
+      .slice(0, cut)
+      .replace(/[\s,;:.-]+$/, "")
+      .trim();
+  };
+
+
+  // Preserve only the type of specialty care. Provider and facility names are
+  // intentionally discarded later.
+  const extractCareTypesForPrompt = (value) => {
+    const text = String(value || "");
+
+    const careTypes = [
+      ["primary care", /\b(?:primary care|family medicine|internal medicine|PCP)\b/i],
+      ["pulmonology", /\bpulmonolog(?:y|ist)\b/i],
+      ["cardiology", /\bcardiolog(?:y|ist)\b/i],
+      ["neurology", /\bneurolog(?:y|ist)\b/i],
+      ["ophthalmology", /\bophthalmolog(?:y|ist)\b/i],
+      ["optometry", /\boptometr(?:y|ist)\b/i],
+      ["orthopedics", /\borthop(?:edics?|edist)\b/i],
+      ["physical therapy", /\bphysical therap(?:y|ist)\b/i],
+      ["occupational therapy", /\boccupational therap(?:y|ist)\b/i],
+      ["pain management", /\bpain management\b/i],
+      ["psychiatry", /\bpsychiatr(?:y|ist)\b/i],
+      ["psychology", /\bpsycholog(?:y|ist)\b/i],
+      ["addiction medicine", /\baddiction medicine\b/i],
+      ["gastroenterology", /\bgastroenterolog(?:y|ist)\b/i],
+      ["nephrology", /\bnephrolog(?:y|ist)\b/i],
+      ["endocrinology", /\bendocrinolog(?:y|ist)\b/i],
+      ["rheumatology", /\brheumatolog(?:y|ist)\b/i],
+      ["urology", /\burolog(?:y|ist)\b/i],
+      ["dermatology", /\bdermatolog(?:y|ist)\b/i],
+    ];
+
+    return careTypes
+      .filter(([, pattern]) => pattern.test(text))
+      .map(([label]) => label);
+  };
+
+
+  // Defense-in-depth scrub applied specifically to text copied into external
+  // evidence tools. This is separate from the prenote reviewer because an
+  // external research prompt needs less administrative detail than the saved
+  // de-identified chart summary.
+  const scrubExternalPromptText = (value) => {
+    if (!value) return "";
+
+    let text = String(value).replace(/\r\n?/g, "\n");
+
+    // Direct identifiers and contact information.
+    text = text.replace(
+      /^[ \t*•-]*(?:patient name|name|date of birth|dob|mrn|medical record number|ssn|social security number|phone|telephone|email|address)\s*:.*$/gim,
+      ""
+    );
+
+    text = text.replace(
+      /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
+      ""
+    );
+
+    text = text.replace(
+      /\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/g,
+      ""
+    );
+
+    text = text.replace(/\b\d{3}-\d{2}-\d{4}\b/g, "");
+
+    text = text.replace(
+      /\b(?:MRN|SSN|ID|AUTH(?:ORIZATION)?)\s*[:#-]?\s*[A-Z0-9-]{5,}\b/gi,
+      ""
+    );
+
+    text = text.replace(
+      /\b\d{1,5}\s+[A-Z][A-Za-z.'’-]*(?:\s+[A-Z][A-Za-z.'’-]*){0,4}\s+(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Way|Court|Ct|Place|Pl|Highway|Hwy)\.?\b[^\n,;]*/g,
+      ""
+    );
+
+    // Patient-name forms likely to survive an incomplete earlier pass.
+    text = text.replace(
+      /\b(?:WHAT TO KNOW ABOUT|PATIENT SUMMARY FOR)\s+[A-Z][A-Z'’ -]{3,}/g,
+      "$1 THE PATIENT"
+    );
+
+    text = text.replace(
+      /(^|[.!?][ \t]+|\n)(?:Mr|Mrs|Ms|Mx)\.?\s+[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}\s+(?=(?:is|was)\s+(?:an?\s+)?(?:\d{1,3}[- ]year[- ]old|\d{1,3}\s*(?:y\/o|yo))\b)/gm,
+      "$1The patient "
+    );
+
+    text = text.replace(
+      /(^|[.!?][ \t]+|\n)([A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,2})\s+(?=(?:is|was)\s+(?:an?\s+)?(?:\d{1,3}[- ]year[- ]old|\d{1,3}\s*(?:y\/o|yo))\b)/gm,
+      "$1The patient "
+    );
+
+    text = text.replace(
+      /\b(?:Mr|Mrs|Ms|Mx)\.?\s+[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}\b/g,
+      "the patient"
+    );
+
+    // Provider names.
+    text = text.replace(
+      /\bDr\.?\s+[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}\b/g,
+      "the clinician"
+    );
+
+    text = text.replace(
+      /\b[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,2},?\s*(?:MD|DO|MBBS|NP|APRN|PA-C|PA|RN|PhD|PsyD|DPT|PT|OT)\b/g,
+      "the clinician"
+    );
+
+    // Service-connection, military, and disability-rating administration.
+    text = text.replace(
+      /\b\d{1,3}\s*%\s*(?:service[- ]?connected|SC)\b[^.;\n]*/gi,
+      ""
+    );
+
+    text = text.replace(
+      /\b(?:service[- ]?connected|service connection|combined disability rating|disability rating)\b\s*:?\s*[^.;\n]*/gi,
+      ""
+    );
+
+    text = text.replace(
+      /[^.\n]*\brated at\s+\d{1,3}\s*%[^.\n]*[.\n]?/gi,
+      ""
+    );
+
+    text = text.replace(
+      /\b(?:U\.?S\.?\s+)?(?:Army|Navy|Air Force|Marine Corps|Coast Guard|Space Force)\s+veteran\b/gi,
+      ""
+    );
+
+    text = text.replace(/\bveteran\b/gi, "");
+
+    text = text.replace(
+      /^[ \t*•-]*(?:military history|branch of service|deployment history)\s*:.*$/gim,
+      ""
+    );
+
+    // Remove event dates. Relative clinical durations such as "for 6 months"
+    // remain useful and are not removed.
     const monthName =
       "(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)";
 
-    let t = String(text).replace(/\r\n?/g, "\n");
-
-    // Preserve the specialty in patterns such as:
-    // "(Smith, Orthopedics)" -> "(Orthopedics)"
-    t = t.replace(
-      /\(\s*[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+)*\s*,\s*([A-Za-z][A-Za-z &/\-]{2,50})\s*\)/g,
-      "($1)"
-    );
-
-    // Remove provider/facility metadata lines. If the line names a specialty,
-    // retain only that type of care.
-    t = t
-      .split("\n")
-      .map((line) => {
-        const isProviderOrLocationLine =
-          /^\s*(?:provider|author|attending|supervising physician|cosigner|signed by|referring provider|primary care provider|pcp|facility|location|site|campus|place of service|clinic location)\s*:/i.test(
-            line
-          );
-
-        if (isProviderOrLocationLine) {
-          const specialty = line.match(specialtyPattern)?.[0];
-          return specialty ? `Type of care: ${specialty}` : "";
-        }
-
-        const isServiceConnectionOnlyLine =
-          /^\s*(?:(?:service[- ]?connect(?:ed|ion)|combined disability rating|disability rating)\s*:|\d{1,3}\s*%\s*(?:service[- ]?connected|SC)\b)/i.test(
-            line
-          );
-
-        if (isServiceConnectionOnlyLine) return "";
-
-        return line;
-      })
-      .join("\n");
-
-    // Numeric dates, including ISO dates.
-    t = t.replace(
-      /\b(?:19|20)\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b/g,
-      ""
-    );
-    t = t.replace(
-      /\b\d{1,2}[-/.]\d{1,2}(?:[-/.]\d{2,4})?\b/g,
-      ""
-    );
-
-    // Written dates such as "February 4, 2026", "4 February 2026",
-    // and "February 2026".
-    t = t.replace(
+    text = text.replace(
       new RegExp(
-        `\\b${monthName}\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+\\d{2,4})?\\b`,
+        `\\b${monthName}\\s+\\d{1,2}(?:st|nd|rd|th)?(?:,?\\s+(?:19|20)\\d{2})?\\b`,
         "gi"
       ),
       ""
     );
-    t = t.replace(
+
+    text = text.replace(
       new RegExp(
         `\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${monthName}(?:\\s+(?:19|20)\\d{2})?\\b`,
         "gi"
       ),
       ""
     );
-    t = t.replace(
+
+    text = text.replace(
       new RegExp(`\\b${monthName}\\s+(?:19|20)\\d{2}\\b`, "gi"),
       ""
     );
 
-    // Standalone event years and days of the week.
-    t = t.replace(/\b(?:19|20)\d{2}\b/g, "");
-    t = t.replace(
+    text = text.replace(
+      /\b(?:19|20)\d{2}[-/.](?:0?[1-9]|1[0-2])(?:[-/.](?:0?[1-9]|[12]\d|3[01]))?\b/g,
+      ""
+    );
+
+    text = text.replace(
+      /\b(?:0?[1-9]|1[0-2])[-/.](?:0?[1-9]|[12]\d|3[01])[-/.](?:\d{2}|(?:19|20)\d{2})\b/g,
+      ""
+    );
+
+    text = text.replace(
+      /\b(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}\b/g,
+      ""
+    );
+
+    text = text.replace(/\b(?:19|20)\d{2}\b/g, "");
+
+    // Clean remnants such as "04/" left by prior date scrubbing.
+    text = text.replace(
+      /\b(?:0?[1-9]|1[0-2])\/(?=\s|[,.;)]|$)/g,
+      ""
+    );
+
+    text = text.replace(
       /\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b,?/gi,
       ""
     );
 
-    // Provider names remaining in narrative text.
-    t = t.replace(
-      /\bDr\.?\s+[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){0,2}\b/g,
-      "the clinician"
-    );
-    t = t.replace(
-      /\b[A-Z][A-Za-z'’-]+(?:\s+[A-Z][A-Za-z'’-]+){1,2},?\s*(?:MD|DO|MBBS|NP|APRN|PA-C|PA|RN|PhD|PsyD|DPT|PT|OT)\b/g,
-      "the clinician"
-    );
-
-    // Remove named care locations while leaving preceding specialty text.
-    // Example: "Orthopedics at Denver VA Medical Center" -> "Orthopedics".
-    t = t.replace(
-      /\b(?:at|from|via)\s+(?:the\s+)?[^,.;\n]{0,80}?\b(?:Medical Center|Hospital|VAMC|VA Clinic|Veterans Affairs Clinic|Health(?:care)? System|Campus)\b/gi,
-      ""
-    );
-    t = t.replace(
-      /\b(?:HOSPITAL NAME|FACILITY NAME|LOCATION NAME|location removed)\b/gi,
+    // Named facilities and locations.
+    text = text.replace(
+      /\b(?:at|from|through|via)\s+(?:the\s+)?[^,.;\n]{1,80}?\b(?:Medical Center|Hospital|Health(?:care)?|Health System|Clinic|CBOC|VAMC|Orthopedics|Pulmonology)\b/gi,
       ""
     );
 
-    // Service-connection percentages and related administrative clauses.
-    t = t.replace(
-      /\b\d{1,3}\s*%\s*(?:service[- ]?connected|SC)\b[^.;\n]*/gi,
-      ""
-    );
-    t = t.replace(
-      /\b(?:service[- ]?connected|service connection|combined disability rating|disability rating)\b\s*:?\s*[^.;\n]*/gi,
+    text = text.replace(
+      /\b(?:[A-Z][A-Za-z'&.-]*\s+){1,5}(?:Medical Center|Hospital|Health(?:care)?|Health System|Clinic|CBOC|VAMC|Orthopedics)\b/g,
       ""
     );
 
-    // Cleanup after removals.
-    t = t.replace(/\(\s*\)/g, "");
-    t = t.replace(/[ \t]+([,.;:])/g, "$1");
-    t = t.replace(/^[ \t]*[,.;:|\-]+[ \t]*$/gm, "");
-    t = t.replace(/[ \t]{2,}/g, " ");
-    t = t.replace(/\n{3,}/g, "\n\n");
+    text = text.replace(
+      /\b(?:[A-Z][a-z]+\s+){1,4}VA\b/g,
+      ""
+    );
 
-    return t.trim();
+    text = text.replace(
+      /\b[A-Z][a-zA-Z]+,\s*[A-Z]{2}\b/g,
+      ""
+    );
+
+    // Remove administrative lines after care-type extraction.
+    text = text.replace(
+      /^[ \t*•-]*(?:care team|provider|author|attending|supervising physician|cosigner|signed by|facility|location|site|campus|place of service)\s*:.*$/gim,
+      ""
+    );
+
+    // Cleanup.
+    text = text.replace(
+      /\[\s*(?:ID|DOB|phone|address|location|VA ID)\s+removed\s*\]/gi,
+      ""
+    );
+
+    text = text.replace(/\(\s*\)/g, "");
+    text = text.replace(/\bwith\s*\./gi, ".");
+    text = text.replace(/\bfrom\s+to\s+present\b/gi, "ongoing");
+    text = text.replace(/\bfrom\s+to\b/gi, "");
+    text = text.replace(
+      /\b(?:he|she|they|the patient)\s+(?:is|was|has|had)\s*\./gi,
+      ""
+    );
+    text = text.replace(/([.!?])\1+/g, "$1");
+    text = text.replace(/(^|[.!?]\s+)the clinician\b/g, "$1The clinician");
+    text = text.replace(/(^|[.!?]\s+)the patient\b/g, "$1The patient");
+    text = text.replace(/[ \t]+([,.;:])/g, "$1");
+    text = text.replace(/^[ \t]*[,.;:|/-]+[ \t]*$/gm, "");
+    text = text.replace(/[ \t]{2,}/g, " ");
+    text = text.replace(/\n{3,}/g, "\n\n");
+
+    return text.trim();
+  };
+
+
+  const promptProblemTokens = (value) => {
+    const stopWords = new Set([
+      "a",
+      "an",
+      "and",
+      "the",
+      "of",
+      "on",
+      "in",
+      "with",
+      "without",
+      "for",
+      "to",
+      "due",
+      "active",
+      "stable",
+      "history",
+      "remission",
+      "unknown",
+      "etiology",
+    ]);
+
+    return normalizeProblemForPrompt(value)
+      .split(" ")
+      .filter(
+        (token) =>
+          token.length > 2 &&
+          !stopWords.has(token)
+      );
+  };
+
+
+  const findProblemBlockForPrompt = (problem, blocks) => {
+    const targetKey = normalizeProblemForPrompt(problem);
+    const targetTokens = promptProblemTokens(problem);
+
+    let best = null;
+    let bestScore = 0;
+
+    Object.values(blocks || {}).forEach((block) => {
+      const blockKey = normalizeProblemForPrompt(block.rawHeader);
+      if (!blockKey) return;
+
+      let score = 0;
+
+      if (blockKey === targetKey) {
+        score = 100;
+      } else if (
+        blockKey.includes(targetKey) ||
+        targetKey.includes(blockKey)
+      ) {
+        score = 80;
+      } else {
+        const blockTokens = new Set(
+          promptProblemTokens(block.rawHeader)
+        );
+
+        const overlap = targetTokens.filter(
+          (token) => blockTokens.has(token)
+        ).length;
+
+        score = targetTokens.length
+          ? (overlap / targetTokens.length) * 70
+          : 0;
+      }
+
+      if (score > bestScore) {
+        best = block;
+        bestScore = score;
+      }
+    });
+
+    return bestScore >= 35 ? best : null;
+  };
+
+
+  const relevantPromptSnippets = (
+    value,
+    problem,
+    maxChars,
+    scrubber = scrubExternalPromptText
+  ) => {
+    const cleaned = scrubber(value);
+    if (!cleaned || maxChars < 80) return "";
+
+    const tokens = promptProblemTokens(problem);
+
+    const units = cleaned
+      .replace(/([.!?])\s+/g, "$1\n")
+      .split(/\n+/)
+      .map((line) =>
+        line.replace(/^[ *•-]+/, "").trim()
+      )
+      .filter((line) => line.length >= 20);
+
+    const scored = units
+      .map((line, index) => {
+        const lower = line.toLowerCase();
+
+        const hits = tokens.reduce(
+          (sum, token) =>
+            sum + (lower.includes(token) ? 1 : 0),
+          0
+        );
+
+        return {
+          line,
+          index,
+          score: hits,
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort(
+        (a, b) =>
+          b.score - a.score ||
+          a.index - b.index
+      );
+
+    const output = [];
+    const seen = new Set();
+    let used = 0;
+
+    for (const item of scored) {
+      const key = item.line.toLowerCase();
+      if (seen.has(key)) continue;
+
+      const room =
+        maxChars -
+        used -
+        (output.length ? 1 : 0);
+
+      if (room < 60) break;
+
+      const clipped = clipPromptText(
+        item.line,
+        room
+      );
+
+      if (!clipped) continue;
+
+      output.push(clipped);
+      seen.add(key);
+
+      used +=
+        clipped.length +
+        (output.length > 1 ? 1 : 0);
+    }
+
+    return output.join(" ");
+  };
+
+
+  // Build a small, evenly distributed context block. Each selected problem
+  // receives its own allowance, so the first PMH problem cannot consume the
+  // context intended for all later problems.
+  const buildExternalContextForPrompt = (
+    problems,
+    totalBudget,
+    scrubber = scrubExternalPromptText
+  ) => {
+    if (
+      !clinicalNote ||
+      !problems.length ||
+      totalBudget < 250
+    ) {
+      return "";
+    }
+
+    let problemSource = "";
+    let fallbackSource = "";
+
+    if (sessionMode === "pre") {
+      const sections =
+        extractPrenoteSections(clinicalNote);
+
+      problemSource =
+        getSection(
+          sections,
+          "PAST MEDICAL HISTORY",
+          "PMH"
+        ) || "";
+
+      fallbackSource = [
+        getSection(
+          sections,
+          "WHAT TO KNOW ABOUT",
+          "PATIENT SUMMARY",
+          "SUMMARY"
+        ),
+        problemSource,
+        getSection(
+          sections,
+          "LABORATORY STUDIES",
+          "LABS",
+          "LABORATORY RESULTS",
+          "RECENT LABS"
+        ),
+        getSection(
+          sections,
+          "IMAGING AND DIAGNOSTIC PROCEDURES",
+          "IMAGING",
+          "DIAGNOSTIC PROCEDURES"
+        ),
+      ]
+        .filter(Boolean)
+        .join("\n");
+    } else {
+      problemSource =
+        extractEssentialNote(clinicalNote);
+
+      fallbackSource = problemSource;
+    }
+
+    const blocks =
+      parseProblemBlocks(problemSource);
+
+    const heading =
+      "Concise clinical context by problem:";
+
+    const separators =
+      Math.max(0, problems.length - 1) * 2;
+
+    const available =
+      totalBudget -
+      heading.length -
+      2 -
+      separators;
+
+    const perSection = Math.floor(
+      available / problems.length
+    );
+
+    if (perSection < 80) return "";
+
+    const contextSections = problems
+      .map((problem) => {
+        const block =
+          findProblemBlockForPrompt(
+            problem,
+            blocks
+          );
+
+        const label = `${problem}:\n`;
+
+        const bodyBudget = Math.max(
+          40,
+          perSection - label.length
+        );
+
+        if (!block) {
+          const fallback =
+            relevantPromptSnippets(
+              fallbackSource,
+              problem,
+              bodyBudget,
+              scrubber
+            );
+
+          return fallback
+            ? `${label}${fallback}`
+            : "";
+        }
+
+        const careTypes =
+          extractCareTypesForPrompt(
+            block.careTeam || ""
+          );
+
+        const fields = [
+          [
+            "Status",
+            block.currentStatus ||
+              block.recentControl,
+          ],
+          [
+            "Current treatment",
+            block.currentMeds,
+          ],
+          [
+            "Relevant trends",
+            block.labTrends,
+          ],
+          [
+            "Key tests",
+            block.imaging,
+          ],
+          [
+            "Additional context",
+            block.statusNotes,
+          ],
+        ]
+          .map(([fieldLabel, raw]) => [
+            fieldLabel,
+            scrubber(raw),
+          ])
+          .filter(([, cleaned]) =>
+            Boolean(cleaned)
+          );
+
+        if (
+          !fields.length &&
+          block.rawBody
+        ) {
+          fields.push([
+            "Clinical context",
+            scrubber(block.rawBody),
+          ]);
+        }
+
+        if (careTypes.length) {
+          fields.push([
+            "Specialty care",
+            careTypes.join(", "),
+          ]);
+        }
+
+        if (!fields.length) {
+          const fallback =
+            relevantPromptSnippets(
+              fallbackSource,
+              problem,
+              bodyBudget,
+              scrubber
+            );
+
+          return fallback
+            ? `${label}${fallback}`
+            : "";
+        }
+
+        const pieces = [];
+        let remaining = bodyBudget;
+
+        fields.forEach(
+          ([fieldLabel, fieldText], index) => {
+            const fieldsLeft =
+              fields.length - index;
+
+            const allotment = Math.floor(
+              remaining / fieldsLeft
+            );
+
+            const valueBudget = Math.max(
+              20,
+              allotment -
+                fieldLabel.length -
+                2
+            );
+
+            const clipped = clipPromptText(
+              fieldText,
+              valueBudget
+            );
+
+            if (!clipped) return;
+
+            const piece =
+              `${fieldLabel}: ${clipped}`;
+
+            pieces.push(piece);
+            remaining -= piece.length + 1;
+          }
+        );
+
+        const body = clipPromptText(
+          pieces.join(" "),
+          bodyBudget
+        );
+
+        return body
+          ? `${label}${body}`
+          : "";
+      })
+      .filter(Boolean);
+
+    return contextSections.length
+      ? `${heading}\n${contextSections.join("\n\n")}`
+      : "";
   };
 
   // ===== Source prompt generator =====
@@ -2823,330 +3490,241 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
   // Hard cap at 9500 chars with a console warning + graceful truncation notice
   // so we never breach UpToDate's limit. PubMed AI has its own single-topic
   // prompt (generatePubmedAiPrompt) and is intentionally untouched.
-  const generateSourcePrompt = (source) => {
-    const PROMPT_HARD_CAP = 9500; // UpToDate limit ~10K; leave headroom
+    const generateSourcePrompt = (source) => {
+    // These are conservative app budgets, not claims about each service's
+    // official limit. The completed instructions are never sliced.
+    const promptCaps = {
+      uptodate: 5200,
+      doxgpt: 6000,
+      openevidence: 7000,
+      dynamed: 7000,
+      other: 7000,
+    };
 
-    const activeFocus = Object.keys(focusAreas).filter(k => focusAreas[k]);
-    const focusText = activeFocus.map(f => focusLabels[f]).join(", ");
-    // ============ UPTODATE SPECIAL CASE ============
-    // UpToDate AI is far more sensitive to patient-descriptor language than the
-    // other sources. Build a stripped-down, aggressively-scrubbed prompt.
-    if (source === "uptodate") {
-      const UPTODATE_CAP = 6500; // Much tighter than 9500 — UpToDate rejects long prompts
+    const promptCap =
+      promptCaps[source] || 6500;
 
-      const problemsLineUtd = selectedProblems.length > 0
-        ? `Problems to focus on: ${selectedProblems.join(", ")}`
-        : (workingDx ? `Problem to focus on: ${workingDx.replace(/\b(Mr|Ms|Mx|Mrs)\.?\s+[A-Z]{1,4}\b/g, "").trim()}` : "");
-      const topicsLineUtd = extractedTopics.length > 0
-        ? `Key clinical topics: ${extractedTopics.join(", ")}` : "";
-      const focusLineUtd = `I want to focus today's teaching on: ${focusText}.`;
-      const isMulti = selectedProblems.length > 1;
+    const scrubber = (value) => {
+      const generallyScrubbed =
+        scrubExternalPromptText(value);
 
-      // Build patient context — pull sections but scrub aggressively before use
-      let patientContextUtd = "";
-      if (clinicalNote) {
-        const sections = sessionMode === "pre" ? extractPrenoteSections(clinicalNote) : {};
-        const contextParts = [];
+      return source === "uptodate"
+        ? scrubForUpToDate(generallyScrubbed)
+        : generallyScrubbed;
+    };
 
-        if (sessionMode === "pre") {
-          const whatToKnow = getSection(sections, "WHAT TO KNOW ABOUT", "PATIENT SUMMARY", "SUMMARY");
-          if (whatToKnow) contextParts.push(`Patient summary:\n${scrubForUpToDate(whatToKnow)}`);
+    const activeFocus = Object.keys(
+      focusAreas
+    ).filter((key) => focusAreas[key]);
 
-          const pastMedHx = getSection(sections, "PAST MEDICAL HISTORY", "PMH");
-          if (pastMedHx) {
-            // Cap each problem's PMH detail so we stay under UpToDate's limit
-            const scrubbed = scrubForUpToDate(pastMedHx);
-            const capped = scrubbed.length > 2400 ? scrubbed.slice(0, 2400) + "..." : scrubbed;
-            contextParts.push(`Per-problem context from PMH:\n${capped}`);
-          }
+    const focusText = activeFocus
+      .map((key) => focusLabels[key])
+      .join(", ");
 
-          const labStudies = getSection(sections, "LABORATORY STUDIES", "LABS", "LABORATORY RESULTS", "RECENT LABS SUMMARY", "RECENT LABS");
-          if (labStudies) {
-            const scrubbed = scrubForUpToDate(labStudies);
-            const capped = scrubbed.length > 800 ? scrubbed.slice(0, 800) + "..." : scrubbed;
-            contextParts.push(`Recent labs:\n${capped}`);
-          }
-
-          const updates = getSection(sections, "UPDATES / RECENT VISITS", "UPDATES", "RECENT VISITS");
-          if (updates) {
-            const scrubbed = scrubForUpToDate(updates);
-            const capped = scrubbed.length > 600 ? scrubbed.slice(0, 600) + "..." : scrubbed;
-            contextParts.push(`Recent visit updates:\n${capped}`);
-          }
-        } else {
-          // Post-visit: essential note only, scrubbed
-          const essential = extractEssentialNote(clinicalNote);
-          const scrubbed = scrubForUpToDate(essential);
-          const capped = scrubbed.length > 2500 ? scrubbed.slice(0, 2500) + "..." : scrubbed;
-          contextParts.push(`Clinical context:\n${capped}`);
-        }
-
-        if (contextParts.length > 0) {
-          patientContextUtd = contextParts.join("\n\n");
-        }
-      }
-
-      // Assemble the UpToDate-specific prompt with minimal framing
-      let prompt = `Context: I am a teaching attending in internal medicine. My student is a medical student.\n\n`;
-
-      if (chiefConcern) {
-        // Also scrub the chief concern of titles/ages
-        prompt += `${scrubForUpToDate(chiefConcern)}\n\n`;
-      }
-
-      if (isMulti) {
-        prompt += `This is a MULTI-PROBLEM teaching case. Today's teaching must address ALL of the following ${selectedProblems.length} problems with EQUAL depth and attention — do not focus disproportionately on any one condition:\n\n${problemsLineUtd}\n\nCRITICAL: Organize your response so each of the ${selectedProblems.length} problems above receives its own dedicated section with the same level of evidence, guidelines, and clinical detail. Do not treat any problem as secondary or as merely "context" for another. The interactions BETWEEN these problems (e.g., how one condition affects management of another) are also teaching-worthy and should be addressed explicitly.\n\n`;
-      } else if (problemsLineUtd) {
-        prompt += `${problemsLineUtd}\n\n`;
-      }
-
-      if (topicsLineUtd) prompt += `${topicsLineUtd}\n\n`;
-      if (patientContextUtd) prompt += `${patientContextUtd}\n\n`;
-
-      prompt += `${focusLineUtd}\n\n`;
-
-      if (isMulti) {
-        prompt += `REMINDER: Structure your response with clear sections for each of the ${selectedProblems.length} problems listed above. Each problem deserves complete evidence-based coverage.\n\n`;
-      }
-
-      prompt += `Provide evidence-based teaching content${isMulti ? ` FOR EACH of the ${selectedProblems.length} problems listed above (organize with a clear heading per problem)` : ""}:\n1. Current UpToDate approach for each focus area\n2. Grade of Recommendation where UpToDate provides one\n3. When to escalate or refer\n4. Patient-centered talking points${isMulti ? "\n5. Brief section on interactions between the problems (drug interactions, competing priorities, contraindications one condition creates for another)" : ""}`;
-
-      // Enforce UpToDate's stricter cap
-      if (prompt.length > UPTODATE_CAP) {
-        console.warn(`[generateSourcePrompt] UpToDate prompt is ${prompt.length} chars — trimming to ${UPTODATE_CAP}.`);
-        prompt = prompt.slice(0, UPTODATE_CAP - 100) + "\n\n[Note: context truncated to fit UpToDate's character limit.]";
-      }
-
-      return prompt;
-    }
-    // ============ END UPTODATE SPECIAL CASE ============
-        // ============ OPENEVIDENCE / DYNAMED / DOXGPT / OTHER ============
-
-    const chiefConcernItems = splitChiefConcernForPrompt(chiefConcern);
-
-    const selectedProblemItems = selectedProblems
-      .map((problem) => String(problem || "").trim())
-      .filter(Boolean);
-
-    const diagnosisItems =
-      selectedProblemItems.length > 0
-        ? selectedProblemItems
+    // The numbered list comes only from problems explicitly selected for
+    // teaching. The chief concern remains an intact presenting concern.
+    const problems = uniqueProblemsForPrompt(
+      selectedProblems.length > 0
+        ? selectedProblems
         : workingDx?.trim()
-          ? [workingDx.trim()]
-          : [];
+          ? [workingDx]
+          : []
+    );
 
-    // Keep both symptom-level chief-concern items and selected diagnoses.
-    // Do not deduplicate them: the relationship between a symptom and its
-    // eventual diagnosis may itself be worth teaching.
-    const teachingProblems = [
-      ...chiefConcernItems,
-      ...diagnosisItems,
-    ];
+    const presentingConcern =
+      scrubber(chiefConcern);
 
-    const hasMultipleProblems = teachingProblems.length > 1;
+    const topicItems = [
+      ...extractedTopics,
+      ...customTopics,
+    ]
+      .map((topic) =>
+        clipPromptText(
+          scrubber(topic),
+          170
+        )
+      )
+      .filter(Boolean)
+      .slice(0, 6);
 
-    const focusLine = focusText
-      ? `I want to focus today's teaching on: ${focusText}.`
-      : "";
+    // The prior full benchmark paragraph consumed substantial prompt space.
+    // The phase name and month are sufficient to set learner level.
+    const learnerLine =
+      `Learner level: month ${phase.monthsIn} of a longitudinal integrated clerkship ` +
+      `(${phase.name}). Tailor the teaching to this level.`;
 
-    const topicsLine =
-      extractedTopics.length > 0
-        ? `Key clinical topics: ${extractedTopics.join(", ")}.`
-        : "";
-
-    const lensLine =
-      teachingLens !== "general_im"
-        ? `Teaching lens: ${
-            {
-              geriatrics: "Geriatrics/deprescribing",
-              primary_care: "Primary care/preventive",
-              complex_multimorbidity: "Complex multimorbidity",
-            }[teachingLens]
+    const concernLine =
+      presentingConcern
+        ? `Presenting concern: ${presentingConcern}${
+            /[.!?]$/.test(presentingConcern)
+              ? ""
+              : "."
           }`
         : "";
 
-    // Build a concise, clinically relevant patient-context block.
-    let contextLine = "";
+    const focusLine = focusText
+      ? `Teaching focus: ${focusText}. Apply these areas where clinically relevant; do not force repetitive subsections.`
+      : "Teaching focus: clinical reasoning, diagnostic workup, and management.";
 
-    if (clinicalNote) {
-      if (sessionMode === "pre") {
-        const sections = extractPrenoteSections(clinicalNote);
-        const parts = [];
+    let problemBlock = "";
 
-        const addContextPart = (label, value, maxLength) => {
-          const cleaned = scrubPatientContextForPrompt(value);
-          if (!cleaned) return;
-
-          const capped =
-            cleaned.length > maxLength
-              ? `${cleaned.slice(0, maxLength)}\n[truncated]`
-              : cleaned;
-
-          parts.push(`${label}:\n${capped}`);
-        };
-
-        addContextPart(
-          "Patient summary",
-          getSection(
-            sections,
-            "WHAT TO KNOW ABOUT",
-            "PATIENT SUMMARY",
-            "SUMMARY"
-          ),
-          1800
-        );
-
-        if (hasMultipleProblems) {
-          addContextPart(
-            "Per-problem clinical context",
-            getSection(
-              sections,
-              "PAST MEDICAL HISTORY",
-              "PMH"
-            ),
-            2800
-          );
-        }
-
-        addContextPart(
-          "Recent labs",
-          getSection(
-            sections,
-            "LABORATORY STUDIES",
-            "LABS",
-            "LABORATORY RESULTS",
-            "RECENT LABS SUMMARY",
-            "RECENT LABS"
-          ),
-          1200
-        );
-
-        const imaging = getSection(
-          sections,
-          "IMAGING AND DIAGNOSTIC PROCEDURES",
-          "IMAGING",
-          "DIAGNOSTIC PROCEDURES",
-          "RADIOLOGY PROCEDURES"
-        );
-
-        if (
-          imaging &&
-          !/no imaging/i.test(imaging) &&
-          !/none found/i.test(imaging)
-        ) {
-          addContextPart(
-            "Diagnostic tests / imaging",
-            imaging,
-            1200
-          );
-        }
-
-        addContextPart(
-          "Relevant clinical updates",
-          getSection(
-            sections,
-            "UPDATES / RECENT VISITS",
-            "UPDATES",
-            "RECENT VISITS"
-          ),
-          1000
-        );
-
-        if (parts.length > 0) {
-          contextLine =
-            `De-identified patient context (clinical details only):\n` +
-            parts.join("\n\n");
-        }
-      } else {
-        const essential = scrubPatientContextForPrompt(
-          extractEssentialNote(clinicalNote)
-        );
-
-        if (essential) {
-          contextLine =
-            `De-identified clinical note from today's encounter ` +
-            `(assessment, plan, and key clinical details only):\n${essential}`;
-        }
-      }
-    }
-
-    let problemFramingBlock = "";
-
-    if (hasMultipleProblems) {
-      const numberedProblems = teachingProblems
+    if (problems.length > 1) {
+      const numberedProblems = problems
         .map(
           (problem, index) =>
-            `  ${index + 1}. ${problem}`
+            `${index + 1}. ${problem}`
         )
         .join("\n");
 
-      problemFramingBlock =
-        `This is a MULTI-PROBLEM teaching case. Today's teaching must address ` +
-        `ALL of the following problems with EQUAL depth and attention — do not ` +
-        `focus disproportionately on any one condition. See whether any of these ` +
-        `problems are interrelated, and teach the student how to recognize and ` +
-        `evaluate those relationships:\n\n` +
-        `${numberedProblems}\n\n` +
-        `CRITICAL: Organize your response so each of the problems above receives ` +
-        `its own dedicated section with the same level of evidence, guidelines, ` +
-        `and clinical detail. Do not treat any problem as secondary or merely as ` +
-        `context for another. Address clinically important interactions between ` +
-        `the problems explicitly.`;
-    } else if (teachingProblems.length === 1) {
-      problemFramingBlock =
-        `Clinical problem to teach: ${teachingProblems[0]}.`;
+      problemBlock =
+        `This is a MULTI-PROBLEM teaching case. Give each problem its own ` +
+        `section with comparable depth and attention. Do not treat one problem ` +
+        `merely as context for another. Identify clinically meaningful ` +
+        `relationships and explain how to recognize or evaluate them.\n\n` +
+        numberedProblems;
+    } else if (problems.length === 1) {
+      problemBlock =
+        `Problem for teaching:\n` +
+        `1. ${problems[0]}`;
+    } else {
+      problemBlock =
+        "Use the presenting concern above as the clinical problem for teaching.";
     }
 
-    // The Step 3 focus now appears immediately before the problem framing.
-    // The redundant multi-problem reminder has been removed.
-    const base =
-      `${[
-        `Context: I am a teaching attending in internal medicine. My student is ` +
-          `a medical student in month ${phase.monthsIn} of a longitudinal ` +
-          `integrated clerkship (${phase.name} phase). Their developmental ` +
-          `focus: ${phase.focus}.`,
-        focusLine,
-        problemFramingBlock,
-        topicsLine,
-        lensLine,
-        contextLine,
-      ]
-        .filter(Boolean)
-        .join("\n\n")}\n\n`;
-
-    const perProblemCoverage = hasMultipleProblems
-      ? " FOR EACH of the problems listed above (organize with a clear heading for each problem)"
+    let topicsLine = topicItems.length
+      ? `Additional topics to incorporate only where relevant: ${topicItems.join("; ")}.`
       : "";
 
-    let prompt =
-      base +
-      `Provide evidence-based teaching content${perProblemCoverage}:\n` +
-      `1. For each focus area, current evidence base with landmark citations ` +
-      `(author, year, journal)\n` +
-      `2. Current guideline recommendations by name and year\n` +
-      `3. Ongoing clinical equipoise or debate\n` +
-      `4. Evidence that changed practice in the last 2-3 years\n` +
-      `${
-        hasMultipleProblems
-          ? "5. A brief section on relevant interactions between the problems " +
-            "(drug interactions, competing management priorities, or " +
-            "contraindications one condition creates for another)\n"
-          : ""
-      }\n` +
-      `Format this as a structured summary I can bring to a teaching session` +
-      `${
-        hasMultipleProblems
-          ? ", with each problem clearly delineated"
-          : ""
-      }.`;
+    const lensName = {
+      geriatrics:
+        "geriatrics and deprescribing",
+      primary_care:
+        "primary care and prevention",
+      complex_multimorbidity:
+        "complex multimorbidity and competing priorities",
+    }[teachingLens];
 
-    // Hard cap: even after trimming, some prompts could still be huge if
-    // there are many problems, topics, and a long clinical note. Log a
-    // warning if we hit the cap so we notice and can trim further.
-    if (prompt.length > PROMPT_HARD_CAP) {
-      console.warn(`[generateSourcePrompt] Prompt for "${source}" is ${prompt.length} chars — truncating to ${PROMPT_HARD_CAP}. Consider trimming source content.`);
-      prompt = prompt.slice(0, PROMPT_HARD_CAP - 100) + "\n\n[Note: patient context truncated to fit character limit.]";
+    const lensLine = lensName
+      ? `Teaching lens: ${lensName}.`
+      : "";
+
+    // Keep the requested response comfortably below typical chatbot output
+    // limits even when several problems are selected.
+    const perProblemWordLimit =
+      problems.length >= 5
+        ? 170
+        : problems.length >= 3
+          ? 230
+          : 350;
+
+    const sourceSpecificLine =
+      source === "uptodate"
+        ? "Use current UpToDate recommendations; include a recommendation grade only when UpToDate explicitly supplies one."
+        : "Use current guidelines and primary evidence. Name the guideline or society and year; for key studies, give author or trial name, year, and journal when available.";
+
+    const requestBlock =
+      `Provide a concise, evidence-based teaching summary. ${sourceSpecificLine}\n` +
+      `For each problem, include:\n` +
+      `1. Patient-specific diagnostic and management teaching aligned with the selected focus areas.\n` +
+      `2. Current guideline recommendations and when to escalate or refer.\n` +
+      `3. Up to three high-yield citations rather than an exhaustive bibliography.\n` +
+      `4. Important uncertainty or practice-changing evidence from the last 2-3 years only when it materially affects care.\n` +
+      `${
+        problems.length > 1
+          ? "After the problem sections, add one brief cross-problem interactions section.\n"
+          : ""
+      }` +
+      `Keep each problem section under about ${perProblemWordLimit} words. ` +
+      `Do not restate the full case history, invent patient facts, or repeat the same evidence across sections.`;
+
+    // The teaching-focus line sits immediately before the problem framing.
+    const renderPrompt = (contextBlock) =>
+      [
+        learnerLine,
+        concernLine,
+        focusLine,
+        problemBlock,
+        topicsLine,
+        lensLine,
+        contextBlock,
+        requestBlock,
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+
+    // Calculate context space before inserting any context. The instructions at
+    // the end are therefore always preserved.
+    let prompt = renderPrompt("");
+
+    let contextBudget = Math.min(
+      2600,
+      Math.max(
+        0,
+        promptCap - prompt.length - 4
+      )
+    );
+
+    let contextBlock =
+      buildExternalContextForPrompt(
+        problems,
+        contextBudget,
+        scrubber
+      );
+
+    // Fail closed if an obvious direct identifier somehow survived all passes.
+    const obviousDirectIdentifier =
+      /\b(?:DOB|MRN|SSN|medical record number|social security number)\b|\b\d{3}-\d{2}-\d{4}\b|\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/i;
+
+    if (
+      contextBlock &&
+      obviousDirectIdentifier.test(
+        contextBlock
+      )
+    ) {
+      console.warn(
+        "[generateSourcePrompt] Clinical context omitted because a possible direct identifier remained after scrubbing."
+      );
+      contextBlock = "";
     }
+
+    prompt = renderPrompt(contextBlock);
+
+    // Recalculate the context allocation if formatting overhead pushed us
+    // slightly over budget. Never slice the completed prompt.
+    if (
+      prompt.length > promptCap &&
+      contextBudget > 0
+    ) {
+      contextBudget = Math.max(
+        0,
+        contextBudget -
+          (prompt.length - promptCap) -
+          50
+      );
+
+      contextBlock =
+        buildExternalContextForPrompt(
+          problems,
+          contextBudget,
+          scrubber
+        );
+
+      prompt = renderPrompt(contextBlock);
+    }
+
+    // Last-resort reduction: drop optional topics and context while preserving
+    // the clinical problem list and complete evidence request.
+    if (prompt.length > promptCap) {
+      topicsLine = "";
+      prompt = renderPrompt("");
+    }
+
+    if (prompt.length > promptCap) {
+      console.warn(
+        `[generateSourcePrompt] Fixed prompt content is ${prompt.length} characters, above the internal ${promptCap}-character budget.`
+      );
+    }
+
     return prompt;
   };
 
@@ -5102,40 +5680,74 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                         {rawPrenote.length} characters
                         {rawPrenote.length > 0 && <span className="ml-2 text-amber-700">· not yet saved</span>}
                       </div>
-                      <button
-                        onClick={() => {
-                          const result = deidentifyPrenote(rawPrenote);
-                          setDeidPreview(result);
-                          setShowDeidReviewer(true);
-                        }}
-                        disabled={!rawPrenote.trim()}
+                                            <button
+                        type="button"
+                        onClick={() =>
+                          void openDeidentificationReview(
+                            rawPrenote
+                          )
+                        }
+                        disabled={
+                          !rawPrenote.trim() ||
+                          deidStatus.running
+                        }
                         className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium disabled:opacity-50"
                       >
-                        <Sparkles className="w-4 h-4" />
-                        Review de-identified version →
+                        {deidStatus.running ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Anonymizing...
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-4 h-4" />
+                            Review anonymized version →
+                          </>
+                        )}
                       </button>
                     </div>
+                    {deidStatus.error && (
+                      <div
+                        role="alert"
+                        className="mt-2 text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+                      >
+                        {deidStatus.error}
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div>
-                    <div className="flex items-center justify-between mb-1">
+                                        <div className="flex items-center justify-between mb-1">
                       <label className="text-sm font-medium text-slate-700">
-                        De-identified prenote <span className="text-xs text-emerald-700 font-normal">· ready for AI processing</span>
+                        De-identified prenote{" "}
+                        <span className="text-xs text-emerald-700 font-normal">
+                          · ready for AI processing
+                        </span>
                       </label>
+
                       <button
-                        onClick={() => {
-                          // Let the attending re-run de-identification if they realize
-                          // something slipped through. Uses the current clinicalNote as the raw input
-                          // (which is safe because it's already been de-identified once).
-                          const result = deidentifyPrenote(clinicalNote);
-                          setDeidPreview(result);
-                          setShowDeidReviewer(true);
-                        }}
-                        className="text-xs text-indigo-700 hover:text-indigo-900 underline"
+                        type="button"
+                        onClick={() =>
+                          void openDeidentificationReview(clinicalNote)
+                        }
+                        disabled={deidStatus.running}
+                        className="text-xs text-indigo-700 hover:text-indigo-900 underline disabled:opacity-50"
                       >
-                        Review / re-edit
+                        {deidStatus.running
+                          ? "Preparing review..."
+                          : "Review / re-edit"}
                       </button>
                     </div>
+
+                    {deidStatus.error && (
+                      <div
+                        role="alert"
+                        className="mb-2 text-sm text-red-800 bg-red-50 border border-red-200 rounded-lg px-3 py-2"
+                      >
+                        {deidStatus.error}
+                      </div>
+                    )}
+
                     <textarea
                       value={clinicalNote}
                       onChange={e => setClinicalNote(e.target.value)}
@@ -6259,20 +6871,31 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           />
         )}
         {showDeidReviewer && deidPreview && (
-          <DeidentificationReviewer
+                    <DeidentificationReviewer
+            key={
+              deidPreview.reviewId ||
+              "deid-review"
+            }
             rawText={rawPrenote || clinicalNote}
             initialResult={deidPreview}
             onCancel={() => {
               setShowDeidReviewer(false);
               // Keep rawPrenote around in case they want to try again
             }}
-            onConfirm={(finalText) => {
-              // Adopt the confirmed de-identified text as the working clinical note.
-              // Discard rawPrenote so the original PHI-containing paste never persists.
-              setClinicalNote(finalText);
+                        onConfirm={(finalText) => {
+              const confirmedText =
+                String(finalText || "").trim();
+
+              if (!confirmedText) return;
+
+              setClinicalNote(confirmedText);
               setRawPrenote("");
               setDeidPreview(null);
               setShowDeidReviewer(false);
+              setDeidStatus({
+                running: false,
+                error: "",
+              });
             }}
           />
         )}
@@ -10294,10 +10917,23 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
     return g;
   }, [initialResult.findings]);
 
-  const categoryLabels = {
-    patient_name: { label: "Patient name occurrences", color: "bg-red-100 text-red-800 border-red-200" },
-    patient_first_name: { label: "First name mentions", color: "bg-red-100 text-red-800 border-red-200" },
-    patient_last_name: { label: "Last name mentions", color: "bg-red-100 text-red-800 border-red-200" },
+    const categoryLabels = {
+    patient_name: {
+      label: "Patient name occurrences",
+      color: "bg-red-100 text-red-800 border-red-200",
+    },
+    patient_name_token: {
+      label: "Standalone patient-name mentions",
+      color: "bg-red-100 text-red-800 border-red-200",
+    },
+    patient_first_name: {
+      label: "First name mentions",
+      color: "bg-red-100 text-red-800 border-red-200",
+    },
+    patient_last_name: {
+      label: "Last name mentions",
+      color: "bg-red-100 text-red-800 border-red-200",
+    },
     date: { label: "Dates reduced to MM/YYYY", color: "bg-amber-100 text-amber-800 border-amber-200" },
     address: { label: "Addresses removed", color: "bg-red-100 text-red-800 border-red-200" },
     phone: { label: "Phone numbers removed", color: "bg-red-100 text-red-800 border-red-200" },
@@ -10339,10 +10975,11 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
               {totalChanges} automatic {totalChanges === 1 ? "change" : "changes"} made. Review, edit if needed, then confirm to use this version. The original paste will be discarded.
             </p>
           </div>
-          <button
+                              <button
+            type="button"
             onClick={onCancel}
             className="text-white/70 hover:text-white p-1"
-            aria-label="Cancel"
+            aria-label="Close de-identification reviewer"
           >
             <X className="w-5 h-5" />
           </button>
@@ -10382,7 +11019,8 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
           <div className={`${showOriginal ? "flex" : "hidden lg:flex"} flex-1 flex-col border-r border-slate-200 min-h-0`}>
             <div className="px-4 py-2 bg-red-50 border-b border-red-200 flex items-center justify-between">
               <div className="text-xs font-semibold text-red-900 uppercase tracking-wider">Original (contains PHI — will not be sent)</div>
-              <button
+                            <button
+                type="button"
                 onClick={() => setShowOriginal(false)}
                 className="text-xs text-red-700 hover:text-red-900 lg:hidden"
               >
@@ -10406,7 +11044,8 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
               </div>
               <div className="flex items-center gap-2">
                 {!showOriginal && (
-                  <button
+                                    <button
+                    type="button"
                     onClick={() => setShowOriginal(true)}
                     className="text-xs text-emerald-700 hover:text-emerald-900 lg:hidden"
                   >
@@ -10414,7 +11053,8 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
                   </button>
                 )}
                 {hasBeenEdited && (
-                  <button
+                                    <button
+                    type="button"
                     onClick={() => setEditedText(initialResult.deidentified)}
                     className="text-xs text-slate-600 hover:text-slate-900 underline"
                     title="Revert to the automatic de-identification result"
@@ -10440,13 +11080,15 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
             <strong className="text-slate-800">Reminder:</strong> Automatic de-identification catches most PHI but is not perfect. Review the right panel carefully. Anything you see there will be sent to the AI and stored in your browser.
           </div>
           <div className="flex gap-2 flex-shrink-0">
-            <button
+                        <button
+              type="button"
               onClick={onCancel}
               className="px-4 py-2 bg-white border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-lg text-sm font-medium"
             >
               Cancel
             </button>
-            <button
+                        <button
+              type="button"
               onClick={() => onConfirm(editedText)}
               disabled={!editedText.trim()}
               className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-1.5"
