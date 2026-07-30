@@ -437,6 +437,15 @@ if (naturalMatch) addCandidate(naturalMatch[1]);
 // Utility for building regex from arbitrary strings
 const escapeRegex = (str) => str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+// Strips leading action verbs like "Continue", "Start", "Initiate", "Add",
+// "Consider" that the AI sometimes prepends to medication names when framing
+// treatment as ongoing management. Preserves the actual drug name.
+// Module-scoped so both InRoomDocument and DocumentContent can use it.
+const stripTreatmentVerb = (str) => {
+  if (!str) return str;
+  return str.replace(/^(Continue|Start|Initiate|Add|Consider|Prescribe|Begin|Maintain|Discontinue|Stop|Hold|Resume|Trial(?:\s+of)?)\s+/i, "");
+};
+
 // ===== Prenote section extractor =====
 // Prenotes use divider lines of dashes (20+ hyphens) with section titles
 // between them:
@@ -1932,7 +1941,10 @@ Return ONLY valid JSON (no markdown fences):
       const extractedForAnalysis = extractEssentialNote(clinicalNote);
       console.log(`[analyzeNote] ${isPreVisit ? "Prenote" : "Note"}: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
       const user = `${isPreVisit ? "Prenote / chart summary" : "Clinical note"} (de-identified):\n\n${extractedForAnalysis}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
-      const response = await callAi(sys, user, 4000);
+      // Increased from 4000 to accommodate the expanded output schema
+      // (oneLiner, patientBadges, scPercentages, per-problem category/status,
+      // labTrendsSummary, diagnosticsSummary, visitPlan, perProblemRedFlags).
+      const response = await callAi(sys, user, 8000);
       const parsed = extractJson(response);
 
       setNoteAnalysis(parsed);
@@ -2776,7 +2788,10 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
     const user = `Generate lightweight teaching content for these chronic problems on the patient's chart:\n${problemList}${contextLine}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase).`;
 
     try {
-      const response = await callAi(sys, user, 4000);
+      // Lightweight teaching batches multiple problems in one call. When the
+      // patient has many chronic problems (e.g., 10+ in a complex vet), 4000
+      // tokens gets truncated. Bump to 6000.
+      const response = await callAi(sys, user, 6000);
       const parsed = extractJson(response);
       const result = {};
       Object.entries(parsed.problems || {}).forEach(([name, content]) => {
@@ -10869,11 +10884,7 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   // Strips leading action verbs like "Continue", "Start", "Initiate", "Add",
 // "Consider" that the AI sometimes prepends to medication names when framing
 // treatment as ongoing management. Preserves the actual drug name.
-const stripTreatmentVerb = (str) => {
-  if (!str) return str;
-  return str.replace(/^(Continue|Start|Initiate|Add|Consider|Prescribe|Begin|Maintain|Discontinue|Stop|Hold|Resume|Trial(?:\s+of)?)\s+/i, "");
-};
-  const renderContent = () => {
+const renderContent = () => {
     return <DocumentContent doc={doc} phase={phase} session={session} />;
   };
 
