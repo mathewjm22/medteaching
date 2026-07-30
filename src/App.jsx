@@ -327,27 +327,88 @@ if (naturalMatch) addCandidate(naturalMatch[1]);
   }
   
 
-  // ---- STEP 8: Family member name stripping ----
-  // Attending spec: use relationship not name for family members.
-  // We look for "son NAME", "daughter NAME", "wife NAME", "mother NAME" etc.
-  const familyRelations = ["son", "daughter", "wife", "husband", "spouse", "partner", "mother", "father", "sister", "brother", "child", "grandchild", "grandson", "granddaughter"];
-  familyRelations.forEach(rel => {
-    // Pattern: relation followed by a Capitalized name
-    const relRegex = new RegExp(`\\b(${rel})\\s+([A-Z][a-z]+(?:\\s+[A-Z][a-z]+)?)`, "gi");
-    text = text.replace(relRegex, (match, relation) => {
-      const replacement = relation.toLowerCase();
-      addFinding("family_name", match, replacement, `family member name`);
-      return replacement;
-    });
-  });
+    // ---- STEP 8: Family member name stripping ----
+  // Preserve the relationship but remove an immediately following
+  // capitalized family-member name. Do not use a case-insensitive regex here:
+  // doing so would make ordinary words such as "has diabetes" look like names.
+  const familyRelations = [
+    "son",
+    "daughter",
+    "wife",
+    "husband",
+    "spouse",
+    "partner",
+    "mother",
+    "father",
+    "sister",
+    "brother",
+    "child",
+    "grandchild",
+    "grandson",
+    "granddaughter",
+  ];
 
-  // ---- STEP 9: Strip location names attached to family members ----
-  // e.g., "son in Kauai", "daughter in WA", "mother in Auburn, WA"
-  // We keep the relation but remove the location.
-  text = text.replace(/\b(son|daughter|wife|husband|mother|father|sister|brother|spouse|partner|child)\s+in\s+([A-Z][a-zA-Z]+(?:,?\s+[A-Z]{2})?)\b/gi,
+  const familyRelationPattern = familyRelations
+    .map((relation) => {
+      const capitalized =
+        `${relation[0].toUpperCase()}${relation.slice(1)}`;
+
+      return `(?:${relation}|${capitalized}|${relation.toUpperCase()})`;
+    })
+    .join("|");
+
+  const familyNameToken =
+    "(?:[A-Z][A-Za-z'’-]+|[A-Z]\\.?)";
+
+  const familyNameRegex = new RegExp(
+    `\\b(${familyRelationPattern})\\s+` +
+      `(${familyNameToken}(?:\\s+${familyNameToken}){0,2})\\b`,
+    "g"
+  );
+
+  text = text.replace(
+    familyNameRegex,
     (match, relation) => {
-      const replacement = relation.toLowerCase();
-      addFinding("family_location", match, replacement);
+      const replacement =
+        relation.toLowerCase();
+
+      addFinding(
+        "family_name",
+        match,
+        replacement,
+        "family member name"
+      );
+
+      return replacement;
+    }
+  );
+
+
+  // ---- STEP 9: Strip locations attached to family members ----
+  // Match only capitalized location-like text so phrases such as
+  // "son in remission" or "daughter in college" are not removed.
+  const familyLocationRegex = new RegExp(
+    `\\b(${familyRelationPattern})\\s+in\\s+` +
+      `(` +
+        `[A-Z][A-Za-z'’-]*` +
+        `(?:\\s+[A-Z][A-Za-z'’-]*){0,2}` +
+        `(?:,\\s*[A-Z]{2})?` +
+      `)\\b`,
+    "g"
+  );
+
+  text = text.replace(
+    familyLocationRegex,
+    (match, relation) => {
+      const replacement =
+        relation.toLowerCase();
+
+      addFinding(
+        "family_location",
+        match,
+        replacement
+      );
+
       return replacement;
     }
   );
@@ -2892,6 +2953,13 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
       ""
     );
 
+    // A patient-name label can occur in the middle of a long exported line,
+    // so the beginning-of-line rule above may not see it.
+    text = text.replace(
+      /\bpatient\s+name\s*:\s*[^.;\n]*/gi,
+      "Patient: the patient"
+    );
+
     text = text.replace(
       /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi,
       ""
@@ -2916,7 +2984,7 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
 
     // Patient-name forms likely to survive an incomplete earlier pass.
     text = text.replace(
-      /\b(?:WHAT TO KNOW ABOUT|PATIENT SUMMARY FOR)\s+[A-Z][A-Z'’ -]{3,}/g,
+      /\b(WHAT TO KNOW ABOUT|PATIENT SUMMARY FOR)\s+[A-Z][A-Z'’ -]{3,}/g,
       "$1 THE PATIENT"
     );
 
@@ -3672,8 +3740,8 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
       );
 
     // Fail closed if an obvious direct identifier somehow survived all passes.
-    const obviousDirectIdentifier =
-      /\b(?:DOB|MRN|SSN|medical record number|social security number)\b|\b\d{3}-\d{2}-\d{4}\b|\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/i;
+        const obviousDirectIdentifier =
+      /\b(?:DOB|MRN|SSN|medical record number|social security number|patient name)\b|\b\d{3}-\d{2}-\d{4}\b|\b(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/i;
 
     if (
       contextBlock &&
