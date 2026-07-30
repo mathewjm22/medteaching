@@ -1936,7 +1936,44 @@ Return ONLY valid JSON (no markdown fences):
   "visitPlan": [
     "checklist items for today's visit — 10-15 items, ordered from most to least urgent. Cover: vitals recheck if abnormal, mandatory screens (C-SSRS, PHQ-2 if MH history), overdue preventive care, per-problem symptom check-ins, physical exam foci, follow-up authorizations expiring, documentation reminders (e.g., 'document objectively — legal case active')"
   ]
-}`;
+}
+
+═══════════════════════════════════════════════════════════════
+FINAL REMINDER — READ BEFORE GENERATING JSON
+═══════════════════════════════════════════════════════════════
+
+Your JSON response MUST include ALL of the following top-level fields — do not omit any. Missing fields will break the downstream document rendering. Double-check your response before finalizing:
+
+REQUIRED TOP-LEVEL FIELDS:
+✓ chiefConcern (string)
+✓ workingDiagnosis (string)
+✓ oneLiner (2-3 sentence admission-style string — REQUIRED, not optional)
+✓ patientDescriptor (short age+sex string like "38 y/o M" — REQUIRED)
+✓ patientBadges (array of {text, type} objects — REQUIRED; may be empty [] for patients with no notable identity/status facts, but the KEY must be present)
+✓ scPercentages (array of {condition, percent} objects — REQUIRED; empty [] if patient is not a veteran or no SC data available, but the KEY must be present)
+✓ activeProblems (array — EACH problem object MUST include: problem, category, status, shortSubtitle in addition to the older fields)
+✓ otherDiagnoses (array of strings)
+✓ keyTopics (array)
+✓ suggestedFocus (array of 3-5 focus keys — REQUIRED, never empty)
+✓ reasoning (string)
+✓ complexity ("common" or "complex")
+✓ redFlags (array)
+✓ perProblemRedFlags (object keyed by problem name — REQUIRED; empty {} if none, but KEY must be present)
+✓ patientQuotes (array — may be empty for pre-visit)
+✓ labTrends (array of objects)
+✓ labTrendsSummary (one-paragraph string — REQUIRED)
+✓ diagnosticsSummary (one-paragraph string — REQUIRED)
+✓ visitPlan (array of 10-15 checklist strings — REQUIRED)
+
+FOR EACH activeProblems ENTRY, REQUIRED per-problem fields:
+✓ problem (string)
+✓ category (REQUIRED — one of: mental, skin, gi, pain, ent, neuro, social, lab, cardiac, pulm, endocrine, renal, other)
+✓ status (REQUIRED — one of: active, stable, remission, resolved, registry, controlled)
+✓ shortSubtitle (REQUIRED — ICD code + brief context, ≤80 chars)
+✓ scPercent (integer or null)
+✓ teachingValue, keyIssue, icdContext (as before)
+
+If any of these fields are absent from your JSON, the response is invalid. Do a final check before returning.`;
 
       const extractedForAnalysis = extractEssentialNote(clinicalNote);
       console.log(`[analyzeNote] ${isPreVisit ? "Prenote" : "Note"}: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
@@ -2626,6 +2663,18 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 }
 
 ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (may be empty string if no specific warning).
+
+═══════════════════════════════════════════════════════════════
+FINAL REMINDER — REQUIRED FIELDS CHECK
+═══════════════════════════════════════════════════════════════
+
+Before returning your JSON, verify these NEW fields are present in your response (they are easy to forget in a long schema):
+
+✓ suggestedQuestions — REQUIRED array of 3-5 concrete questions the student should ask the patient about THIS problem during the visit. Grounded in what the chart shows. Written as actual question strings, not screening tool names.
+
+✓ dontMiss — REQUIRED string (may be empty "" if no specific warning applies, but the KEY must exist in your JSON output). Contains the single most important don't-miss item, iatrogenic risk, or prescribing pitfall for THIS problem in THIS patient.
+
+If these fields are absent from your JSON output, the response is invalid.
 
 The illnessScript section is the anchor for the student's growing library of pattern recognition — this is the CU Trek curriculum's explicit expectation (MEPO Patient Care #8: "organize knowledge of clinical and basic medical science using illness scripts"). Even if this is a case with an obvious diagnosis, the illness script section formalizes the pattern so the student can retrieve it faster next time. Do NOT skip this section. Do NOT make it generic textbook material — always anchor each element to what our specific patient does or does not show.
 
