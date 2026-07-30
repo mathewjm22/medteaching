@@ -1889,8 +1889,25 @@ Return ONLY valid JSON (no markdown fences):
 {
   "chiefConcern": "${isPreVisit ? 'anticipated reason for the upcoming visit if stated in prenote, else the primary chronic issue driving the visit' : 'brief chief concern or reason for visit'}",
 "workingDiagnosis": "${isPreVisit ? `primary problem the visit will center on, or the most teachable chronic condition, or "annual follow-up of multiple stable conditions" if truly multi-focal` : `primary/most teachable diagnosis, or "multiple active problems" if truly multi-focal`}",
+  "oneLiner": "2-3 sentence admission-style one-liner. Anchor patient demographics, key active problems, current situation, medication status, and the 'why now' framing. Written in a fluent clinical voice — the way a resident would present the patient on rounds. Example: '38 y/o former Navy SEAL, 90% SC, with PTSD in remission after completing CBT-based psychotherapy, now re-engaging for court-ordered eval related to legal charges. On no systemic medications. Active issues include palmar-plantar keratolysis, chronic back/shoulder pain managed non-pharmacologically, IBS-D, and GERD.'",
+  "patientDescriptor": "brief age+sex string like '38 y/o M' or '57 y/o F veteran' — used in the header next to name",
+  "patientBadges": [
+    {"text": "e.g. 'Navy SEAL (ret 2008)' or 'Type 1 Diabetic since age 12' — noteworthy identity/status facts a resident would mention in one-liner", "type": "info|warning|alert"}
+  ],
+  "scPercentages": [
+    {"condition": "PTSD", "percent": 70}
+  ],
   "activeProblems": [
-    {"problem": "problem name", "icdContext": "ICD if in note", "teachingValue": "${isPreVisit ? 'why this problem is worth prepping the student on BEFORE the visit' : 'brief note on why teachable'}", "keyIssue": "${isPreVisit ? 'the anticipated clinical dilemma for the upcoming visit' : 'the core clinical question or dilemma'}"}
+    {
+      "problem": "problem name",
+      "icdContext": "ICD code if in note",
+      "category": "REQUIRED — one of: mental, skin, gi, pain, ent, neuro, social, lab, cardiac, pulm, endocrine, renal, other. Used to pick an icon in the rendered document.",
+      "status": "REQUIRED — one of: active, stable, remission, resolved, registry, controlled. Reflects current clinical state per the chart.",
+      "scPercent": null,
+      "shortSubtitle": "one-line summary shown under the problem title — include ICD if known, and 1-3 word context. Example: 'F43.10 — Combat-index trauma, Navy SEAL deployments' or 'K58.0 — Alternating diarrhea/constipation'",
+      "teachingValue": "${isPreVisit ? 'why this problem is worth prepping the student on BEFORE the visit' : 'brief note on why teachable'}",
+      "keyIssue": "${isPreVisit ? 'the anticipated clinical dilemma for the upcoming visit' : 'the core clinical question or dilemma'}"
+    }
   ],
   "otherDiagnoses": ["list of other active problems as strings"],
   "keyTopics": ["specific clinical topics worth teaching - be specific"],
@@ -1898,9 +1915,17 @@ Return ONLY valid JSON (no markdown fences):
   "reasoning": "2-3 sentence explanation",
   "complexity": "common" or "complex",
 "redFlags": ["${isPreVisit ? `things to actively screen for during the upcoming visit` : `concerning features, can't-miss diagnoses, iatrogenic risks`}"],
+  "perProblemRedFlags": {
+    "exact problem name matching one in activeProblems": ["specific red flag or don't-miss item for THIS problem"]
+  },
   "patientQuotes": [${isPreVisit ? '' : '"direct quotes verbatim from the note"'}],
   "labTrends": [
     {"parameter": "lab name", "trend": "${isPreVisit ? 'longitudinal chronic-disease monitoring pattern visible in chart' : 'brief description'}", "teachingPoint": "what this teaches"}
+  ],
+  "labTrendsSummary": "one-paragraph AI summary of key lab trends across the chart — used as a 'Lab Trends' quick-reference box. Example: 'A1c 4.9→5.1% (normal). eGFR >90→79→83 (mildly low, likely muscle-based). LFTs normalized 07/2026 after stopping energy drinks. LDL 99→82→99 (borderline). TSH 1.02 (normal).'",
+  "diagnosticsSummary": "one-paragraph AI summary of imaging, endoscopy, and other diagnostic procedures visible in the chart — used as a 'Diagnostics' quick-reference box. Example: 'Endoscopy 09/2021: Colonoscopy normal mucosa, biopsies for colitis (pathology not in record). EGD non-severe reflux esophagitis. ENT 01/2026: minor salivary gland cyst, benign. Stool studies 2021: all negative. Imaging: none documented.'",
+  "visitPlan": [
+    "checklist items for today's visit — 10-15 items, ordered from most to least urgent. Cover: vitals recheck if abnormal, mandatory screens (C-SSRS, PHQ-2 if MH history), overdue preventive care, per-problem symptom check-ins, physical exam foci, follow-up authorizations expiring, documentation reminders (e.g., 'document objectively — legal case active')"
   ]
 }`;
 
@@ -2578,7 +2603,9 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
   "keyLabsAndImaging": [{"study": "name", "purpose": "${isPreVisit ? "why you might order it — or, if the chart shows it's already been done, what to look for in the result" : "why I ordered/would order it for OUR patient"}", "interpretation": "${isPreVisit ? "what the actual (or expected) result means clinically" : "what her actual result (or what a hypothetical result) would mean in her clinical context"}", "role": "${isPreVisit ? "how the result should change your plan" : "how it changes management for HER"}"}],
-"treatmentApproach": {"firstLine": [{"treatment": "medication or intervention NAME ONLY — do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', 'Consider'. Just the drug/intervention name (e.g., 'Hydrocodone/acetaminophen', 'Intra-articular corticosteroid injection', 'Neuromuscular physiotherapy'). The rendering context makes the action clear.", "dosing": "dose/route/frequency", ...
+"treatmentApproach": {"firstLine": [{"treatment": "medication or intervention NAME ONLY — do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', 'Consider'. Just the drug/intervention name (e.g., 'Hydrocodone/acetaminophen', 'Intra-articular corticosteroid injection', 'Neuromuscular physiotherapy'). The rendering context makes the action clear.", "dosing": "dose/route/frequency", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations to bring up in the visit" : "patient-specific considerations, not generic bullet points"}"]},
+  "suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
+  "dontMiss": "one-line warning of the single most important don't-miss item, iatrogenic risk, or prescribing pitfall specific to THIS problem in THIS patient. Example for a patient asking to share their topical antibiotic with family: 'He wants to use topical erythromycin on family members. This is a prescription medication — you cannot prescribe for undiagnosed family members. Offer to evaluate them separately.' Leave empty string if no specific warning applies.",
   "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
   "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
   "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
@@ -2586,7 +2613,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}"
 }
 
-ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss.
+ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (may be empty string if no specific warning).
 
 The illnessScript section is the anchor for the student's growing library of pattern recognition — this is the CU Trek curriculum's explicit expectation (MEPO Patient Care #8: "organize knowledge of clinical and basic medical science using illness scripts"). Even if this is a case with an obvious diagnosis, the illness script section formalizes the pattern so the student can retrieve it faster next time. Do NOT skip this section. Do NOT make it generic textbook material — always anchor each element to what our specific patient does or does not show.
 
