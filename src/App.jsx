@@ -428,132 +428,329 @@ const stripTreatmentVerb = (str) => {
 };
 
 // ===== Prenote section extractor =====
-// Prenotes use divider lines of dashes (20+ hyphens) with section titles
-// between them:
-//   ----------------------------------------------------------------
-//   WHAT TO KNOW ABOUT PATIENT NAME
-//   ----------------------------------------------------------------
-//   Body...
-//
-// Real-world prenotes come in TWO shapes:
-//   (a) Multi-line: dividers are on their own lines separated by newlines
-//   (b) Single-line: the whole prenote is one giant line, dividers are inline
-// This parser handles both by treating the divider as a text-level splitter
-// rather than requiring line-level structure.
-//
-// Returns a map keyed by normalized section name → raw text content.
+// Handles:
+//   1. Normal multiline prenotes
+//   2. Divider characters embedded in one long line
+//   3. Known headings without divider lines
+//   4. Headings glued directly to their content
+//   5. Duplicate sections
+//   6. Raw CPRS/chart data appended after the generated prenote
 const extractPrenoteSections = (rawText) => {
   if (!rawText || typeof rawText !== "string") return {};
 
-  const text = rawText
+  let text = rawText
     .replace(/\r\n?/g, "\n")
-    .replace(/\u00a0/g, " ");
+    .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/```[a-z0-9_-]*\s*/gi, "\n")
+    .replace(/```/g, "\n");
 
-  const lines = text.split("\n");
-  const sections = {};
+  /*
+   * Some generated prenotes collapse several headings onto one line:
+   *
+   * SOCIALLiving status: ...
+   * FAMILY HISTORYFather: ...
+   * MED RECCURRENT MEDICATIONS ...
+   *
+   * Insert explicit line breaks around those known combinations.
+   */
+  const gluedHeadingRules = [
+    [
+      /SOCIAL(?=Living\s+status:|Marital\s+status:)/g,
+      "\nSOCIAL\n",
+    ],
+    [
+      /FAMILY\s+HISTORY(?=Heart\s+murmur|No\s+relevant|Father:|Mother:|Relevant\s+family)/g,
+      "\nFAMILY HISTORY\n",
+    ],
+    [
+      /ALLERGIES(?=(?:[A-Z][a-z]+|NKDA|None)[^\n]{0,80}:|None\b|NKDA\b)/g,
+      "\nALLERGIES\n",
+    ],
+    [
+      /SURGICAL\s+HISTORY(?=\d|Remote:|No\s+|[-*])/g,
+      "\nSURGICAL HISTORY\n",
+    ],
+    [
+      /MILITARY\s+HISTORY(?=Long-term|Branch:|Specific\s+branch|[-*])/g,
+      "\nMILITARY HISTORY\n",
+    ],
+    [
+      /MED(?:ICATION)?\s+REC(?:ONCILIATION)?(?=(?:###\s*)?CURRENT\s+MEDICATIONS?)/g,
+      "\nMED REC\n",
+    ],
+    [
+      /PREVENTIVE\s+MEDICINE(?=(?:###\s*)?Immunizations?)/g,
+      "\nPREVENTIVE MEDICINE\n",
+    ],
+    [
+      /VITAL\s+SIGNS?\s+TRENDS?(?=BP:|Last\s+Visit)/g,
+      "\nVITAL SIGNS TRENDS\n",
+    ],
+    [
+      /KEY\s+DIAGNOSES(?=[A-Z])/g,
+      "\nKEY DIAGNOSES\n",
+    ],
+    [
+      /DIAGNOSTICS(?=Vital\s+Signs|Recent\s+Labs|Imaging|Scope\s+Notes)/g,
+      "\nDIAGNOSTICS\n",
+    ],
+  ];
 
-  // Supports:
-  // ------------------------------------------------
-  // ================================================
-  // ────────────────────────────────────────────────
-  // Other common Unicode horizontal rules.
-  const isDivider = (line) =>
-    /^\s*(?:[-=_]{10,}|[─━═—–]{10,})\s*$/.test(line);
+  for (const [pattern, replacement] of gluedHeadingRules) {
+    text = text.replace(pattern, replacement);
+  }
 
-  const isSectionHeading = (line) => {
-    const value = String(line || "").trim();
+  /*
+   * Stop before raw CPRS/chart exports appended after the generated
+   * prenote. Otherwise later raw headings such as ALLERGIES: can overwrite
+   * or pollute the generated prenote sections.
+   */
+  const appendixMarkers = [
+    /NOTE\s+ENCOUNTER\s+FOR:/i,
+    /LOCAL\s+TITLE:/i,
+    /[A-Z][A-Z,.' -]{2,80}\s+is\s+a\s+\d{1,3}\s+year\s+old\b/i,
+    /<<>>/,
+  ];
 
-    if (!value || value.length > 120) return false;
-    if (isDivider(value)) return false;
+  const appendixIndexes = appendixMarkers
+    .map((pattern) => text.search(pattern))
+    .filter((index) => index > 0);
 
-    // Markdown headings used inside some generated prenotes are content,
-    // not top-level tabs.
-    if (/^#{1,6}\s+/.test(value)) return false;
+  if (appendixIndexes.length > 0) {
+    text = text.slice(0, Math.min(...appendixIndexes));
+  }
 
-    const letters = value.match(/[A-Za-z]/g) || [];
-    const uppercaseLetters = value.match(/[A-Z]/g) || [];
+  /*
+   * Convert all supported horizontal rules into newlines, even when the
+   * rule appears in the middle of one giant line.
+   */
+  text = text.replace(
+    /[ \t]*(?:[-=_]{10,}|[─━═—–]{10,})[ \t]*/g,
+    "\n"
+  );
 
-    if (letters.length < 3) return false;
+  /*
+   * Only explicit, known headings are accepted. This prevents diagnosis
+   * names such as:
+   *
+   * MYOPIC REFRACTIVE ERROR WITH ASTIGMATISM ..... New
+   *
+   * from being mistaken for top-level sections.
+   */
+  const headingDefinitions = [
+    {
+      title: "WHAT TO KNOW ABOUT",
+      regex:
+        /^WHAT\s+TO\s+KNOW\s+ABOUT(?:\s+[A-Z][A-Z .,'’\-]{1,80})?/i,
+    },
+    {
+      title: "UPDATES / RECENT VISITS",
+      regex: /^UPDATES?\s*\/\s*RECENT\s+VISITS?/i,
+    },
+    {
+      title: "PAST MEDICAL HISTORY",
+      regex: /^PAST\s+MEDICAL\s+HISTORY/i,
+    },
+    {
+      title: "RECENT LABS SUMMARY MOST RECENT FIRST",
+      regex:
+        /^RECENT\s+LABS?\s+SUMMARY(?:\s*\(\s*MOST\s+RECENT\s+FIRST\s*\))?/i,
+    },
+    {
+      title: "KEY LABS IMAGING RESULTS WITH TRENDS",
+      regex:
+        /^KEY\s+LABS?\s*(?:\/|AND)?\s*IMAGING\s+RESULTS?\s+WITH\s+TRENDS/i,
+    },
+    {
+      title: "IMAGING AND DIAGNOSTIC PROCEDURES",
+      regex: /^IMAGING\s+AND\s+DIAGNOSTIC\s+PROCEDURES/i,
+    },
+    {
+      title: "LABORATORY TRENDS KEY ABNORMALITIES",
+      regex:
+        /^LABORATORY\s+TRENDS\s*\(?\s*KEY\s+ABNORMALITIES\s*\)?/i,
+    },
+    {
+      title: "LAB TREND TABLES",
+      regex: /^LAB(?:ORATORY)?\s+TREND\s+TABLES?/i,
+    },
+    {
+      title: "LABORATORY DATA",
+      regex:
+        /^LABORATORY\s+(?:DATA|STUDIES|RESULTS|TRENDS)/i,
+    },
+    {
+      title: "VITAL SIGNS TRENDS",
+      regex: /^VITAL\s+SIGNS?\s+TRENDS?/i,
+    },
+    {
+      title: "PREVENTIVE MEDICINE",
+      regex: /^PREVENTIVE\s+MEDICINE/i,
+    },
+    {
+      title: "SURGICAL HISTORY",
+      regex: /^SURGICAL\s+HISTORY/i,
+    },
+    {
+      title: "MILITARY HISTORY",
+      regex: /^MILITARY\s+HISTORY/i,
+    },
+    {
+      title: "FAMILY HISTORY",
+      regex: /^FAMILY\s+HISTORY/i,
+    },
+    {
+      title: "SOCIAL HISTORY",
+      regex: /^SOCIAL\s+HISTORY/i,
+    },
+    {
+      title: "MED REC",
+      regex:
+        /^MED(?:ICATION)?\s+REC(?:ONCILIATION)?/i,
+    },
+    {
+      title: "KEY DIAGNOSES",
+      regex: /^KEY\s+DIAGNOSES/i,
+    },
+    {
+      title: "DIAGNOSTICS",
+      regex: /^DIAGNOSTICS(?!\s+SELF[- ]?CHECK)/i,
+    },
+    {
+      title: "FOLLOW-UP",
+      regex: /^FOLLOW[- ]?UP/i,
+    },
+    {
+      title: "ALLERGIES",
+      regex: /^ALLERGIES/i,
+    },
+    {
+      title: "SOCIAL",
+      regex: /^SOCIAL/i,
+    },
+    {
+      title: "PRENOTE",
+      regex: /^PRENOTE/i,
+    },
+  ];
 
-    // Top-level prenote headings are generally uppercase.
-    return uppercaseLetters.length / letters.length >= 0.8;
+  const matchKnownHeading = (rawLine) => {
+    const original = String(rawLine || "").trim();
+
+    if (!original) return null;
+
+    const hadMarkdownHeading = /^#{1,6}\s*/.test(original);
+    const line = original
+      .replace(/^#{1,6}\s*/, "")
+      .trim();
+
+    for (const definition of headingDefinitions) {
+      const match = line.match(definition.regex);
+
+      if (!match || match.index !== 0) continue;
+
+      const matchedText = match[0].trim();
+      const remainder = line
+        .slice(match[0].length)
+        .trim();
+
+      const letters =
+        matchedText.match(/[A-Za-z]/g) || [];
+
+      const uppercaseLetters =
+        matchedText.match(/[A-Z]/g) || [];
+
+      /*
+       * A heading with content attached is accepted only when the heading
+       * itself is clearly uppercase or marked as Markdown. This avoids
+       * treating ordinary prose beginning with "Social" as a section.
+       */
+      const looksExplicit =
+        !remainder ||
+        hadMarkdownHeading ||
+        (
+          letters.length > 0 &&
+          uppercaseLetters.length / letters.length >= 0.8
+        );
+
+      if (!looksExplicit) continue;
+
+      /*
+       * Patient names are part of the WHAT TO KNOW heading, not section
+       * content.
+       */
+      if (
+        definition.title === "WHAT TO KNOW ABOUT" &&
+        remainder &&
+        /^[A-Z][A-Z .,'’\-]{1,80}$/.test(remainder)
+      ) {
+        return {
+          title: definition.title,
+          remainder: "",
+        };
+      }
+
+      return {
+        title: definition.title,
+        remainder,
+      };
+    }
+
+    return null;
   };
 
-  const saveSection = (title, bodyLines) => {
-    if (!title) return;
+  const sections = {};
 
-    const body = bodyLines.join("\n").trim();
+  let currentTitle = null;
+  let currentBody = [];
+
+  const saveCurrentSection = () => {
+    if (!currentTitle) return;
+
+    const body = currentBody
+      .join("\n")
+      .trim();
+
     if (!body) return;
 
-    const key = normalizeSectionTitle(title);
+    const key = normalizeSectionTitle(currentTitle);
+
     if (!key) return;
 
-    // Some prenotes repeat a section. Preserve all meaningful content rather
-    // than silently discarding one copy.
+    /*
+     * Preserve repeated sections rather than silently replacing an earlier
+     * DIAGNOSTICS, LABS, or other section.
+     */
     if (sections[key]) {
       if (!sections[key].includes(body)) {
-        sections[key] = `${sections[key]}\n\n${body}`;
+        sections[key] += `\n\n${body}`;
       }
     } else {
       sections[key] = body;
     }
   };
 
-  let currentTitle = null;
-  let currentBody = [];
+  for (const rawLine of text.split("\n")) {
+    const heading = matchKnownHeading(rawLine);
 
-  for (let index = 0; index < lines.length; index++) {
-    const line = lines[index];
+    if (heading) {
+      saveCurrentSection();
 
-    if (!isDivider(line)) {
-      if (currentTitle) currentBody.push(line);
+      currentTitle = heading.title;
+      currentBody = heading.remainder
+        ? [heading.remainder]
+        : [];
+
       continue;
     }
 
-    // Find the first nonempty line after this divider.
-    let headingIndex = index + 1;
-
-    while (
-      headingIndex < lines.length &&
-      (!lines[headingIndex].trim() || isDivider(lines[headingIndex]))
-    ) {
-      headingIndex++;
-    }
-
-    if (
-      headingIndex >= lines.length ||
-      !isSectionHeading(lines[headingIndex])
-    ) {
-      if (currentTitle) currentBody.push(line);
-      continue;
-    }
-
-    saveSection(currentTitle, currentBody);
-
-    currentTitle = lines[headingIndex].trim();
-    currentBody = [];
-
-    index = headingIndex;
-
-    // Skip the closing divider below the heading, when present.
-    let nextIndex = index + 1;
-
-    while (
-      nextIndex < lines.length &&
-      !lines[nextIndex].trim()
-    ) {
-      nextIndex++;
-    }
-
-    if (
-      nextIndex < lines.length &&
-      isDivider(lines[nextIndex])
-    ) {
-      index = nextIndex;
+    if (currentTitle) {
+      currentBody.push(rawLine);
     }
   }
 
-  saveSection(currentTitle, currentBody);
+  saveCurrentSection();
 
   console.log(
     "[extractPrenoteSections] sections found:",
@@ -586,47 +783,105 @@ const getSection = (sections, ...candidates) => {
   return null;
 };
 
-// Extract the "CURRENT MEDICATIONS" subsection out of the full MED REC text.
-// Stops at "RECENTLY DISCONTINUED" or "SIGNIFICANT HISTORICAL" or end of text.
-const extractCurrentMedsSubsection = (medRecText) => {
-  if (!medRecText) return "";
-  const lines = medRecText.split(/\r?\n/);
-  let inCurrent = false;
-  let started = false;
-  const out = [];
-  for (const line of lines) {
-    const upper = line.trim().toUpperCase();
-    if (/CURRENT\s+MEDICATIONS?/.test(upper)) {
-      inCurrent = true;
-      started = true;
-      continue;
-    }
-    if (started && (/RECENTLY\s+DISCONTINUED/.test(upper) || /SIGNIFICANT\s+HISTORICAL/.test(upper) || /HISTORICAL\s+MEDICATIONS?/.test(upper))) {
-      inCurrent = false;
-      break;
-    }
-    if (inCurrent) out.push(line);
-  }
-  // If no explicit CURRENT header found, treat the whole thing as current
-  return out.length > 0 ? out.join("\n").trim() : medRecText;
+// Find a regex match without carrying global/sticky regex state between calls.
+const findTextRegexMatch = (
+  text,
+  regex,
+  fromIndex = 0
+) => {
+  const flags = regex.flags.replace(/[gy]/g, "");
+  const safeRegex = new RegExp(regex.source, flags);
+  const match = safeRegex.exec(text.slice(fromIndex));
+
+  if (!match) return null;
+
+  return {
+    index: fromIndex + match.index,
+    end:
+      fromIndex +
+      match.index +
+      match[0].length,
+    match,
+  };
 };
 
-// Also extract discontinued and historical for the collapsible in-room dropdowns
-const extractMedSubsection = (medRecText, targetHeaderRegex, stopRegexes = []) => {
-  if (!medRecText) return "";
-  const lines = medRecText.split(/\r?\n/);
-  let inTarget = false;
-  const out = [];
-  for (const line of lines) {
-    const upper = line.trim().toUpperCase();
-    if (targetHeaderRegex.test(upper)) {
-      inTarget = true;
-      continue;
+// Extract text between one header and the earliest matching stop header.
+// Works whether the source contains newlines or is one giant line.
+const extractTextBetweenHeaders = (
+  sourceText,
+  startHeaderRegex,
+  stopHeaderRegexes = []
+) => {
+  if (!sourceText) return "";
+
+  const text = String(sourceText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+    .replace(/\u00a0/g, " ");
+
+  const startMatch = findTextRegexMatch(
+    text,
+    startHeaderRegex
+  );
+
+  if (!startMatch) return "";
+
+  let endIndex = text.length;
+
+  for (const stopRegex of stopHeaderRegexes) {
+    const stopMatch = findTextRegexMatch(
+      text,
+      stopRegex,
+      startMatch.end
+    );
+
+    if (
+      stopMatch &&
+      stopMatch.index < endIndex
+    ) {
+      endIndex = stopMatch.index;
     }
-    if (inTarget && stopRegexes.some(r => r.test(upper))) break;
-    if (inTarget) out.push(line);
   }
-  return out.join("\n").trim();
+
+  return text
+    .slice(startMatch.end, endIndex)
+    .replace(/^\s*[:\-–—]?\s*/, "")
+    .trim();
+};
+
+// Extract only the current-medications portion of MED REC.
+const extractCurrentMedsSubsection = (medRecText) => {
+  if (!medRecText) return "";
+
+  const currentMeds = extractTextBetweenHeaders(
+    medRecText,
+    /(?:###\s*)?CURRENT\s+MEDICATIONS?(?:\s*\([^)]*\))?/i,
+    [
+      /(?:###\s*)?RECENTLY\s+DISCONTINUED/i,
+      /(?:###\s*)?(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/i,
+    ]
+  );
+
+  /*
+   * Some prenotes do not label their medication subsection. In that case,
+   * preserve the entire MED REC rather than returning an empty list.
+   */
+  return currentMeds || String(medRecText).trim();
+};
+
+// Extract discontinued or historical medication subsections.
+const extractMedSubsection = (
+  medRecText,
+  targetHeaderRegex,
+  stopRegexes = []
+) => {
+  if (!medRecText) return "";
+
+  return extractTextBetweenHeaders(
+    medRecText,
+    targetHeaderRegex,
+    stopRegexes
+  );
 };
 
 // Parse per-problem details out of the PAST MEDICAL HISTORY prenote section.
@@ -7426,6 +7681,7 @@ const buildInRoomHtml = (doc, session) => {
 );
 
 const labsText = getSec(
+  "LABORATORY DATA",
   "LABORATORY STUDIES",
   "LABORATORY RESULTS",
   "LABORATORY TRENDS",
@@ -7465,7 +7721,11 @@ const resolvedImagingText =
   const militaryText = getSec("MILITARY HISTORY");
   const preventiveText = getSec("PREVENTIVE MEDICINE", "PREVENTION");
   const updatesText = getSec("UPDATES / RECENT VISITS", "UPDATES");
-  const pmhText = getSec("PAST MEDICAL HISTORY", "PMH");
+  const pmhText = getSec(
+  "PAST MEDICAL HISTORY",
+  "PMH",
+  "KEY DIAGNOSES"
+);
   const medRecText = getSec("MED REC", "MEDICATIONS", "MEDICATION LIST");
 
   const currentMedsText = extractCurrentMedsSubsection(medRecText);
@@ -7865,16 +8125,77 @@ const resolvedImagingText =
 
   // Render non-selected problems from PMH
   const selectedNames = new Set(enabledCases.map(tc => (tc.data?.problem || tc.problem || "").toLowerCase().trim()));
-  Object.entries(problemBlocks).forEach(([key, block], idx) => {
-    const headerLower = block.rawHeader.toLowerCase().trim();
+   Object.entries(problemBlocks).forEach(([key, block], idx) => {
+    const headerLower = block.rawHeader
+      .toLowerCase()
+      .trim();
+
     let alreadyCovered = false;
-    for (const sel of selectedNames) {
-      if (headerLower.includes(sel) || sel.includes(headerLower)) { alreadyCovered = true; break; }
+
+    for (const selectedName of selectedNames) {
+      if (
+        headerLower.includes(selectedName) ||
+        selectedName.includes(headerLower)
+      ) {
+        alreadyCovered = true;
+        break;
+      }
     }
+
     if (!alreadyCovered) {
-      problemsTab += buildProblemCard({ data: { problem: block.rawHeader } }, enabledCases.length + idx, false);
+      problemsTab += buildProblemCard(
+        {
+          data: {
+            problem: block.rawHeader,
+          },
+        },
+        enabledCases.length + idx,
+        false
+      );
     }
   });
+
+  /*
+   * A collapsed or unusually formatted PMH may not split into individual
+   * problem blocks. Never silently discard it. Show the complete source
+   * section so the clinician can still review everything.
+   */
+  if (
+    pmhText &&
+    Object.keys(problemBlocks).length === 0
+  ) {
+    problemsTab += `
+      <div class="card open">
+        <div class="ch" onclick="toggleCard(this)">
+          <div class="ch-l">
+            <div class="ci other">
+              <i class="fa-solid fa-notes-medical"></i>
+            </div>
+
+            <div>
+              <div class="ct">
+                Complete Problem History
+              </div>
+
+              <div class="cs">
+                The source section could not be divided reliably into individual problem cards
+              </div>
+            </div>
+          </div>
+
+          <div class="ch-r">
+            <i class="fa-solid fa-chevron-down chev"></i>
+          </div>
+        </div>
+
+        <div class="cb">
+          <div class="cbi">
+            ${verbatim(pmhText)}
+          </div>
+        </div>
+      </div>
+    `;
+  }
 
   problemsTab += `</div>`;
 
@@ -7971,8 +8292,8 @@ if (
   resolvedImagingText !== resolvedLabsText &&
   !/no imaging/i.test(resolvedImagingText)
 ) {
-    labsTab += `<div class="card"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-x-ray"></i></div><div><div class="ct">Imaging &amp; Procedures</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${verbatim(resolvedImagingText)}</div></div></div>`;
-  }
+  labsTab += `<div class="card"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-x-ray"></i></div><div><div class="ct">Imaging &amp; Procedures</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${verbatim(resolvedImagingText)}</div></div></div>`;
+}
   labsTab += `</div>`;
 
   // ─────────────────────────────────────────────────────────────
