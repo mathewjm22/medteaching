@@ -706,30 +706,71 @@ const extractPrenoteSections = (rawText) => {
   let currentTitle = null;
   let currentBody = [];
 
+  const normalizeForCompare = (text) =>
+    String(text || "")
+      .toLowerCase()
+      .replace(/[^\w\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const bodiesAreSimilar = (a, b) => {
+    const normA = normalizeForCompare(a);
+    const normB = normalizeForCompare(b);
+
+    if (!normA || !normB) return false;
+
+    // Fast path: exact match after normalization
+    if (normA === normB) return true;
+
+    // Containment: one fully contains the other (common when a shorter
+    // duplicate paste is embedded in a longer version, or vice versa)
+    const shorter = normA.length <= normB.length ? normA : normB;
+    const longer = shorter === normA ? normB : normA;
+    if (longer.includes(shorter)) return true;
+
+    // Similarity by shared token ratio (cheap, no external library)
+    const tokensA = new Set(normA.split(" ").filter((t) => t.length > 2));
+    const tokensB = new Set(normB.split(" ").filter((t) => t.length > 2));
+    if (tokensA.size === 0 || tokensB.size === 0) return false;
+
+    const smaller = tokensA.size <= tokensB.size ? tokensA : tokensB;
+    const larger = smaller === tokensA ? tokensB : tokensA;
+    let shared = 0;
+    smaller.forEach((t) => {
+      if (larger.has(t)) shared++;
+    });
+
+    const ratio = shared / smaller.size;
+    return ratio >= 0.85;
+  };
+
   const saveCurrentSection = () => {
     if (!currentTitle) return;
 
-    const body = currentBody
-      .join("\n")
-      .trim();
-
+    const body = currentBody.join("\n").trim();
     if (!body) return;
 
     const key = normalizeSectionTitle(currentTitle);
-
     if (!key) return;
 
-    /*
-     * Preserve repeated sections rather than silently replacing an earlier
-     * DIAGNOSTICS, LABS, or other section.
-     */
+    // First-write-wins with similarity-based dedup. If the new body is a
+    // near-duplicate of what's already stored, drop it silently. This handles
+    // Part 1 / Part 2 style paste artifacts where the same section appears
+    // multiple times with minor whitespace differences.
     if (sections[key]) {
-      if (!sections[key].includes(body)) {
-        sections[key] += `\n\n${body}`;
+      if (bodiesAreSimilar(sections[key], body)) {
+        // Silently drop duplicate
+        return;
       }
-    } else {
-      sections[key] = body;
+      // Genuinely different content for the same section key — still keep
+      // first-write-wins, but log so we can investigate if this is common.
+      console.log(
+        `[extractPrenoteSections] Duplicate key "${key}" with different content — keeping first, dropping second.`
+      );
+      return;
     }
+
+    sections[key] = body;
   };
 
   for (const rawLine of text.split("\n")) {
@@ -851,39 +892,201 @@ const extractTextBetweenHeaders = (
 };
 
 // Extract only the current-medications portion of MED REC.
-const extractCurrentMedsSubsection = (medRecText) => {
-  if (!medRecText) return "";
 
-  const currentMeds = extractTextBetweenHeaders(
-    medRecText,
-    /(?:###\s*)?CURRENT\s+MEDICATIONS?(?:\s*\([^)]*\))?/i,
-    [
-      /(?:###\s*)?RECENTLY\s+DISCONTINUED/i,
-      /(?:###\s*)?(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/i,
-    ]
+const extractCurrentMedsFromFullText = (fullText) => {
+  if (!fullText) return "";
+
+  const text = String(fullText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+    .replace(/\u00a0/g, " ");
+
+  // Headers that mark the START of a current-meds block.
+  // Match as their own line (possibly with leading markdown/bullet chars).
+  const startPatterns = [
+    /^[ \t*#\-]*CURRENT\s+MEDICATIONS?(?:\s*\([^)\n]{1,60}\))?[ \t]*:?[ \t]*$/im,
+    /^[ \t*#\-]*MEDICATION\s+RECONCILIATION[ \t]*:?[ \t]*$/im,
+    /^[ \t*#\-]*MED(?:ICATION)?\s+REC(?:ONCILIATION)?[ \t]*:?[ \t]*$/im,
+    /^[ \t*#\-]*###?\s*CURRENT\s+MEDICATIONS?(?:\s*\([^)\n]{1,60}\))?[ \t]*$/im,
+  ];
+
+  // Headers that mark the END of a current-meds block (start of the next section).
+  const stopPatterns = [
+    /^[ \t*#\-]*RECENTLY\s+DISCONTINUED/im,
+    /^[ \t*#\-]*SIGNIFICANT\s+HISTORICAL/im,
+    /^[ \t*#\-]*HISTORICAL\s+MEDICATIONS?/im,
+    /^[ \t*#\-]*PAST\s+MEDICATIONS?/im,
+    /^[ \t*#\-]*MEDICATION\s+ADHERENCE/im,
+    /^[ \t*#\-]*PREVENTIVE\s+MEDICINE/im,
+    /^[ \t*#\-]*DIAGNOSTICS/im,
+    /^[ \t*#\-]*RECENT\s+LABS?/im,
+    /^[ \t*#\-]*LAB(?:ORATORY)?\s+/im,
+    /^[ \t*#\-]*IMAGING/im,
+    /^[ \t*#\-]*SOCIAL(?:\s+HISTORY)?/im,
+    /^[ \t*#\-]*FAMILY\s+HISTORY/im,
+    /^[ \t*#\-]*SURGICAL\s+HISTORY/im,
+    /^[ \t*#\-]*MILITARY\s+HISTORY/im,
+    /^[ \t*#\-]*ALLERGIES/im,
+    /^[ \t*#\-]*PREVENTIVE/im,
+    /^[ \t*#\-]*FOLLOW[- ]?UP/im,
+    /^[ \t*#\-]*ADVANCE\s+DIRECTIVES/im,
+    /^[ \t*#\-]*IMMUNIZATIONS?/im,
+    /^[ \t*#\-]*CANCER\s+SCREENING/im,
+    /^[ \t*#\-]*HEALTH\s+MAINTENANCE/im,
+    /^[ \t=_-]{8,}[ \t]*$/m,  // dashed dividers between sections
+  ];
+
+  // Find ALL start positions across all start patterns
+  const candidates = [];
+
+  for (const startRe of startPatterns) {
+    // Use a global-flagged copy so we can find every occurrence
+    const globalRe = new RegExp(startRe.source, "gim");
+    let match;
+    while ((match = globalRe.exec(text)) !== null) {
+      candidates.push({
+        headerStart: match.index,
+        headerEnd: match.index + match[0].length,
+        headerText: match[0],
+      });
+    }
+  }
+
+  if (candidates.length === 0) return "";
+
+  // For each candidate, find where its body ends (next stop pattern)
+  const bodies = candidates.map((c) => {
+    let endIndex = text.length;
+
+    for (const stopRe of stopPatterns) {
+      const globalStopRe = new RegExp(stopRe.source, "gim");
+      globalStopRe.lastIndex = c.headerEnd;
+      const stopMatch = globalStopRe.exec(text);
+      if (stopMatch && stopMatch.index < endIndex) {
+        endIndex = stopMatch.index;
+      }
+    }
+
+    const body = text
+      .slice(c.headerEnd, endIndex)
+      .replace(/^\s*[:\-–—]?\s*/, "")
+      .trim();
+
+    return {
+      header: c.headerText.trim(),
+      body,
+      length: body.length,
+    };
+  });
+
+  // Return the LONGEST body — that's the most complete med list.
+  // Filter out obviously empty ones (< 20 chars) which are likely stub sections.
+  const meaningfulBodies = bodies.filter((b) => b.length >= 20);
+  if (meaningfulBodies.length === 0) return "";
+
+  meaningfulBodies.sort((a, b) => b.length - a.length);
+  console.log(
+    `[extractCurrentMedsFromFullText] Found ${meaningfulBodies.length} candidate med section(s); picked longest (${meaningfulBodies[0].length} chars) under header "${meaningfulBodies[0].header}"`
   );
 
-  /*
-   * Some prenotes do not label their medication subsection. In that case,
-   * preserve the entire MED REC rather than returning an empty list.
-   */
-  return currentMeds || String(medRecText).trim();
+  return meaningfulBodies[0].body;
+};
+
+// Backward-compat wrapper: keep the old name/signature so existing call sites
+// don't break. If the caller happens to pass just the medRec section, we
+// still try to extract from it; but the NEW callers should pass full prenote.
+const extractCurrentMedsSubsection = (medRecOrFullText) => {
+  if (!medRecOrFullText) return "";
+  // Try the whole-text search first; falls back to the input if nothing found.
+  const fromFull = extractCurrentMedsFromFullText(medRecOrFullText);
+  if (fromFull) return fromFull;
+  return String(medRecOrFullText).trim();
 };
 
 // Extract discontinued or historical medication subsections.
-const extractMedSubsection = (
-  medRecText,
-  targetHeaderRegex,
-  stopRegexes = []
-) => {
-  if (!medRecText) return "";
 
-  return extractTextBetweenHeaders(
-    medRecText,
-    targetHeaderRegex,
-    stopRegexes
+const extractMedSectionFromFullText = (fullText, targetHeaderRegex, stopExtras = []) => {
+  if (!fullText) return "";
+
+  const text = String(fullText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+    .replace(/\u00a0/g, " ");
+
+  // Make the target pattern anchored to line start with optional markdown/bullet chars
+  const anchoredTarget = new RegExp(
+    `^[ \\t*#\\-]*${targetHeaderRegex.source}[ \\t]*:?[ \\t]*$`,
+    "gim"
   );
+
+  const stopPatterns = [
+    ...stopExtras,
+    /^[ \t*#\-]*CURRENT\s+MEDICATIONS?/im,
+    /^[ \t*#\-]*RECENTLY\s+DISCONTINUED/im,
+    /^[ \t*#\-]*SIGNIFICANT\s+HISTORICAL/im,
+    /^[ \t*#\-]*HISTORICAL\s+MEDICATIONS?/im,
+    /^[ \t*#\-]*PAST\s+MEDICATIONS?/im,
+    /^[ \t*#\-]*MEDICATION\s+ADHERENCE/im,
+    /^[ \t*#\-]*PREVENTIVE\s+MEDICINE/im,
+    /^[ \t*#\-]*DIAGNOSTICS/im,
+    /^[ \t*#\-]*RECENT\s+LABS?/im,
+    /^[ \t*#\-]*SOCIAL(?:\s+HISTORY)?/im,
+    /^[ \t*#\-]*FAMILY\s+HISTORY/im,
+    /^[ \t*#\-]*SURGICAL\s+HISTORY/im,
+    /^[ \t*#\-]*MILITARY\s+HISTORY/im,
+    /^[ \t*#\-]*ALLERGIES/im,
+    /^[ \t=_-]{8,}[ \t]*$/m,
+  ];
+
+  const candidates = [];
+  let match;
+  while ((match = anchoredTarget.exec(text)) !== null) {
+    // Filter out matches that would be "self-stops" — skip if the target
+    // pattern also matches one of the stop patterns
+    candidates.push({
+      headerStart: match.index,
+      headerEnd: match.index + match[0].length,
+    });
+  }
+
+  if (candidates.length === 0) return "";
+
+  const bodies = candidates.map((c) => {
+    let endIndex = text.length;
+    for (const stopRe of stopPatterns) {
+      // Skip stop patterns that overlap with our target (would self-stop)
+      if (stopRe.source === anchoredTarget.source.slice(anchoredTarget.source.indexOf(targetHeaderRegex.source))) continue;
+
+      const globalStopRe = new RegExp(stopRe.source, "gim");
+      globalStopRe.lastIndex = c.headerEnd;
+      const stopMatch = globalStopRe.exec(text);
+      if (stopMatch && stopMatch.index < endIndex) {
+        endIndex = stopMatch.index;
+      }
+    }
+
+    const body = text
+      .slice(c.headerEnd, endIndex)
+      .replace(/^\s*[:\-–—]?\s*/, "")
+      .trim();
+
+    return { body, length: body.length };
+  });
+
+  const meaningful = bodies.filter((b) => b.length >= 15);
+  if (meaningful.length === 0) return "";
+
+  meaningful.sort((a, b) => b.length - a.length);
+  return meaningful[0].body;
 };
+
+// Backward-compat wrapper matching the old signature. Old callers passed
+// medRecText; we now search the full prenote when possible.
+const extractMedSubsection = (medRecOrFullText, targetHeaderRegex, stopRegexes = []) => {
+  if (!medRecOrFullText) return "";
+  return extractMedSectionFromFullText(medRecOrFullText, targetHeaderRegex, stopRegexes);
+};
+
 
 // Parse per-problem details out of the PAST MEDICAL HISTORY prenote section.
 // Each problem in a VA-style prenote is a block starting with a diagnosis
@@ -2067,6 +2270,7 @@ For each problem, generate ONE focused query prioritizing recent guidelines, lan
     }
   };
   // ===== Analyze note with AI =====
+
 const analyzeNote = async () => {
     if (!clinicalNote.trim()) return;
     if (aiStatus.analyzing || aiStatus.generating) return;
@@ -2085,20 +2289,66 @@ const analyzeNote = async () => {
 
       const isPreVisit = sessionMode === "pre";
 
-      // Base intro — same for both modes
+      // ─── PRE-VISIT: deterministic problem extraction FIRST ─────────────
+      // For pre-visit prenotes, we extract problem names deterministically from
+      // the PMH section. The AI never gets to invent problems — it only enriches
+      // the problems the parser found. This prevents fragments like "scheduling
+      // effort and discontinued 10/2025" from being misidentified as problems.
+      let deterministicPrenote = null;
+      let deterministicProblemNames = [];
+      if (isPreVisit) {
+        deterministicPrenote = parsePrenote(clinicalNote);
+        deterministicProblemNames = (deterministicPrenote.pmhProblems || [])
+          .map((p) => p.rawHeader || p.name)
+          .filter(Boolean);
+        console.log(
+          `[analyzeNote] Deterministic PMH extraction found ${deterministicProblemNames.length} problems:`,
+          deterministicProblemNames
+        );
+      }
+
       const modeIntro = isPreVisit
         ? `You are a medical education assistant analyzing a PRENOTE (chart summary) for an UPCOMING patient visit. The medical student will see this patient soon and needs prep. Your extraction should support ANTICIPATORY teaching — what to think about going in, what to ask about, what to look for, what problems are prep-worthy.`
         : `You are a medical education assistant analyzing a clinical note from a COMPLETED patient encounter for retrospective teaching. Extract what actually happened so the student can learn from what was observed.`;
+
+      // ─── CRITICAL: pre-visit problem-list constraint ───────────────────
+      // Give the AI the EXACT problem names from the deterministic parser and
+      // tell it in strong terms that it must not add, remove, or rename any.
+      const problemListConstraint = isPreVisit && deterministicProblemNames.length > 0
+        ? `
+
+═══════════════════════════════════════════════════════════════
+CRITICAL: PROBLEM LIST IS FIXED
+═══════════════════════════════════════════════════════════════
+
+The patient's active problem list has already been extracted deterministically from the PAST MEDICAL HISTORY section of the prenote. Your activeProblems array MUST contain EXACTLY these problems, in this exact order, with these exact names:
+
+${deterministicProblemNames.map((n, i) => `  ${i + 1}. ${n}`).join("\n")}
+
+You MUST:
+- Include every one of these problems in your activeProblems array (no omissions).
+- Use the exact "problem" name shown above verbatim (no rewording, no shortening, no adding qualifiers).
+- Include exactly ${deterministicProblemNames.length} entries — no more, no fewer.
+
+You MUST NOT:
+- Add any problem not on the list above (even if you think the chart mentions it).
+- Extract fragments from Consult:, Status notes:, Imaging:, or other sub-fields within a problem block as separate problems.
+- Rename any problem (e.g., don't shorten "Posttraumatic stress disorder (Active/Changing)" to "PTSD").
+- Skip problems that seem redundant or minor.
+
+Your job for each problem is ONLY to enrich it with: category, status, shortSubtitle, icdContext, scPercent, teachingValue, keyIssue. Do NOT alter the "problem" field.
+═══════════════════════════════════════════════════════════════
+`
+        : "";
 
       const modeGuidance = isPreVisit
         ? `PRE-VISIT NOTE GUIDANCE:
 - The prenote likely contains: PMH with a list of active problems, medications, recent labs, preventive care due, family/social history, and possibly notes from prior visits.
 - There will NOT be patient quotes from THIS visit (the visit hasn't happened yet) — leave patientQuotes empty.
-- labTrends should reflect chronic disease monitoring patterns visible in the chart (e.g., "TSH trending 15 → 5.78 → 2.74 over 2 years, now normalized after dose adjustment"), NOT visit-specific findings.
-- activeProblems should extract EVERY chronic condition worth reviewing before the visit, not just the ones addressed at a hypothetical last visit.
-- teachingValue should focus on what makes THIS problem teachable BEFORE seeing the patient (e.g., "student can practice medication reconciliation reasoning" or "chance to teach the workup for undifferentiated fatigue").
-- keyIssue should be the anticipated clinical dilemma for the upcoming visit (e.g., "TSH normalized but on a lower dose than started — is this stable or drifting?").
-- redFlags should be things to ACTIVELY SCREEN FOR in the upcoming encounter (e.g., "post-stroke: screen for recurrent neuro symptoms, medication non-adherence"), not concerning features already observed.
+- labTrends should reflect chronic disease monitoring patterns visible in the chart, NOT visit-specific findings.
+- teachingValue should focus on what makes THIS problem teachable BEFORE seeing the patient.
+- keyIssue should be the anticipated clinical dilemma for the upcoming visit.
+- redFlags should be things to ACTIVELY SCREEN FOR in the upcoming encounter, not concerning features already observed.
 - suggestedFocus should reflect what SKILLS the student can practice in this specific upcoming encounter given the chart context.`
         : `POST-VISIT NOTE GUIDANCE:
 - The note may have structured sections (Assessment, Plan, PMH, Meds, Labs, etc.), multiple active problems, direct patient/caregiver quotes, and trended lab/vital data. Extract all of this.
@@ -2114,44 +2364,44 @@ CU DEFINITION OF PATIENT COMPLEXITY (for calibrating your teaching):
 - Common presentation = single or a few uncomplicated concerns, routine problem, minimal intervention/orders/follow-up needed, or follow-up care of a stable chronic condition.
 - Complex presentation = multiple problems that may interact and require extensive clinical decision-making, extensive test/referral/medication ordering, undifferentiated patient with unclear diagnosis, atypical presentation of a common diagnosis, patient needing urgent/emergent care, or decision-making heavily influenced by a complex social situation.
 
-This patient is: ${session.complexity === "complex" ? "COMPLEX" : "COMMON"} per the attending's judgment. ${session.complexity === "complex" ? "Complexity means the student is not yet expected to manage this level independently — care of complex patients is an Alpine/Summit (M3/M4) expectation, not an LIC-year expectation. Your teaching should reflect that. Focus on helping the student recognize the features that MAKE this complex, and on the specific reasoning threads a preceptor uses to navigate the complexity. Do not expect Sub-I-level ownership of the plan." : "Common means the student SHOULD be building toward independent care of this type of presentation. Your teaching should reinforce the pattern recognition, workup, and management approach for this presentation type — this is the bread and butter they need to own by end of the LIC year."}
-
+This patient is: ${session.complexity === "complex" ? "COMPLEX" : "COMMON"} per the attending's judgment.
+${problemListConstraint}
 ${modeGuidance}
 
 Available focus areas: history, physicalExam, differential, workup, management, patientContext, ebm, communication
 
-CRITICAL: The "suggestedFocus" field is REQUIRED and must contain 3-5 area keys from that list. This drives which teaching topics get emphasized. Never omit it, never return it empty.
+CRITICAL: The "suggestedFocus" field is REQUIRED and must contain 3-5 area keys from that list.
 
 Return ONLY valid JSON (no markdown fences):
 {
   "chiefConcern": "${isPreVisit ? 'anticipated reason for the upcoming visit if stated in prenote, else the primary chronic issue driving the visit' : 'brief chief concern or reason for visit'}",
-"workingDiagnosis": "${isPreVisit ? `primary problem the visit will center on, or the most teachable chronic condition, or "annual follow-up of multiple stable conditions" if truly multi-focal` : `primary/most teachable diagnosis, or "multiple active problems" if truly multi-focal`}",
-  "oneLiner": "2-3 sentence admission-style one-liner. Anchor patient demographics, key active problems, current situation, medication status, and the 'why now' framing. Written in a fluent clinical voice — the way a resident would present the patient on rounds. Example: '38 y/o former Navy SEAL, 90% SC, with PTSD in remission after completing CBT-based psychotherapy, now re-engaging for court-ordered eval related to legal charges. On no systemic medications. Active issues include palmar-plantar keratolysis, chronic back/shoulder pain managed non-pharmacologically, IBS-D, and GERD.'",
+  "workingDiagnosis": "${isPreVisit ? `primary problem the visit will center on, or the most teachable chronic condition` : `primary/most teachable diagnosis`}",
+  "oneLiner": "2-3 sentence admission-style one-liner. Anchor patient demographics, key active problems, current situation, medication status, and the 'why now' framing.",
   "patientDescriptor": "brief age+sex string like '38 y/o M' or '57 y/o F veteran' — used in the header next to name",
   "patientBadges": [
-    {"text": "e.g. 'Navy SEAL (ret 2008)' or 'Type 1 Diabetic since age 12' — noteworthy identity/status facts a resident would mention in one-liner", "type": "info|warning|alert"}
+    {"text": "e.g. 'Navy SEAL (ret 2008)' — noteworthy identity/status facts", "type": "info|warning|alert"}
   ],
   "scPercentages": [
     {"condition": "PTSD", "percent": 70}
   ],
   "activeProblems": [
     {
-      "problem": "problem name",
+      "problem": "${isPreVisit ? 'EXACT problem name from the list above — do not modify' : 'problem name'}",
       "icdContext": "ICD code if in note",
-      "category": "REQUIRED — one of: mental, skin, gi, pain, ent, neuro, social, lab, cardiac, pulm, endocrine, renal, other. Used to pick an icon in the rendered document.",
-      "status": "REQUIRED — one of: active, stable, remission, resolved, registry, controlled. Reflects current clinical state per the chart.",
+      "category": "REQUIRED — one of: mental, skin, gi, pain, ent, neuro, social, lab, cardiac, pulm, endocrine, renal, other",
+      "status": "REQUIRED — one of: active, stable, remission, resolved, registry, controlled",
       "scPercent": null,
-      "shortSubtitle": "one-line summary shown under the problem title — include ICD if known, and 1-3 word context. Example: 'F43.10 — Combat-index trauma, Navy SEAL deployments' or 'K58.0 — Alternating diarrhea/constipation'",
+      "shortSubtitle": "one-line summary shown under the problem title",
       "teachingValue": "${isPreVisit ? 'why this problem is worth prepping the student on BEFORE the visit' : 'brief note on why teachable'}",
       "keyIssue": "${isPreVisit ? 'the anticipated clinical dilemma for the upcoming visit' : 'the core clinical question or dilemma'}"
     }
   ],
   "otherDiagnoses": ["list of other active problems as strings"],
   "keyTopics": ["specific clinical topics worth teaching - be specific"],
-  "suggestedFocus": ["REQUIRED — return exactly 3-5 focus area keys from this list: history, physicalExam, differential, workup, management, patientContext, ebm, communication. Never return empty. Pick the areas most relevant to THIS specific patient and encounter — do not just default to the same set every time."],
+  "suggestedFocus": ["REQUIRED — return exactly 3-5 focus area keys"],
   "reasoning": "2-3 sentence explanation",
   "complexity": "common" or "complex",
-"redFlags": ["${isPreVisit ? `things to actively screen for during the upcoming visit` : `concerning features, can't-miss diagnoses, iatrogenic risks`}"],
+  "redFlags": ["${isPreVisit ? `things to actively screen for during the upcoming visit` : `concerning features observed in this encounter`}"],
   "perProblemRedFlags": {
     "exact problem name matching one in activeProblems": ["specific red flag or don't-miss item for THIS problem"]
   },
@@ -2159,177 +2409,148 @@ Return ONLY valid JSON (no markdown fences):
   "labTrends": [
     {"parameter": "lab name", "trend": "${isPreVisit ? 'longitudinal chronic-disease monitoring pattern visible in chart' : 'brief description'}", "teachingPoint": "what this teaches"}
   ],
-  "labTrendsSummary": "one-paragraph AI summary of key lab trends across the chart — used as a 'Lab Trends' quick-reference box. Example: 'A1c 4.9→5.1% (normal). eGFR >90→79→83 (mildly low, likely muscle-based). LFTs normalized 07/2026 after stopping energy drinks. LDL 99→82→99 (borderline). TSH 1.02 (normal).'",
-  "diagnosticsSummary": "one-paragraph AI summary of imaging, endoscopy, and other diagnostic procedures visible in the chart — used as a 'Diagnostics' quick-reference box. Example: 'Endoscopy 09/2021: Colonoscopy normal mucosa, biopsies for colitis (pathology not in record). EGD non-severe reflux esophagitis. ENT 01/2026: minor salivary gland cyst, benign. Stool studies 2021: all negative. Imaging: none documented.'",
+  "labTrendsSummary": "one-paragraph AI summary of key lab trends across the chart",
+  "diagnosticsSummary": "one-paragraph AI summary of imaging, endoscopy, and other diagnostic procedures visible in the chart",
   "visitPlan": [
-    "checklist items for today's visit — 10-15 items, ordered from most to least urgent. Cover: vitals recheck if abnormal, mandatory screens (C-SSRS, PHQ-2 if MH history), overdue preventive care, per-problem symptom check-ins, physical exam foci, follow-up authorizations expiring, documentation reminders (e.g., 'document objectively — legal case active')"
+    "checklist items for today's visit — 10-15 items"
   ]
-}
-
-═══════════════════════════════════════════════════════════════
-FINAL REMINDER — READ BEFORE GENERATING JSON
-═══════════════════════════════════════════════════════════════
-
-Your JSON response MUST include ALL of the following top-level fields — do not omit any. Missing fields will break the downstream document rendering. Double-check your response before finalizing:
-
-REQUIRED TOP-LEVEL FIELDS:
-✓ chiefConcern (string)
-✓ workingDiagnosis (string)
-✓ oneLiner (2-3 sentence admission-style string — REQUIRED, not optional)
-✓ patientDescriptor (short age+sex string like "38 y/o M" — REQUIRED)
-✓ patientBadges (array of {text, type} objects — REQUIRED; may be empty [] for patients with no notable identity/status facts, but the KEY must be present)
-✓ scPercentages (array of {condition, percent} objects — REQUIRED; empty [] if patient is not a veteran or no SC data available, but the KEY must be present)
-✓ activeProblems (array — EACH problem object MUST include: problem, category, status, shortSubtitle in addition to the older fields)
-✓ otherDiagnoses (array of strings)
-✓ keyTopics (array)
-✓ suggestedFocus (array of 3-5 focus keys — REQUIRED, never empty)
-✓ reasoning (string)
-✓ complexity ("common" or "complex")
-✓ redFlags (array)
-✓ perProblemRedFlags (object keyed by problem name — REQUIRED; empty {} if none, but KEY must be present)
-✓ patientQuotes (array — may be empty for pre-visit)
-✓ labTrends (array of objects)
-✓ labTrendsSummary (one-paragraph string — REQUIRED)
-✓ diagnosticsSummary (one-paragraph string — REQUIRED)
-✓ visitPlan (array of 10-15 checklist strings — REQUIRED)
-
-FOR EACH activeProblems ENTRY, REQUIRED per-problem fields:
-✓ problem (string)
-✓ category (REQUIRED — one of: mental, skin, gi, pain, ent, neuro, social, lab, cardiac, pulm, endocrine, renal, other)
-✓ status (REQUIRED — one of: active, stable, remission, resolved, registry, controlled)
-✓ shortSubtitle (REQUIRED — ICD code + brief context, ≤80 chars)
-✓ scPercent (integer or null)
-✓ teachingValue, keyIssue, icdContext (as before)
-
-If any of these fields are absent from your JSON, the response is invalid. Do a final check before returning.`;
-
-            const deterministicPrenote = isPreVisit
-        ? parsePrenote(clinicalNote)
-        : null;
+}`;
 
       const extractedForAnalysis = isPreVisit
         ? deterministicPrenote.aiInput
         : extractEssentialNote(clinicalNote);
 
       console.log(
-        `[analyzeNote] ${
-          isPreVisit
-            ? "Prenote"
-            : "Note"
-        }: ${clinicalNote.length} chars -> ${
-          extractedForAnalysis.length
-        } chars`
+        `[analyzeNote] ${isPreVisit ? "Prenote" : "Note"}: ${clinicalNote.length} chars -> ${extractedForAnalysis.length} chars`
       );
 
-      const user = `${
-        isPreVisit
-          ? "Prenote / chart summary"
-          : "Clinical note"
-      } (de-identified):
+      const user = `${isPreVisit ? "Prenote / chart summary" : "Clinical note"} (de-identified):
 
 ${extractedForAnalysis}
 
 Student is in month ${phase.monthsIn} of LIC (${phase.name} phase).
 Focus on: ${phase.focus}`;
 
-      // Increased from 4000 to accommodate the expanded output schema
-      // (oneLiner, patientBadges, scPercentages, per-problem category/status,
-      // labTrendsSummary, diagnosticsSummary, visitPlan, perProblemRedFlags).
-      const response = await callAi(
-        sys,
-        user,
-        8000
-      );
-
+      const response = await callAi(sys, user, 8000);
       const parsed = extractJson(response);
 
-      const mergedActiveProblems = isPreVisit
-        ? mergePrenoteProblemsForUi(
-            deterministicPrenote.pmhProblems,
-            parsed.activeProblems
-          )
-        : Array.isArray(parsed.activeProblems)
+      // ─── POST-PROCESS: enforce the deterministic problem list ──────────
+      // Even with strong prompt instructions, defense-in-depth: filter the AI's
+      // activeProblems to ONLY those whose name matches a deterministic problem.
+      // Backfill any missing ones from the deterministic list with minimal enrichment.
+      let mergedActiveProblems;
+      if (isPreVisit && deterministicProblemNames.length > 0) {
+        // Normalize a name for comparison
+        const normalize = (s) =>
+          String(s || "")
+            .toLowerCase()
+            .replace(/\s+/g, " ")
+            .trim();
+
+        // Map from normalized deterministic name -> deterministic problem object
+        const detByNorm = new Map();
+        (deterministicPrenote.pmhProblems || []).forEach((p) => {
+          const key = normalize(p.rawHeader || p.name);
+          if (key) detByNorm.set(key, p);
+        });
+
+        // Build the merged list in deterministic order
+        const aiProblems = Array.isArray(parsed.activeProblems) ? parsed.activeProblems : [];
+        const aiByNorm = new Map();
+        aiProblems.forEach((ap) => {
+          const key = normalize(ap.problem);
+          if (key) aiByNorm.set(key, ap);
+        });
+
+        mergedActiveProblems = deterministicProblemNames.map((detName) => {
+          const detNorm = normalize(detName);
+          const detProblem = detByNorm.get(detNorm);
+          // Try exact match, then fuzzy contains
+          let aiMatch = aiByNorm.get(detNorm);
+          if (!aiMatch) {
+            for (const [aiNorm, ap] of aiByNorm.entries()) {
+              if (aiNorm.includes(detNorm) || detNorm.includes(aiNorm)) {
+                aiMatch = ap;
+                break;
+              }
+            }
+          }
+
+          return {
+            problem: detName, // ALWAYS use the deterministic name verbatim
+            icdContext: aiMatch?.icdContext || detProblem?.code || "",
+            category: aiMatch?.category || "other",
+            status: aiMatch?.status || normalizePrenoteProblemStatus(detProblem?.status),
+            scPercent: aiMatch?.scPercent ?? null,
+            shortSubtitle:
+              aiMatch?.shortSubtitle ||
+              detProblem?.code ||
+              detProblem?.status ||
+              "From prenote PMH",
+            teachingValue: aiMatch?.teachingValue || "",
+            keyIssue: aiMatch?.keyIssue || "",
+            source: aiMatch ? "prenote+ai" : "prenote",
+          };
+        });
+
+        // Log any AI-invented problems that we dropped
+        const droppedAi = aiProblems.filter((ap) => {
+          const apNorm = normalize(ap.problem);
+          if (!apNorm) return false;
+          if (detByNorm.has(apNorm)) return false;
+          for (const detNorm of detByNorm.keys()) {
+            if (apNorm.includes(detNorm) || detNorm.includes(apNorm)) return false;
+          }
+          return true;
+        });
+        if (droppedAi.length > 0) {
+          console.warn(
+            `[analyzeNote] Dropped ${droppedAi.length} AI-invented problem(s) not in deterministic PMH list:`,
+            droppedAi.map((p) => p.problem)
+          );
+        }
+      } else {
+        // Post-visit or no deterministic problems: use AI extraction as-is
+        mergedActiveProblems = Array.isArray(parsed.activeProblems)
           ? parsed.activeProblems
           : [];
+      }
 
       const analysisForState = {
         ...parsed,
-        activeProblems:
-          mergedActiveProblems,
+        activeProblems: mergedActiveProblems,
       };
 
       setNoteAnalysis(analysisForState);
 
-      // Always auto-fill chief concern and working dx from AI analysis
-      if (parsed.chiefConcern) {
-        setChiefConcern(parsed.chiefConcern);
-      }
-
-      if (parsed.workingDiagnosis) {
-        setWorkingDx(
-          parsed.workingDiagnosis
-        );
-      }
-
+      if (parsed.chiefConcern) setChiefConcern(parsed.chiefConcern);
+      if (parsed.workingDiagnosis) setWorkingDx(parsed.workingDiagnosis);
       if (parsed.complexity) {
-        setSession((previous) => ({
-          ...previous,
-          complexity:
-            parsed.complexity,
-        }));
+        setSession((previous) => ({ ...previous, complexity: parsed.complexity }));
+      }
+      if (parsed.keyTopics) setExtractedTopics(parsed.keyTopics);
+
+      if (mergedActiveProblems.length > 0) {
+        setActiveProblems(mergedActiveProblems);
+        setSelectedProblems(mergedActiveProblems.slice(0, 2).map((p) => p.problem));
       }
 
-      if (parsed.keyTopics) {
-        setExtractedTopics(
-          parsed.keyTopics
-        );
-      }
+      if (parsed.patientQuotes) setPatientQuotes(parsed.patientQuotes);
+      if (parsed.labTrends) setLabTrends(parsed.labTrends);
 
-      if (
-        mergedActiveProblems.length > 0
-      ) {
-        setActiveProblems(
-          mergedActiveProblems
-        );
-
-        setSelectedProblems(
-          mergedActiveProblems
-            .slice(0, 2)
-            .map(
-              (problem) =>
-                problem.problem
-            )
-        );
+      let focusToApply = parsed.suggestedFocus;
+      if (!Array.isArray(focusToApply) || focusToApply.length === 0) {
+        console.warn("[analyzeNote] AI did not return suggestedFocus; applying phase-appropriate default");
+        if (phase.monthsIn <= 4) focusToApply = ["history", "differential", "communication"];
+        else if (phase.monthsIn <= 8) focusToApply = ["history", "differential", "workup", "management"];
+        else focusToApply = ["differential", "workup", "management", "ebm"];
       }
+      setAiSuggestedFocus(focusToApply);
+      const newFocus = { ...focusAreas };
+      Object.keys(newFocus).forEach((k) => { newFocus[k] = false; });
+      focusToApply.forEach((k) => { if (k in newFocus) newFocus[k] = true; });
+      setFocusAreas(newFocus);
 
-      if (parsed.patientQuotes) {
-        setPatientQuotes(
-          parsed.patientQuotes
-        );
-      }
-
-      if (parsed.labTrends) {
-        setLabTrends(
-          parsed.labTrends
-        );
-      }
-      // Auto-select focus areas from AI suggestion. If the AI dropped the field or
-// returned an empty list, fall back to a phase-appropriate default so the
-// student always has something pre-selected on Step 3.
-let focusToApply = parsed.suggestedFocus;
-if (!Array.isArray(focusToApply) || focusToApply.length === 0) {
-  console.warn("[analyzeNote] AI did not return suggestedFocus; applying phase-appropriate default");
-  // Phase-appropriate defaults: foundational students get history+differential,
-  // mid-year get differential+workup+management, end-of-year get the full clinical set.
-  if (phase.monthsIn <= 4) focusToApply = ["history", "differential", "communication"];
-  else if (phase.monthsIn <= 8) focusToApply = ["history", "differential", "workup", "management"];
-  else focusToApply = ["differential", "workup", "management", "ebm"];
-}
-setAiSuggestedFocus(focusToApply);
-const newFocus = { ...focusAreas };
-Object.keys(newFocus).forEach(k => { newFocus[k] = false; });
-focusToApply.forEach(k => { if (k in newFocus) newFocus[k] = true; });
-setFocusAreas(newFocus);
       setAiStatus({ analyzing: false, generating: false, error: null, progress: null });
     } catch (e) {
       setAiStatus({ analyzing: false, generating: false, error: e.message, progress: null });
@@ -4298,10 +4519,14 @@ Formatting rules:
           const parsedPrenote =
             parsePrenote(clinicalNote);
 
-          const medRec =
-            parsedPrenote.sections.medRec;
-          if (medRec) {
-            const currentMedSection = extractCurrentMedsSubsection(medRec);
+          const medRec = parsedPrenote.sections.medRec;
+          // Prefer the FULL prenote for med extraction; falls back to the
+          // parsed MED REC section if the full-text search finds nothing.
+          const currentMedSection =
+            extractCurrentMedsFromFullText(clinicalNote) ||
+            (medRec ? extractCurrentMedsSubsection(medRec) : "");
+
+          if (currentMedSection) {
             const medNames = parseMedNames(currentMedSection);
             if (medNames.length > 0) {
               setAiStatus(prev => ({ ...prev, progress: `Getting descriptions for ${medNames.length} medications` }));
@@ -8119,22 +8344,25 @@ const buildInRoomHtml = (doc, session) => {
     prenoteSections.medRec ||
     "";
 
+  const fullPrenoteText = doc.rawPrenote || doc.clinicalNote || "";
+
   const currentMedsText =
-    extractCurrentMedsSubsection(
-      medRecText
-    );
+    extractCurrentMedsFromFullText(fullPrenoteText) ||
+    extractCurrentMedsSubsection(medRecText);
 
   const discontinuedMedsText =
+    extractMedSectionFromFullText(fullPrenoteText, /RECENTLY\s+DISCONTINUED/) ||
     extractMedSubsection(
       medRecText,
       /RECENTLY\s+DISCONTINUED/,
-      [
-        /SIGNIFICANT\s+HISTORICAL/,
-        /HISTORICAL\s+MEDICATIONS?/,
-      ]
+      [/SIGNIFICANT\s+HISTORICAL/, /HISTORICAL\s+MEDICATIONS?/]
     );
 
   const historicalMedsText =
+    extractMedSectionFromFullText(
+      fullPrenoteText,
+      /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/
+    ) ||
     extractMedSubsection(
       medRecText,
       /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/,
