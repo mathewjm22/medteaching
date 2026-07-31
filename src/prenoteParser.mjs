@@ -680,13 +680,34 @@ function parseLabelValue(line) {
   };
 }
 
+// Real PMH problem headers in the prenote follow the exact form:
+//   DiagnosisName (Status)
+// where Status is one of the recognized status values (Active/Changing,
+// Stable/Chronic, Resolved, etc.). We enforce this strictly to prevent
+// fragments from bullet content, WHAT TO KNOW summaries, or wrapped
+// continuation lines from being misidentified as problems.
+const PMH_PROBLEM_HEADER_RE = new RegExp(
+  `^([A-Z][^()\\n]{2,120})\\s*\\((` +
+    STATUS_VALUES
+      .map((s) => s.replace(/[/]/g, "\\/"))
+      .join("|") +
+    `)\\)\\s*$`,
+  "i",
+);
+
 function isPmhProblemHeader(lines, index) {
   const value = String(lines[index] ?? "").trim();
-  if (!value || isBulletLine(value) || isLikelyTableLine(value)) return false;
+  if (!value) return false;
+  if (isBulletLine(value) || isLikelyTableLine(value)) return false;
   if (dividerKind(value) || MARKDOWN_HEADING_RE.test(value)) return false;
   if (canonicalSectionKey(value)) return false;
   if (isPmhFieldLine(value)) return false;
 
+  // Must match the strict "DiagnosisName (Status)" pattern.
+  if (!PMH_PROBLEM_HEADER_RE.test(value)) return false;
+
+  // Must be followed within a few lines by a bullet or a PMH field line
+  // (its detail block), otherwise it's just a mention, not a section header.
   const next = nextNonBlankIndex(lines, index + 1, 5);
   if (next < 0) return false;
 
