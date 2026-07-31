@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { FileText, Printer, Copy, Check, Plus, X, BookOpen, Target, Stethoscope, Brain, ClipboardList, Users, TrendingUp, Save, Trash2, Sparkles, ChevronDown, ChevronRight, Calendar, User, AlertCircle, Zap, Loader2, Wand2 } from "lucide-react";
+import { parsePrenote } from "./prenoteParser.mjs";
 
 // ===== Hardcoded config =====
 const WORKER_URL = "https://medteachingtool.sweet-dream-0ed6.workers.dev/";
