@@ -445,80 +445,121 @@ const stripTreatmentVerb = (str) => {
 const extractPrenoteSections = (rawText) => {
   if (!rawText || typeof rawText !== "string") return {};
 
-  // Prenotes use MULTIPLE divider styles — hyphens (----) AND equals signs (====).
-  // We must handle both. We also need to be tolerant of prenotes that use
-  // equals-sign dividers for major "parts" and hyphens for subsections.
-  // Split on either divider style (20+ of either char, possibly with whitespace).
-  const dividerPattern = /\s*[-=]{20,}\s*/g;
+  const text = rawText
+    .replace(/\r\n?/g, "\n")
+    .replace(/\u00a0/g, " ");
 
-  // Split the entire text on divider runs. Between each pair of dividers
-  // we alternately have TITLE and BODY (title first when the prenote starts
-  // with a divider, but in practice we don't assume — we look for what looks
-  // like a title after each divider).
-  const parts = rawText.split(dividerPattern).map(p => p.trim()).filter(p => p);
-
-  // Now walk the parts array in pairs (title, body). A "title" is a short
-  // line (<80 chars) with mostly uppercase letters — that's the sentinel for
-  // a section header.
+  const lines = text.split("\n");
   const sections = {};
-  const isTitleLike = (s) => {
-    if (!s || s.length > 100) return false;
-    // Take only the FIRST line for title detection — some parts have a title
-    // on line 1 followed by body content on subsequent lines
-    const firstLine = s.split(/[\n\r]/)[0].trim();
-    if (!firstLine || firstLine.length > 100) return false;
-    // Count uppercase letters vs. lowercase — titles are mostly uppercase
-    const upper = (firstLine.match(/[A-Z]/g) || []).length;
-    const lower = (firstLine.match(/[a-z]/g) || []).length;
-    if (upper < 3) return false;
-    // If mostly uppercase (and title is short), it's likely a title
-    return upper > lower * 0.7 && firstLine.length < 100;
+
+  // Supports:
+  // ------------------------------------------------
+  // ================================================
+  // ────────────────────────────────────────────────
+  // Other common Unicode horizontal rules.
+  const isDivider = (line) =>
+    /^\s*(?:[-=_]{10,}|[─━═—–]{10,})\s*$/.test(line);
+
+  const isSectionHeading = (line) => {
+    const value = String(line || "").trim();
+
+    if (!value || value.length > 120) return false;
+    if (isDivider(value)) return false;
+
+    // Markdown headings used inside some generated prenotes are content,
+    // not top-level tabs.
+    if (/^#{1,6}\s+/.test(value)) return false;
+
+    const letters = value.match(/[A-Za-z]/g) || [];
+    const uppercaseLetters = value.match(/[A-Z]/g) || [];
+
+    if (letters.length < 3) return false;
+
+    // Top-level prenote headings are generally uppercase.
+    return uppercaseLetters.length / letters.length >= 0.8;
   };
 
-  // Extract just the title portion (first line) from a title-like part
-  const extractTitle = (s) => s.split(/[\n\r]/)[0].trim();
+  const saveSection = (title, bodyLines) => {
+    if (!title) return;
 
-  // Extract the body portion (everything after the first line) if the title
-  // and body are combined in one part
-  const extractBodyAfterTitle = (s) => {
-    const lines = s.split(/[\n\r]/);
-    if (lines.length <= 1) return null;
-    return lines.slice(1).join("\n").trim();
-  };
+    const body = bodyLines.join("\n").trim();
+    if (!body) return;
 
-  for (let i = 0; i < parts.length; i++) {
-    const currentPart = parts[i];
-    if (!isTitleLike(currentPart)) continue;
+    const key = normalizeSectionTitle(title);
+    if (!key) return;
 
-    const title = extractTitle(currentPart);
-
-    // Body strategy: if the title-like part contains body content after the
-    // first line, use that. Otherwise, look for the next non-title part.
-    let body = extractBodyAfterTitle(currentPart);
-
-    if (!body || body.length < 20) {
-      // Look ahead for a body part
-      for (let j = i + 1; j < parts.length; j++) {
-        if (isTitleLike(parts[j])) break;
-        body = parts[j];
-        i = j; // consume this body
-        break;
+    // Some prenotes repeat a section. Preserve all meaningful content rather
+    // than silently discarding one copy.
+    if (sections[key]) {
+      if (!sections[key].includes(body)) {
+        sections[key] = `${sections[key]}\n\n${body}`;
       }
+    } else {
+      sections[key] = body;
+    }
+  };
+
+  let currentTitle = null;
+  let currentBody = [];
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index];
+
+    if (!isDivider(line)) {
+      if (currentTitle) currentBody.push(line);
+      continue;
     }
 
-    if (!body) continue;
+    // Find the first nonempty line after this divider.
+    let headingIndex = index + 1;
 
-    const normalizedTitle = normalizeSectionTitle(title);
-    if (!normalizedTitle) continue;
+    while (
+      headingIndex < lines.length &&
+      (!lines[headingIndex].trim() || isDivider(lines[headingIndex]))
+    ) {
+      headingIndex++;
+    }
 
-    // Keep the longer version if a section repeats (e.g., PART 1 and PART 2
-    // might both have a WHAT_TO_KNOW section)
-    if (!sections[normalizedTitle] || body.length > sections[normalizedTitle].length) {
-      sections[normalizedTitle] = body;
+    if (
+      headingIndex >= lines.length ||
+      !isSectionHeading(lines[headingIndex])
+    ) {
+      if (currentTitle) currentBody.push(line);
+      continue;
+    }
+
+    saveSection(currentTitle, currentBody);
+
+    currentTitle = lines[headingIndex].trim();
+    currentBody = [];
+
+    index = headingIndex;
+
+    // Skip the closing divider below the heading, when present.
+    let nextIndex = index + 1;
+
+    while (
+      nextIndex < lines.length &&
+      !lines[nextIndex].trim()
+    ) {
+      nextIndex++;
+    }
+
+    if (
+      nextIndex < lines.length &&
+      isDivider(lines[nextIndex])
+    ) {
+      index = nextIndex;
     }
   }
 
-  console.log("[extractPrenoteSections] parts count:", parts.length, "sections found:", Object.keys(sections));
+  saveSection(currentTitle, currentBody);
+
+  console.log(
+    "[extractPrenoteSections] sections found:",
+    Object.keys(sections)
+  );
+
   return sections;
 };
 
@@ -603,14 +644,26 @@ const parseProblemBlocks = (pmhText) => {
   // typically Capitalized, may contain parens with ICD or status, and is
   // NOT indented and NOT bulleted.
   const isProblemHeader = (line) => {
-    const t = line.trim();
-    if (!t || t.length > 120) return false;
-    if (/^[\*\-•●○▪▫►◆·]/.test(t)) return false;      // starts with bullet
-    if (/^[A-Z][A-Z0-9 /&\-,()]+$/.test(t)) return false; // ALL CAPS section header
-    if (/^(current|past|lab|recent|imaging|complications|care|what|status|consult|medications)\b/i.test(t)) return false; // field label
-    // Capitalized start, has letters, isn't a bullet or field
-    return /^[A-Z]/.test(t) && /[a-z]/.test(t);
-  };
+  const value = String(line || "").trim();
+
+  if (!value || value.length > 120) return false;
+
+  if (/^[*•●○▪▫►◆·-]/.test(value)) return false;
+  if (/^#{1,6}\s+/.test(value)) return false;
+  if (/^[A-Z][A-Z0-9 /&,\-()]+$/.test(value)) return false;
+
+  if (
+    /^(current|past|lab|recent|imaging|complications|care|what|status|consult|medications|perfect|now|the patient|this patient)\b/i.test(
+      value
+    )
+  ) {
+    return false;
+  }
+
+  // Structured prenote problem headers end with a status/context
+  // parenthetical, for example "Hypertension (stable)".
+  return /^[A-Z][^:\n]{1,100}\s+\([^)\n]{2,80}\)\s*$/.test(value);
+};
 
   let currentProblem = null;
   let currentBuffer = [];
@@ -4138,11 +4191,25 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
   };
 
   const addGoal = () => {
-    if (!newGoal.trim()) return;
-    const updated = [...longTermGoals, { id: Date.now(), text: newGoal, added: new Date().toLocaleDateString(), status: "active" }];
-    setLongTermGoals(updated); setNewGoal("");
-    storage.set("longTermGoals", JSON.stringify(updated)).catch(() => {});
-  };
+  const goalText = newGoal.trim();
+  if (!goalText) return;
+
+  const updated = [
+    ...longTermGoals,
+    {
+      id: Date.now(),
+      text: goalText,
+      added: new Date().toLocaleDateString(),
+      status: "active",
+    },
+  ];
+
+  setLongTermGoals(updated);
+  setNewGoal("");
+  storage
+    .set("longTermGoals", JSON.stringify(updated))
+    .catch(() => {});
+};
   const removeGoal = (id) => {
     const updated = longTermGoals.filter(g => g.id !== id);
     setLongTermGoals(updated);
@@ -6388,10 +6455,30 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                 </div>
               )}
 
-              <div className="flex gap-2">
-                <input type="text" value={newGoal} onChange={e => setNewGoal(e.target.value)} onKeyDown={e => e.key === "Enter" && addGoal()} placeholder="e.g., Build systematic approach to ECG interpretation by month 6" className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none" />
-                <button onClick={addGoal} className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 flex items-center gap-1 text-sm font-medium"><Plus className="w-4 h-4" />Add</button>
-              </div>
+              <form
+  className="flex gap-2"
+  onSubmit={(event) => {
+    event.preventDefault();
+    addGoal();
+  }}
+>
+  <input
+    type="text"
+    value={newGoal}
+    onChange={(event) => setNewGoal(event.target.value)}
+    placeholder="e.g., Build systematic approach to ECG interpretation by month 6"
+    className="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 outline-none"
+  />
+
+  <button
+    type="submit"
+    disabled={!newGoal.trim()}
+    className="px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1 text-sm font-medium"
+  >
+    <Plus className="w-4 h-4" />
+    Add
+  </button>
+</form>
               {longTermGoals.length === 0 ? (
                 <div className="text-center py-8 text-sm text-slate-500 bg-slate-50 rounded-lg">No long-term goals yet.</div>
               ) : (
@@ -7332,9 +7419,45 @@ const buildInRoomHtml = (doc, session) => {
   const prenoteSections = extractPrenoteSections(doc.rawPrenote || doc.clinicalNote || "");
   const getSec = (...names) => getSection(prenoteSections, ...names);
 
-  const vitalsText = getSec("VITAL SIGNS TRENDS", "VITALS");
-  const labsText = getSec("LABORATORY STUDIES", "LABS", "LABORATORY RESULTS");
-  const imagingText = getSec("IMAGING AND DIAGNOSTIC PROCEDURES", "IMAGING", "DIAGNOSTIC PROCEDURES");
+  const vitalsText = getSec(
+  "VITAL SIGNS TRENDS",
+  "VITAL SIGN TRENDS",
+  "VITALS"
+);
+
+const labsText = getSec(
+  "LABORATORY STUDIES",
+  "LABORATORY RESULTS",
+  "LABORATORY TRENDS",
+  "LABORATORY TRENDS KEY ABNORMALITIES",
+  "RECENT LABS SUMMARY MOST RECENT FIRST",
+  "KEY LABS IMAGING RESULTS WITH TRENDS",
+  "LAB TREND TABLES",
+  "LABS"
+);
+
+const imagingText = getSec(
+  "IMAGING AND DIAGNOSTIC PROCEDURES",
+  "IMAGING DIAGNOSTIC PROCEDURES",
+  "IMAGING",
+  "DIAGNOSTIC PROCEDURES",
+  "DIAGNOSTICS"
+);
+const diagnosticsText = getSec(
+  "DIAGNOSTICS",
+  "KEY LABS IMAGING RESULTS WITH TRENDS"
+);
+
+const resolvedLabsText =
+  labsText ||
+  diagnosticsText ||
+  "";
+
+const resolvedImagingText =
+  imagingText ||
+  diagnosticsText ||
+  "";
+
   const socialText = getSec("SOCIAL", "SOCIAL HISTORY");
   const familyText = getSec("FAMILY HISTORY");
   const surgicalText = getSec("SURGICAL HISTORY");
@@ -7768,6 +7891,33 @@ const buildInRoomHtml = (doc, session) => {
       medsTab += `<tr><td class="drug-name"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)} ↗</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
     });
     medsTab += `</tbody></table></div>`;
+
+if (currentMedsText) {
+  medsTab += `
+    <div class="card open" style="margin-top:16px;">
+      <div class="ch" onclick="toggleCard(this)">
+        <div class="ch-l">
+          <div class="ci rx">
+            <i class="fa-solid fa-file-prescription"></i>
+          </div>
+          <div>
+            <div class="ct">Complete Medication Reconciliation</div>
+            <div class="cs">Dose, route, frequency, specialty grouping, and supplements</div>
+          </div>
+        </div>
+        <div class="ch-r">
+          <i class="fa-solid fa-chevron-down chev"></i>
+        </div>
+      </div>
+
+      <div class="cb">
+        <div class="cbi">
+          ${verbatim(currentMedsText)}
+        </div>
+      </div>
+    </div>
+  `;
+}
   } else if (currentMedsText) {
     medsTab += infoBox("Current medications (verbatim)", verbatim(currentMedsText));
   } else {
@@ -7790,8 +7940,37 @@ const buildInRoomHtml = (doc, session) => {
   let labsTab = `<div id="tab-labs" class="section">`;
   labsTab += `<div class="sec-title">Laboratory Results</div>`;
   if (na.labTrendsSummary) labsTab += `<div class="oneliner" style="margin-bottom:14px;">${esc(na.labTrendsSummary)}</div>`;
-  if (labsText) labsTab += `<div class="card open"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-flask-vial"></i></div><div><div class="ct">Full Lab Results</div><div class="cs">Verbatim from chart</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${verbatim(labsText)}</div></div></div>`;
-  if (imagingText && !/no imaging/i.test(imagingText)) {
+  if (resolvedLabsText) {
+  labsTab += `
+    <div class="card open">
+      <div class="ch" onclick="toggleCard(this)">
+        <div class="ch-l">
+          <div class="ci lab">
+            <i class="fa-solid fa-flask-vial"></i>
+          </div>
+          <div>
+            <div class="ct">Full Lab Results</div>
+            <div class="cs">Verbatim from chart</div>
+          </div>
+        </div>
+        <div class="ch-r">
+          <i class="fa-solid fa-chevron-down chev"></i>
+        </div>
+      </div>
+      <div class="cb">
+        <div class="cbi">
+          ${verbatim(resolvedLabsText)}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+if (
+  resolvedImagingText &&
+  resolvedImagingText !== resolvedLabsText &&
+  !/no imaging/i.test(resolvedImagingText)
+) {
     labsTab += `<div class="card"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-x-ray"></i></div><div><div class="ct">Imaging &amp; Procedures</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${verbatim(imagingText)}</div></div></div>`;
   }
   labsTab += `</div>`;
