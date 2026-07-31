@@ -8281,6 +8281,20 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 //   - doc.sections.teachingCases (with new suggestedQuestions + dontMiss fields)
 //   - doc.medDescriptions, doc.lightweightTeaching, doc.rawPrenote
 // ============================================================================
+// ============================================================================
+// SHARED IN-ROOM DOCUMENT TEMPLATE (long-form layout)
+// ============================================================================
+// Produces a complete standalone HTML document (CSS + body + JS) driven by
+// the app's data model. Used by BOTH:
+//   1. exportInRoomAsHtml() — writes to a .html file the attending downloads
+//   2. InRoomDocument React component — embeds via iframe for in-app preview
+//
+// Design: long-form single-page layout (no tabs). Screen-adaptive width:
+// wider on large monitors, narrows to letter-size when printing. Theme
+// toggle (dark/light) is embedded in the exported HTML so it works even
+// when the student opens the file outside our app. Print always renders
+// light regardless of on-screen theme.
+// ============================================================================
 const buildInRoomHtml = (doc, session) => {
   if (!doc) return "<div>No document data</div>";
 
@@ -8292,84 +8306,31 @@ const buildInRoomHtml = (doc, session) => {
   const sessionId = doc.sessionId || "no-id";
   const title = doc.sessionTitle || `Pre-visit — ${student} — ${sessionDate}`;
 
-  // Escape HTML for safe string interpolation
   const esc = (str) => String(str ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-   // Deterministic prenote parsing. AI may summarize these sections,
-  // but it no longer determines where any section begins or ends.
+  // Deterministic prenote parsing
   const parsedPrenote = parsePrenote(
-    doc.rawPrenote ||
-      doc.clinicalNote ||
-      "",
+    doc.rawPrenote || doc.clinicalNote || "",
     na
   );
+  const prenoteSections = parsedPrenote.sections;
 
-  const prenoteSections =
-    parsedPrenote.sections;
+  const whatToKnowText = prenoteSections.whatToKnow || "";
+  const vitalsText = prenoteSections.vitalSigns || "";
+  const diagnosticsText = prenoteSections.diagnostics || "";
+  const socialText = prenoteSections.social || "";
+  const familyText = prenoteSections.familyHistory || "";
+  const surgicalText = prenoteSections.surgicalHistory || "";
+  const allergiesText = prenoteSections.allergies || "";
+  const militaryText = prenoteSections.militaryHistory || "";
+  const preventiveText = prenoteSections.preventiveMedicine || "";
+  const updatesText = prenoteSections.recentVisits || "";
+  const pmhText = prenoteSections.pastMedicalHistory || "";
+  const medRecText = prenoteSections.medRec || "";
 
-  const whatToKnowText =
-    prenoteSections.whatToKnow ||
-    "";
-
-  const vitalsText =
-    prenoteSections.vitalSigns ||
-    "";
-
-  const diagnosticsText =
-    prenoteSections.diagnostics ||
-    "";
-
-  // Preserve the complete DIAGNOSTICS section. It may contain both
-  // lab tables and imaging/procedure content.
-  const resolvedLabsText =
-    diagnosticsText;
-
-  const resolvedImagingText =
-    diagnosticsText;
-
-  const socialText =
-    prenoteSections.social ||
-    "";
-
-  const familyText =
-    prenoteSections.familyHistory ||
-    "";
-
-  const surgicalText =
-    prenoteSections.surgicalHistory ||
-    "";
-
-  const allergiesText =
-    prenoteSections.allergies ||
-    "";
-
-  const militaryText =
-    prenoteSections.militaryHistory ||
-    "";
-
-  const preventiveText =
-    prenoteSections.preventiveMedicine ||
-    "";
-
-  const updatesText =
-    prenoteSections.recentVisits ||
-    "";
-
-  const pmhText =
-    prenoteSections.pastMedicalHistory ||
-    "";
-
-  const medRecText =
-    prenoteSections.medRec ||
-    "";
-
-  // Prefer the parsed MED REC section (which has been through prenoteParser
-  // and its C-CDA stripper) over the raw prenote. Only fall back to the raw
-  // prenote if the parsed section is empty — and even then, strip any
-  // C-CDA appendix before searching so hospital discharge Med Reconciliation
-  // sections don't leak in as "current meds".
+  // Medication extraction (unchanged logic from prior version)
   const stripCcdaForFallback = (text) => {
     if (!text) return "";
     const markers = [
@@ -8393,52 +8354,15 @@ const buildInRoomHtml = (doc, session) => {
   const fullPrenoteText = stripCcdaForFallback(rawFullPrenote);
 
   const currentMedsText =
-    // First: use the parsed MED REC section body (cleanest, already parsed)
     (medRecText && extractCurrentMedsFromFullText(medRecText)) ||
-    // Second: search the C-CDA-stripped full prenote
     extractCurrentMedsFromFullText(fullPrenoteText) ||
-    // Third: fall back to the raw MED REC section itself
     extractCurrentMedsSubsection(medRecText);
 
-  const discontinuedMedsText =
-    (medRecText && extractMedSectionFromFullText(medRecText, /RECENTLY\s+DISCONTINUED/)) ||
-    extractMedSectionFromFullText(fullPrenoteText, /RECENTLY\s+DISCONTINUED/) ||
-    extractMedSubsection(
-      medRecText,
-      /RECENTLY\s+DISCONTINUED/,
-      [/SIGNIFICANT\s+HISTORICAL/, /HISTORICAL\s+MEDICATIONS?/]
-    );
-
-  const historicalMedsText =
-    (medRecText && extractMedSectionFromFullText(
-      medRecText,
-      /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/
-    )) ||
-    extractMedSectionFromFullText(
-      fullPrenoteText,
-      /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/
-    ) ||
-    extractMedSubsection(
-      medRecText,
-      /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/,
-      []
-    );
-
-  const currentMedNames =
-    parseMedNames(
-      currentMedsText
-    );
-
-  const medDesc =
-    doc.medDescriptions ||
-    {};
-
-  const problemBlocks =
-    buildDeterministicProblemBlockMap(
-      parsedPrenote.pmhProblems
-    );
+  const currentMedNames = parseMedNames(currentMedsText);
+  const medDesc = doc.medDescriptions || {};
 
   // Fuzzy match a case problem to a PMH block
+  const problemBlocks = buildDeterministicProblemBlockMap(parsedPrenote.pmhProblems);
   const findBlockFor = (problemName) => {
     if (!problemName) return null;
     const target = problemName.toLowerCase().trim();
@@ -8452,337 +8376,446 @@ const buildInRoomHtml = (doc, session) => {
     return null;
   };
 
-  // Category → icon class + FontAwesome icon
-  const categoryIcon = {
-    mental: { cls: "mental", icon: "fa-brain" },
-    skin: { cls: "skin", icon: "fa-hand" },
-    gi: { cls: "gi", icon: "fa-stomach" },
-    pain: { cls: "pain", icon: "fa-bone" },
-    ent: { cls: "ent", icon: "fa-tooth" },
-    neuro: { cls: "neuro", icon: "fa-head-side-virus" },
-    social: { cls: "social", icon: "fa-users" },
-    lab: { cls: "lab", icon: "fa-flask-vial" },
-    cardiac: { cls: "pain", icon: "fa-heart-pulse" },
-    pulm: { cls: "neuro", icon: "fa-lungs" },
-    endocrine: { cls: "ent", icon: "fa-droplet" },
-    renal: { cls: "gi", icon: "fa-filter" },
-    vascular: { cls: "pain", icon: "fa-heart-pulse" },
-    other: { cls: "social", icon: "fa-notes-medical" },
-  };
-
-  // Status → badge class + label
-  const statusBadge = {
-    active: { cls: "sp-active", label: "Active" },
-    stable: { cls: "sp-stable", label: "Stable" },
-    remission: { cls: "sp-stable", label: "In Remission" },
-    resolved: { cls: "sp-resolved", label: "Resolved" },
-    registry: { cls: "sp-reg", label: "Registry Only" },
-    controlled: { cls: "sp-stable", label: "Controlled" },
+  // Status → pill class
+  const statusPill = {
+    active: { cls: "pill-active", label: "Active" },
+    stable: { cls: "pill-stable", label: "Stable" },
+    remission: { cls: "pill-stable", label: "In Remission" },
+    resolved: { cls: "pill-resolved", label: "Resolved" },
+    registry: { cls: "pill-reg", label: "Registry" },
+    controlled: { cls: "pill-stable", label: "Controlled" },
   };
 
   const badgeTypeCls = {
-    info: "badge-v",
-    warning: "badge-sc",
-    alert: "badge-a",
+    info: "pt-b-v",
+    warning: "pt-b-sc",
+    alert: "pt-b-a",
   };
 
-  // ─────────────────────────────────────────────────────────────
-  // Formatter for prenote text blocks (bullets, key:value, paragraphs)
-  // ─────────────────────────────────────────────────────────────
-  const fmtHtml = (text, opts = {}) => {
-    if (!text) return "";
-    let working = text.trim();
-    if (opts.stripHeader) {
-      const lines = working.split(/\r?\n/);
-      const first = lines.find(l => l.trim());
-      if (first) {
-        const norm = (s) => s.toLowerCase().replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
-        const nf = norm(first);
-        const nt = norm(opts.stripHeader);
-        if ((nf.includes(nt) && nf.length < nt.length * 2.5) || (nt.includes(nf) && nf.length > 5)) {
-          working = lines.slice(lines.indexOf(first) + 1).join("\n").trim();
-        }
+  // ──────────────────────────────────────────────────────────────
+  // Helpers to parse prenote text sections into structured data
+  // ──────────────────────────────────────────────────────────────
+
+  // Parse SOCIAL text into key-value tiles (Living, Marital, Alcohol, etc.)
+  const parseSocialTiles = (text) => {
+    if (!text) return [];
+    const tiles = [];
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim().replace(/^[\-\*•]\s*/, "");
+      const m = trimmed.match(/^([A-Z][A-Za-z /]{2,40}?)\s*:\s*(.+)$/);
+      if (m) {
+        tiles.push({ label: m[1].trim(), text: m[2].trim() });
       }
     }
-    if (opts.dropTables) {
-      const lines = working.split(/\r?\n/);
-      const kept = [];
-      let skip = false;
-      for (const line of lines) {
-        const pipes = (line.match(/\|/g) || []).length;
-        if (pipes >= 3) { skip = true; while (kept.length && /labs?:?$/i.test(kept[kept.length-1].trim())) kept.pop(); continue; }
-        if (skip && pipes === 0) skip = false;
-        kept.push(line);
+    return tiles;
+  };
+
+  // Map a social-tile label to an icon
+  const socialIcon = (label) => {
+    const l = label.toLowerCase();
+    if (l.includes("living")) return "fa-house";
+    if (l.includes("marital") || l.includes("relationship")) return "fa-ring";
+    if (l.includes("religion")) return "fa-cross";
+    if (l.includes("employ") || l.includes("job") || l.includes("work")) return "fa-briefcase";
+    if (l.includes("hobb")) return "fa-fish";
+    if (l.includes("alcohol")) return "fa-wine-bottle";
+    if (l.includes("tobacco") || l.includes("smok")) return "fa-smoking";
+    if (l.includes("cannabis") || l.includes("mariju")) return "fa-cannabis";
+    if (l.includes("caffeine") || l.includes("coffee")) return "fa-mug-hot";
+    if (l.includes("ivda") || l.includes("drug")) return "fa-syringe";
+    return "fa-circle-info";
+  };
+
+  // Parse UPDATES/RECENT VISITS into a timeline of {date, event} pairs
+  const parseTimeline = (text) => {
+    if (!text) return [];
+    const entries = [];
+    const lines = text.split(/\r?\n/);
+    for (const line of lines) {
+      const trimmed = line.trim().replace(/^[\-\*•]\s*/, "");
+      // Match: MM/DD/YY or MM/DD/YYYY at start
+      const m = trimmed.match(/^(\d{1,2}\/\d{1,2}\/\d{2,4})\s*[:\-]?\s*(.+)$/);
+      if (m) {
+        entries.push({ date: m[1], event: m[2].trim() });
+        continue;
       }
-      working = kept.join("\n");
+      // Match: MM/YYYY at start
+      const m2 = trimmed.match(/^(\d{1,2}\/\d{4})\s*[:\-]?\s*(.+)$/);
+      if (m2) {
+        entries.push({ date: m2[1], event: m2[2].trim() });
+      }
     }
-    if (!working.trim()) return "";
+    return entries;
+  };
 
-    const items = working.split(/\r?\n/).map(l => {
-      const t = l.trim();
-      if (!t) return { type: "blank" };
-      const bullet = t.match(/^[\-\*•●○▪▫►◆·]\s+(.+)$/);
-      if (bullet) return { type: "bullet", content: bullet[1] };
-      const kv = t.match(/^([A-Z][A-Za-z0-9\s\/\-\(\)]{2,34}):\s+(.+)$/);
-      if (kv) return { type: "kv", key: kv[1].trim(), value: kv[2].trim() };
-      return { type: "plain", content: t };
-    });
-
-    const groups = [];
-    let cur = null;
-    for (const it of items) {
-      if (it.type === "blank") { if (cur) { groups.push(cur); cur = null; } continue; }
-      if (!cur) cur = { type: it.type, items: [it] };
-      else if (cur.type === it.type || (cur.type !== "plain" && it.type !== "plain")) {
-        cur.items.push(it);
-        if (cur.type !== it.type) cur.type = "mixed";
-      } else { groups.push(cur); cur = { type: it.type, items: [it] }; }
-    }
-    if (cur) groups.push(cur);
-
-    let html = `<div class="fmt-block">`;
-    for (const g of groups) {
-      if (g.type === "plain") {
-        html += g.items.map(it => `<p>${esc(it.content)}</p>`).join("");
+  // Parse PREVENTIVE MEDICINE into structured items with status
+  const parsePreventive = (text) => {
+    if (!text) return [];
+    const items = [];
+    const lines = text.split(/\r?\n/);
+    let currentGroup = null;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // Group headers (Immunizations, Cancer screening that is up to date, etc.)
+      if (/^[A-Z]/.test(trimmed) && !trimmed.startsWith("*") && !trimmed.startsWith("-") && trimmed.endsWith(":")) {
+        currentGroup = trimmed.replace(/:$/, "");
+        continue;
+      }
+      const bulletMatch = trimmed.match(/^[\*\-•]\s*(.+)$/);
+      if (!bulletMatch) continue;
+      const content = bulletMatch[1].trim();
+      // Split on last " (" to separate name from status
+      const parenMatch = content.match(/^(.+?)\s*\((.+)\)\s*$/);
+      if (parenMatch) {
+        const name = parenMatch[1].trim();
+        const rawStatus = parenMatch[2].trim();
+        // Classify: "Due", "DUE", "Overdue", "Not documented" = due-ish (red)
+        // "Up to Date", "Negative", "Stable", dates = done (green)
+        const statusLower = rawStatus.toLowerCase();
+        const isDue = /^(due|overdue|not documented|not up)/i.test(statusLower) ||
+                      (currentGroup && /unclear/i.test(currentGroup));
+        items.push({
+          name,
+          status: rawStatus,
+          isDue,
+          group: currentGroup,
+        });
       } else {
-        html += `<ul>`;
-        for (const it of g.items) {
-          if (it.type === "kv") html += `<li><strong>${esc(it.key)}:</strong> ${esc(it.value)}</li>`;
-          else html += `<li>${esc(it.content)}</li>`;
-        }
-        html += `</ul>`;
+        // No parenthetical — infer status from group
+        const isDue = currentGroup && /unclear|due/i.test(currentGroup);
+        items.push({
+          name: content,
+          status: currentGroup && /up to date/i.test(currentGroup) ? "Up to Date" : (currentGroup || ""),
+          isDue,
+          group: currentGroup,
+        });
       }
     }
-    html += `</div>`;
-    return html;
+    return items;
   };
 
-  const verbatim = (text) => text ? `<pre class="verbatim">${esc(text)}</pre>` : "";
-  const infoBox = (title, content) => content ? `<div class="info-box"><div class="info-box-title">${esc(title)}</div>${content}</div>` : "";
+  // Parse vitals text into structured chips
+  const parseVitals = (text) => {
+    if (!text) return [];
+    const chips = [];
+    // Try to find common vitals with regex — pick most recent value if multiple
+    const grab = (pattern, label) => {
+      const m = pattern.exec(text);
+      if (m) chips.push({ label, val: m[1].trim() });
+    };
+    grab(/BP[:\s]+([\d]{2,3}\/[\d]{2,3})/i, "BP");
+    grab(/HR[:\s]+([\d]{2,3})/i, "HR");
+    grab(/Pulse[:\s]+([\d]{2,3})/i, "HR");
+    grab(/Temp[:\s]+([\d.]+\s*°?[FC]?)/i, "Temp");
+    grab(/S[pP]O2[:\s]+([\d]{1,3}%?)/i, "SpO2");
+    grab(/W[tT][:\s]+([\d.]+\s*(?:lb|kg))/i, "Wt");
+    grab(/Weight[:\s]+([\d.]+\s*(?:lb|kg))/i, "Wt");
+    grab(/BMI[:\s]+([\d.]+)/i, "BMI");
+    return chips;
+  };
 
-  // ─────────────────────────────────────────────────────────────
+  // Parse current medications text into structured rows
+  const parseMedRows = (text) => {
+    if (!text) return [];
+    const rows = [];
+    const lines = text.split(/\r?\n/);
+    let currentSpecialty = "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      // Specialty group heading (e.g., "- Cardiology:" or "Cardiac / Vascular:")
+      const groupMatch = trimmed.match(/^[\-\*]?\s*([A-Z][A-Za-z /&]+):\s*$/);
+      if (groupMatch && !/^\d/.test(groupMatch[1])) {
+        currentSpecialty = groupMatch[1].trim();
+        continue;
+      }
+      // Med line: starts with * or -
+      const medMatch = trimmed.match(/^[\*\-•]\s*(.+)$/);
+      if (!medMatch) continue;
+      const medLine = medMatch[1].trim();
+      // Extract name + dose + freq + indication + start
+      // Pattern: NAME DOSE FREQ (for INDICATION) - started MM/YYYY
+      // Or: NAME DOSE (INDICATION) FREQ ...
+      const nameMatch = medLine.match(/^([A-Z][A-Za-z0-9\-\/\s]+?)\s+(\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)[^,]*?)/i);
+      if (!nameMatch) {
+        // Not a parseable med line; skip
+        continue;
+      }
+      const name = nameMatch[1].trim();
+      const rest = medLine.slice(nameMatch[0].length - nameMatch[2].length);
+      // Dose + route
+      const doseMatch = rest.match(/^(\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)[^,()]*?)(?:\s+(?:PO|IV|IM|SQ|SL|topical|inhaled|nebulized)\b)?/i);
+      const dose = doseMatch ? doseMatch[0].trim() : "";
+      // Frequency
+      const freqMatch = rest.match(/\b(daily|BID|TID|QID|QHS|QAM|QPM|PRN|q\d+h|every \d+ (?:hours?|hrs?|days?)|weekly|monthly)\b/i);
+      const freq = freqMatch ? freqMatch[0] : "";
+      // Indication (in parens)
+      const indMatch = medLine.match(/\(([^)]+)\)/);
+      const indication = indMatch ? indMatch[1].trim() : "";
+      // Start date
+      const startMatch = medLine.match(/started\s+(\d{1,2}\/\d{4})/i);
+      const start = startMatch ? startMatch[1] : "";
+      // Notes: anything after " - " that isn't the start date
+      const notesMatch = medLine.match(/\-\s*([^\-][^\-].*)$/);
+      const notes = notesMatch ? notesMatch[1].replace(/started\s+\d{1,2}\/\d{4}(\s+and\s+still\s+ongoing)?\s*/i, "").trim() : "";
+
+      rows.push({
+        name,
+        dose,
+        freq,
+        indication,
+        start,
+        notes,
+        specialty: currentSpecialty,
+      });
+    }
+    return rows;
+  };
+
+  // Utility: format allergies for compact header display
+  const formatAllergiesShort = (text) => {
+    if (!text) return "NKDA";
+    const lower = text.toLowerCase();
+    if (/no known|nkda|none/i.test(lower)) return "NKDA";
+    // Extract just drug names
+    const match = text.match(/[Aa]llergies?:\s*(.+?)(?:\n|$)/);
+    if (match) return match[1].trim().slice(0, 80);
+    return text.slice(0, 80);
+  };
+
+  // ──────────────────────────────────────────────────────────────
   // BUILD HEADER
-  // ─────────────────────────────────────────────────────────────
-  // Primary heading: the patient descriptor ("38 y/o M veteran") — this is
-  // the closest we can get to a patient identifier without PHI, and it's what
-  // a resident would say first when presenting.
-  // Secondary heading (subtitle): the session context — chief concern or
-  // working diagnosis — so the student sees WHAT this visit is about.
+  // ──────────────────────────────────────────────────────────────
   const primaryLabel = na.patientDescriptor?.trim() || "Patient";
   const subtitle = doc.chiefConcern?.trim() || doc.workingDx?.trim() || "";
+  const allergiesShort = formatAllergiesShort(allergiesText);
+  const isNKDA = allergiesShort === "NKDA";
 
-  let headerHtml = `<div class="patient-header">`;
-  headerHtml += `<div class="header-top"><div>`;
-  headerHtml += `<div class="patient-name">${esc(primaryLabel)}`;
-  if (subtitle) headerHtml += ` <span>${esc(subtitle)}</span>`;
+  // Try to extract marital status from social text for header
+  const maritalMatch = socialText.match(/Marital(?:\s+status)?:\s*([^\n]+)/i);
+  const maritalStatus = maritalMatch ? maritalMatch[1].trim() : "";
+
+  // Try to extract DOB from prenote header (if present); may be redacted
+  const dobMatch = rawFullPrenote.match(/DOB:\s*([^\n]+)/i);
+  const dob = dobMatch ? dobMatch[1].trim() : "";
+
+  // Extract PCP name/last visit from prenote
+  const lastPcpMatch = rawFullPrenote.match(/Last Primary Care Visit Date:\s*([^\n]+)/i);
+  const lastPcpDate = lastPcpMatch ? lastPcpMatch[1].trim() : "";
+
+  let headerHtml = `<div class="pt-header">`;
+  headerHtml += `<div class="pt-name">${esc(primaryLabel)}`;
+  if (subtitle) headerHtml += ` <span class="pt-demo">${esc(subtitle)}</span>`;
+  headerHtml += `</div>`;
+
+  headerHtml += `<div class="pt-meta">`;
+  if (dob) headerHtml += `<span><b>DOB:</b> ${esc(dob)}</span>`;
+  if (lastPcpDate) headerHtml += `<span><b>Last PCP:</b> ${esc(lastPcpDate)}</span>`;
+  if (maritalStatus) headerHtml += `<span><b>Marital:</b> ${esc(maritalStatus)}</span>`;
+  headerHtml += `<span><b>Allergies:</b> ${esc(allergiesShort)}</span>`;
+  if (currentMedNames.length > 0 && currentMedNames.length <= 2) {
+    headerHtml += `<span><b>Meds:</b> ${esc(currentMedNames.slice(0, 2).join(", "))}</span>`;
+  } else if (currentMedNames.length > 2) {
+    headerHtml += `<span><b>Meds:</b> ${currentMedNames.length} active (see below)</span>`;
+  }
   headerHtml += `</div>`;
 
   if (Array.isArray(na.patientBadges) && na.patientBadges.length > 0) {
-    headerHtml += `<div class="badge-row">`;
+    headerHtml += `<div class="pt-badges">`;
     na.patientBadges.forEach(b => {
-      const cls = badgeTypeCls[b.type] || "badge-v";
-      headerHtml += `<span class="badge ${cls}">${esc(b.text)}</span>`;
+      const cls = badgeTypeCls[b.type] || "pt-b-v";
+      headerHtml += `<span class="pt-b ${cls}">${esc(b.text)}</span>`;
     });
     headerHtml += `</div>`;
   }
 
   if (Array.isArray(na.scPercentages) && na.scPercentages.length > 0) {
-    headerHtml += `<div class="sc-row">`;
+    headerHtml += `<div class="pt-sc-row">`;
     na.scPercentages.forEach(sc => {
-      headerHtml += `<span class="sc-c">${esc(sc.condition)} ${esc(sc.percent)}%</span>`;
+      headerHtml += `<span class="pt-sc-c">${esc(sc.condition)} ${esc(sc.percent)}%</span>`;
     });
     headerHtml += `</div>`;
   }
+  headerHtml += `</div>`;
 
-  headerHtml += `</div></div>`;
-  headerHtml += `<div class="hgrid">`;
-  headerHtml += `<div class="hs"><span class="hs-l">Session Date</span><span class="hs-v">${esc(sessionDate)}</span></div>`;
-  if (doc.phase?.monthsIn !== undefined) headerHtml += `<div class="hs"><span class="hs-l">LIC Month</span><span class="hs-v">Month ${esc(doc.phase.monthsIn)}</span></div>`;
-  if (doc.phase?.name) headerHtml += `<div class="hs"><span class="hs-l">Phase</span><span class="hs-v">${esc(doc.phase.name)}</span></div>`;
-  if (student) headerHtml += `<div class="hs"><span class="hs-l">Student</span><span class="hs-v">${esc(student)}</span></div>`;
-  headerHtml += `</div></div>`;
-
-  // ─────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────
   // ONE-LINER
-  // ─────────────────────────────────────────────────────────────
-    const oneLinerHtml =
-    na.oneLiner
-      ? `<div class="oneliner">${esc(
-          na.oneLiner
-        )}</div>`
-      : whatToKnowText
-        ? `<div class="oneliner">${fmtHtml(
-            whatToKnowText
-          )}</div>`
-        : "";
+  // ──────────────────────────────────────────────────────────────
+  const oneLinerHtml = na.oneLiner
+    ? `<div class="oneliner">${esc(na.oneLiner)}</div>`
+    : whatToKnowText
+      ? `<div class="oneliner">${esc(whatToKnowText.slice(0, 800))}</div>`
+      : "";
 
-  // ─────────────────────────────────────────────────────────────
-  // QUICK REFERENCE PANELS
-  // ─────────────────────────────────────────────────────────────
-  let qrHtml = `<div class="qr-grid">`;
+  // ──────────────────────────────────────────────────────────────
+  // ALLERGY BAR (only when NKDA — otherwise allergies are in header)
+  // ──────────────────────────────────────────────────────────────
+  const allergyBarHtml = isNKDA
+    ? `<span class="allergy"><i class="fa-solid fa-check-circle"></i> No Known Drug Allergies</span>`
+    : `<span class="allergy allergy-warn"><i class="fa-solid fa-triangle-exclamation"></i> Allergies: ${esc(allergiesShort)}</span>`;
 
-  // PMH list
-  qrHtml += `<div class="qr-panel"><div class="qr-head"><i class="fa-solid fa-list-check"></i> Past Medical History</div><div class="qr-body"><ul class="pmh-list">`;
-    const problemsForPMH =
-    mergePrenoteProblemsForUi(
-      parsedPrenote.pmhProblems,
-      na.activeProblems || []
-    );
+  // ──────────────────────────────────────────────────────────────
+  // PMH LIST + CLINICAL REFERENCE (two-column)
+  // ──────────────────────────────────────────────────────────────
+  const problemsForPMH = mergePrenoteProblemsForUi(
+    parsedPrenote.pmhProblems,
+    na.activeProblems || []
+  );
+
+  let refGridHtml = `<div class="ref-grid">`;
+
+  // Left: PMH list
+  refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-list-check"></i> Past Medical History</div><div class="ref-body"><ul class="pmh-list">`;
   problemsForPMH.forEach(p => {
-    const dot = p.status === "resolved" ? "resolved" : "active";
-    const scTag = p.scPercent ? `<span class="sc-tag">${esc(p.scPercent)}% SC</span>` : "";
-    qrHtml += `<li><span class="pmh-dot ${dot}"></span>${esc(p.problem)}${scTag}</li>`;
+    const isResolved = p.status === "resolved";
+    const dotCls = isResolved ? "off" : "on";
+    const scTag = p.scPercent ? `<span class="pmh-sc">${esc(p.scPercent)}%</span>` : "";
+    const resolvedSuffix = isResolved ? " (resolved)" : "";
+    qrHtmlEscHelper: {} // no-op label to help linting
+    refGridHtml += `<li><span class="pmh-dot ${dotCls}"></span>${esc(p.problem)}${resolvedSuffix}${scTag}</li>`;
   });
-  qrHtml += `</ul></div></div>`;
+  refGridHtml += `</ul></div></div>`;
 
-  // Clinical Reference Data — use fmtHtml() so bullets and key:value pairs
-  // render as proper lists instead of raw text. Fixes duplication artifacts
-  // by relying on prenoteParser's dedup (fix 1) rather than string slicing.
-  qrHtml += `<div class="qr-panel"><div class="qr-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="qr-body">`;
-  if (surgicalText) qrHtml += `<div class="ref-item"><div class="ref-label ref-surgical"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${fmtHtml(surgicalText, { stripHeader: "Surgical History" })}</div></div>`;
-  if (allergiesText) qrHtml += `<div class="ref-item"><div class="ref-label ref-allergies"><i class="fa-solid fa-shield-virus"></i> Allergies</div><div class="ref-text">${fmtHtml(allergiesText, { stripHeader: "Allergies" })}</div></div>`;
-  if (familyText) qrHtml += `<div class="ref-item"><div class="ref-label ref-family"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${fmtHtml(familyText, { stripHeader: "Family History" })}</div></div>`;
-  if (na.diagnosticsSummary) qrHtml += `<div class="ref-item"><div class="ref-label ref-diagnostics"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
-  if (na.labTrendsSummary) qrHtml += `<div class="ref-item"><div class="ref-label ref-labs"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
-  qrHtml += `</div></div></div>`;
+  // Right: Clinical Reference Data
+  refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="ref-body">`;
+  if (surgicalText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${esc(surgicalText.slice(0, 400))}</div></div>`;
+  if (familyText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${esc(familyText.slice(0, 400))}</div></div>`;
+  if (militaryText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield"></i> Military History</div><div class="ref-text">${esc(militaryText.slice(0, 300))}</div></div>`;
+  if (na.diagnosticsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
+  if (na.labTrendsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
+  refGridHtml += `</div></div></div>`;
 
-  // ─────────────────────────────────────────────────────────────
-  // VITALS CARD
-  // ─────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────
+  // VITALS ROW
+  // ──────────────────────────────────────────────────────────────
+  const vitals = parseVitals(vitalsText);
   let vitalsHtml = "";
-  if (vitalsText) {
-    // Try to parse individual vital values with simple regex
-    const vitals = [];
-    const bpMatch = vitalsText.match(/BP[:\s]+(\d{2,3}\/\d{2,3})/i);
-    if (bpMatch) vitals.push({ l: "BP", v: bpMatch[1] });
-    const hrMatch = vitalsText.match(/HR[:\s]+(\d{2,3})/i) || vitalsText.match(/Pulse[:\s]+(\d{2,3})/i);
-    if (hrMatch) vitals.push({ l: "HR", v: hrMatch[1] });
-    const tempMatch = vitalsText.match(/Temp[:\s]+([\d.]+\s*°?[FC]?)/i);
-    if (tempMatch) vitals.push({ l: "Temp", v: tempMatch[1] });
-    const spo2Match = vitalsText.match(/S[pP]O2[:\s]+(\d{1,3}%?)/i);
-    if (spo2Match) vitals.push({ l: "SpO2", v: spo2Match[1] });
-    const wtMatch = vitalsText.match(/W[Tt][:\s]+([\d.]+\s*(?:lb|kg))/i);
-    if (wtMatch) vitals.push({ l: "Weight", v: wtMatch[1] });
-    const bmiMatch = vitalsText.match(/BMI[:\s]+([\d.]+)/i);
-    if (bmiMatch) vitals.push({ l: "BMI", v: bmiMatch[1] });
-
-    vitalsHtml += `<div class="card open" style="margin-bottom:16px"><div class="ch" onclick="toggleCard(this)">`;
-    vitalsHtml += `<div class="ch-l"><div class="ci lab"><i class="fa-solid fa-heart-pulse"></i></div><div><div class="ct">Vital Signs</div><div class="cs">From chart</div></div></div>`;
-    vitalsHtml += `<div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div>`;
-    vitalsHtml += `<div class="cb"><div class="cbi">`;
-    if (vitals.length > 0) {
-      vitalsHtml += `<div class="vr">`;
-      vitals.forEach(v => vitalsHtml += `<div class="vc"><div class="vc-l">${esc(v.l)}</div><div class="vc-v">${esc(v.v)}</div></div>`);
-      vitalsHtml += `</div>`;
-    } else {
-      vitalsHtml += verbatim(vitalsText);
-    }
-    vitalsHtml += `</div></div></div>`;
+  if (vitals.length > 0) {
+    vitalsHtml += `<div class="vitals-row">`;
+    vitals.forEach(v => {
+      vitalsHtml += `<div class="vital-chip"><div class="vital-chip-label">${esc(v.label)}</div><div class="vital-chip-val">${esc(v.val)}</div></div>`;
+    });
+    vitalsHtml += `<div class="vital-chip"><div class="vital-chip-label">Date</div><div class="vital-chip-val">${esc(sessionDate)}</div></div>`;
+    vitalsHtml += `</div>`;
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // NAV TABS
-  // ─────────────────────────────────────────────────────────────
-  const navHtml = `<div class="nav-tabs" role="tablist">
-  <button class="nav-tab active" onclick="switchTab('problems',this)"><i class="fa-solid fa-stethoscope"></i> Problems</button>
-  <button class="nav-tab" onclick="switchTab('meds',this)"><i class="fa-solid fa-pills"></i> Meds</button>
-  <button class="nav-tab" onclick="switchTab('labs',this)"><i class="fa-solid fa-microscope"></i> Diagnostics</button>
-  <button class="nav-tab" onclick="switchTab('social',this)"><i class="fa-solid fa-users"></i> Social</button>
-  <button class="nav-tab" onclick="switchTab('timeline',this)"><i class="fa-solid fa-clock-rotate-left"></i> Timeline</button>
-  <button class="nav-tab" onclick="switchTab('preventive',this)"><i class="fa-solid fa-shield-heart"></i> Preventive</button>
-  <button class="nav-tab" onclick="switchTab('checklist',this)"><i class="fa-solid fa-clipboard-check"></i> Visit Plan</button>
-  <button class="nav-tab" onclick="switchTab('practice',this)"><i class="fa-solid fa-lightbulb"></i> Practice Q's</button>
-</div>`;
+  // ──────────────────────────────────────────────────────────────
+  // CURRENT MEDICATIONS TABLE
+  // ──────────────────────────────────────────────────────────────
+  const medRows = parseMedRows(currentMedsText);
+  let medsSectionHtml = "";
+  if (medRows.length > 0 || currentMedNames.length > 0) {
+    medsSectionHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Current Medications</div><div class="sec-div-line"></div></div>`;
+    if (medRows.length > 0) {
+      medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Dose/Route</th><th>Freq</th><th>Indication</th><th>Start</th><th>Notes</th></tr></thead><tbody>`;
+      medRows.forEach(m => {
+        const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(m.name)}`;
+        medsSectionHtml += `<tr>`;
+        medsSectionHtml += `<td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(m.name)}</a></td>`;
+        medsSectionHtml += `<td>${esc(m.dose || "—")}</td>`;
+        medsSectionHtml += `<td>${esc(m.freq || "—")}</td>`;
+        medsSectionHtml += `<td class="med-ind">${esc(m.indication || "—")}</td>`;
+        medsSectionHtml += `<td>${esc(m.start || "—")}</td>`;
+        medsSectionHtml += `<td>${esc(m.notes || "")}</td>`;
+        medsSectionHtml += `</tr>`;
+      });
+      medsSectionHtml += `</tbody></table>`;
+    } else {
+      // Fallback: simple name list with AI descriptions
+      medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
+      currentMedNames.forEach(name => {
+        const desc = medDesc[name.toLowerCase().trim()] || {};
+        const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(name)}`;
+        medsSectionHtml += `<tr><td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)}</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
+      });
+      medsSectionHtml += `</tbody></table>`;
+    }
+  }
 
-  // ─────────────────────────────────────────────────────────────
-  // PROBLEMS TAB — one card per selected teaching case + non-selected
-  // ─────────────────────────────────────────────────────────────
-  let problemsTab = `<div id="tab-problems" class="section active">`;
-  problemsTab += `<div class="sec-row"><div class="sec-title">Active Problems — Full Detail &amp; Teaching</div><button class="toggle-all" onclick="toggleAll('tab-problems')">Expand All</button></div>`;
-
+  // ──────────────────────────────────────────────────────────────
+  // PROBLEM CARDS (each selected teaching case + non-selected PMH problems)
+  // ──────────────────────────────────────────────────────────────
   const buildProblemCard = (tc, idx, isSelected) => {
     const c = tc.data || tc;
     const problemName = c.problem || c.rawHeader || "Problem";
-    // Find category/status from noteAnalysis.activeProblems if not on the case itself
     const apMatch = (na.activeProblems || []).find(ap => ap.problem?.toLowerCase().trim() === problemName.toLowerCase().trim());
-    const category = c.category || apMatch?.category || "other";
     const status = c.status || apMatch?.status || (isSelected ? "active" : "stable");
     const shortSub = c.shortSubtitle || apMatch?.shortSubtitle || c.primaryDiagnosis?.name || "";
-    const icon = categoryIcon[category] || categoryIcon.other;
-    const badge = statusBadge[status] || statusBadge.active;
+    const pill = statusPill[status] || statusPill.active;
     const chartBlock = findBlockFor(problemName) || findBlockFor(c.primaryDiagnosis?.name);
     const perProbRedFlags = na.perProblemRedFlags?.[problemName] || [];
 
-    let html = `<div class="card${idx === 0 ? " open" : ""}"><div class="ch" onclick="toggleCard(this)">`;
-    html += `<div class="ch-l"><div class="ci ${icon.cls}"><i class="fa-solid ${icon.icon}"></i></div>`;
-    html += `<div><div class="ct">${esc(problemName)}</div>`;
-    if (shortSub) html += `<div class="cs">${esc(shortSub)}</div>`;
-    html += `</div></div><div class="ch-r"><span class="sp ${badge.cls}">${esc(badge.label)}</span><i class="fa-solid fa-chevron-down chev"></i></div></div>`;
+    let html = `<div class="prob"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
+    if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
+    html += `</div><span class="prob-pill ${pill.cls}">${esc(pill.label)}</span></div>`;
 
-    html += `<div class="cb"><div class="cbi">`;
+    html += `<div class="prob-body">`;
 
-    // Current status paragraph
+    // Opening paragraph — brief definition or current status
     if (chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition) {
       html += `<p>${esc(chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition)}</p>`;
     }
 
-    // Current management
+    // Medications subsection
     if (chartBlock?.currentMeds || chartBlock?.pastMeds || c.treatmentApproach?.firstLine?.length > 0) {
-      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-pills"></i> Medications</div>`;
-      if (chartBlock?.currentMeds) html += `<p><strong>Current:</strong> ${esc(chartBlock.currentMeds)}</p>`;
-      if (chartBlock?.pastMeds) html += `<p><strong>Past:</strong> ${esc(chartBlock.pastMeds)}</p>`;
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-pills"></i> Medications</div>`;
+      if (chartBlock?.currentMeds) html += `<p><b>Current:</b> ${esc(chartBlock.currentMeds)}</p>`;
+      if (chartBlock?.pastMeds) html += `<p><b>Past:</b> ${esc(chartBlock.pastMeds)}</p>`;
       if (!chartBlock?.currentMeds && c.treatmentApproach?.firstLine?.length > 0) {
         html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
         c.treatmentApproach.firstLine.forEach(t => {
           const treatment = stripTreatmentVerb(t.treatment || "");
-          html += `<li><strong>${esc(treatment)}</strong>${t.dosing ? ` — ${esc(t.dosing)}` : ""}</li>`;
+          html += `<li><b>${esc(treatment)}</b>${t.dosing ? ` — ${esc(t.dosing)}` : ""}</li>`;
         });
         html += `</ul>`;
       }
       html += `</div>`;
     }
 
-    // Labs / trends
-    if (chartBlock?.labTrends || chartBlock?.recentControl || c.keyLabsAndImaging?.length > 0) {
-      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-flask"></i> Labs &amp; Trends</div>`;
-      if (chartBlock?.labTrends) html += `<p>${esc(chartBlock.labTrends)}</p>`;
-      if (chartBlock?.recentControl) html += `<p><strong>Recent trend:</strong> ${esc(chartBlock.recentControl)}</p>`;
-      if (c.keyLabsAndImaging?.length > 0) {
-        html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
-        c.keyLabsAndImaging.forEach(lab => {
-          html += `<li><strong>${esc(lab.study)}</strong>${lab.purpose ? ` — ${esc(lab.purpose)}` : ""}`;
-          if (lab.interpretation) html += `<div style="font-size:.8rem;color:var(--fg-d);margin-top:2px;font-style:italic;">${esc(lab.interpretation)}</div>`;
-          html += `</li>`;
-        });
-        html += `</ul>`;
-      }
+    // Recent Control / Trends
+    if (chartBlock?.labTrends || chartBlock?.recentControl) {
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-chart-line"></i> Recent Control / Trends</div>`;
+      if (chartBlock?.recentControl) html += `<p>${esc(chartBlock.recentControl)}</p>`;
+      if (chartBlock?.labTrends) html += `<p><b>Lab trends:</b> ${esc(chartBlock.labTrends)}</p>`;
       html += `</div>`;
     }
 
-    // Imaging
+    // Labs / Studies (from teaching case)
+    if (c.keyLabsAndImaging?.length > 0) {
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-flask"></i> Labs &amp; Studies</div>`;
+      html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
+      c.keyLabsAndImaging.forEach(lab => {
+        html += `<li><b>${esc(lab.study)}</b>${lab.purpose ? ` — ${esc(lab.purpose)}` : ""}`;
+        if (lab.interpretation) html += `<div style="font-size:.85em;color:#6b7280;margin-top:1px;">${esc(lab.interpretation)}</div>`;
+        html += `</li>`;
+      });
+      html += `</ul></div>`;
+    }
+
+    // Imaging / Procedures
     if (chartBlock?.imaging) {
-      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-x-ray"></i> Imaging / Procedures</div><p>${esc(chartBlock.imaging)}</p></div>`;
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-x-ray"></i> Imaging / Procedures</div><p>${esc(chartBlock.imaging)}</p></div>`;
     }
 
-    // Care team
+    // Care Team
     if (chartBlock?.careTeam) {
-      html += `<div class="cond-sub"><div class="cond-sub-label"><i class="fa-solid fa-user-doctor"></i> Care Team</div><p>${esc(chartBlock.careTeam)}</p></div>`;
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-user-doctor"></i> Care Team</div><p>${esc(chartBlock.careTeam)}</p></div>`;
     }
 
     // Teaching content for selected problems
     if (isSelected) {
       // Suggested questions (ASK box)
       if (c.suggestedQuestions?.length > 0) {
-        html += `<div class="tbox ask"><div class="tbox-l"><i class="fa-solid fa-comment-medical"></i> Suggested Questions</div><ul>`;
-        c.suggestedQuestions.forEach(q => html += `<li>${esc(q)}</li>`);
-        html += `</ul></div>`;
+        html += `<div class="ask"><div class="ask-label"><i class="fa-solid fa-comment-medical"></i> Suggested Questions</div><p>${c.suggestedQuestions.map(q => esc(q)).join(" | ")}</p></div>`;
       }
 
       // Key learning points (TEACH box)
       if (c.keyLearningPoints?.length > 0) {
-        html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-graduation-cap"></i> Teaching Points</div><ul>`;
+        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: ${esc(c.primaryDiagnosis?.name || problemName)}</div><ul>`;
         c.keyLearningPoints.forEach(lp => {
-          html += `<li><strong>${esc(lp.point)}:</strong> ${esc(lp.explanation)}`;
+          html += `<li><b>${esc(lp.point)}:</b> ${esc(lp.explanation)}`;
           if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
           html += `</li>`;
         });
@@ -8791,19 +8824,19 @@ const buildInRoomHtml = (doc, session) => {
 
       // Don't miss (WARN box)
       if (c.dontMiss?.trim()) {
-        html += `<div class="tbox warn"><div class="tbox-l"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div><p>${esc(c.dontMiss)}</p></div>`;
+        html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div><p>${esc(c.dontMiss)}</p></div>`;
       }
 
       // Per-problem red flags from analysis
       if (perProbRedFlags.length > 0) {
-        html += `<div class="tbox warn"><div class="tbox-l"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul>`;
-        perProbRedFlags.forEach(rf => html += `<li>${esc(rf)}</li>`);
+        html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul style="margin:0;padding-left:14px;">`;
+        perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:#991b1b;line-height:1.4;">${esc(rf)}</li>`);
         html += `</ul></div>`;
       }
 
       // Clinical pearl (TEACH box)
       if (c.clinicalPearl) {
-        html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p>${esc(c.clinicalPearl)}</p></div>`;
+        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(c.clinicalPearl)}</p></div>`;
       }
     } else {
       // Non-selected: lightweight teaching if available
@@ -8816,555 +8849,921 @@ const buildInRoomHtml = (doc, session) => {
       }
       if (lwt) {
         if (lwt.theClassicPicture) {
-          html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-graduation-cap"></i> Quick Background</div><p>${esc(lwt.theClassicPicture)}</p></div>`;
+          html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Quick Background</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(lwt.theClassicPicture)}</p></div>`;
         }
         if (lwt.oneKeyLearningPoint) {
-          html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p><strong>${esc(lwt.oneKeyLearningPoint.point)}:</strong> ${esc(lwt.oneKeyLearningPoint.explanation)}`;
+          html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;"><b>${esc(lwt.oneKeyLearningPoint.point)}:</b> ${esc(lwt.oneKeyLearningPoint.explanation)}`;
           if (lwt.oneKeyLearningPoint.citation) html += ` <em style="opacity:.75;">(${esc(lwt.oneKeyLearningPoint.citation)})</em>`;
           html += `</p></div>`;
-        }
-        if (lwt.clinicalPearl) {
-          html += `<div class="tbox teach"><div class="tbox-l"><i class="fa-solid fa-lightbulb"></i> Pearl</div><p>${esc(lwt.clinicalPearl)}</p></div>`;
         }
       }
     }
 
-    html += `</div></div></div>`;
+    html += `</div></div>`;
     return html;
   };
 
-  // Render selected teaching cases
+  let problemsHtml = `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Active Problems — Full Detail &amp; Teaching</div><div class="sec-div-line"></div></div>`;
   enabledCases.forEach((tc, idx) => {
-    problemsTab += buildProblemCard(tc, idx, true);
+    problemsHtml += buildProblemCard(tc, idx, true);
   });
-
-  // Render non-selected problems from PMH
+  // Non-selected problems
   const selectedNames = new Set(enabledCases.map(tc => (tc.data?.problem || tc.problem || "").toLowerCase().trim()));
-   Object.entries(problemBlocks).forEach(([key, block], idx) => {
-    const headerLower = block.rawHeader
-      .toLowerCase()
-      .trim();
-
+  Object.entries(problemBlocks).forEach(([key, block], idx) => {
+    const headerLower = block.rawHeader.toLowerCase().trim();
     let alreadyCovered = false;
-
     for (const selectedName of selectedNames) {
-      if (
-        headerLower.includes(selectedName) ||
-        selectedName.includes(headerLower)
-      ) {
+      if (headerLower.includes(selectedName) || selectedName.includes(headerLower)) {
         alreadyCovered = true;
         break;
       }
     }
-
     if (!alreadyCovered) {
-      problemsTab += buildProblemCard(
-        {
-          data: {
-            problem: block.rawHeader,
-          },
-        },
-        enabledCases.length + idx,
-        false
-      );
+      problemsHtml += buildProblemCard({ data: { problem: block.rawHeader } }, enabledCases.length + idx, false);
     }
   });
 
-  /*
-   * A collapsed or unusually formatted PMH may not split into individual
-   * problem blocks. Never silently discard it. Show the complete source
-   * section so the clinician can still review everything.
-   */
-  if (
-    pmhText &&
-    Object.keys(problemBlocks).length === 0
-  ) {
-    problemsTab += `
-      <div class="card open">
-        <div class="ch" onclick="toggleCard(this)">
-          <div class="ch-l">
-            <div class="ci other">
-              <i class="fa-solid fa-notes-medical"></i>
-            </div>
-
-            <div>
-              <div class="ct">
-                Complete Problem History
-              </div>
-
-              <div class="cs">
-                The source section could not be divided reliably into individual problem cards
-              </div>
-            </div>
-          </div>
-
-          <div class="ch-r">
-            <i class="fa-solid fa-chevron-down chev"></i>
-          </div>
-        </div>
-
-        <div class="cb">
-          <div class="cbi">
-            ${verbatim(pmhText)}
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  problemsTab += `</div>`;
-
-  // ─────────────────────────────────────────────────────────────
-  // MEDS TAB
-  // ─────────────────────────────────────────────────────────────
-  // Helper: extract "Clinical Notes" prose that some prenotes append at the
-  // end of MED REC (after historical meds), separated by a divider line.
-  const extractClinicalNotesFromMedRec = (medRecFullText) => {
-    if (!medRecFullText) return "";
-    const marker = /Clinical\s+Notes?\s*:/i;
-    const m = marker.exec(medRecFullText);
-    if (!m) return "";
-    return medRecFullText.slice(m.index + m[0].length).trim();
-  };
-  const clinicalNotesText = extractClinicalNotesFromMedRec(medRecText || fullPrenoteText);
-
-  let medsTab = `<div id="tab-meds" class="section">`;
-  medsTab += `<div class="sec-title">Current Medications</div>`;
-
-  // Card 1: AI-annotated med table (name + treats + mechanism)
-  if (currentMedNames.length > 0) {
-    medsTab += `<div class="med-table-wrap" style="margin-bottom:20px;"><table class="med-table"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
-    currentMedNames.forEach(name => {
-      const desc = medDesc[name.toLowerCase().trim()] || {};
-      const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(name)}`;
-      medsTab += `<tr><td class="drug-name"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)} ↗</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
-    });
-    medsTab += `</tbody></table></div>`;
-  }
-
-  // Card 2: Complete current-medication reconciliation with specialty grouping (formatted)
-  if (currentMedsText) {
-    medsTab += `<div class="card open" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci rx"><i class="fa-solid fa-file-prescription"></i></div><div><div class="ct">Complete Medication Reconciliation</div><div class="cs">Dose, route, frequency, and specialty grouping</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(currentMedsText)}</div></div></div>`;
-  }
-
-  // Card 3: Recently discontinued meds (separate card)
-  if (discontinuedMedsText) {
-    medsTab += `<div class="card" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci pain"><i class="fa-solid fa-ban"></i></div><div><div class="ct">Recently Discontinued</div><div class="cs">Stopped in the past 6 months</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(discontinuedMedsText)}</div></div></div>`;
-  }
-
-  // Card 4: Historical medications / timeline (separate card)
-  if (historicalMedsText) {
-    medsTab += `<div class="card" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci ent"><i class="fa-solid fa-clock-rotate-left"></i></div><div><div class="ct">Historical Medications &amp; Timeline</div><div class="cs">Significant prior medications and chronology</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(historicalMedsText)}</div></div></div>`;
-  }
-
-  // Card 5: Clinical notes prose (separate card, if present)
-  if (clinicalNotesText) {
-    medsTab += `<div class="card" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci social"><i class="fa-solid fa-note-sticky"></i></div><div><div class="ct">Clinical Notes on Medications</div><div class="cs">Context and adherence considerations</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(clinicalNotesText)}</div></div></div>`;
-  }
-
-  if (!currentMedsText && !discontinuedMedsText && !historicalMedsText && !clinicalNotesText && currentMedNames.length === 0) {
-    medsTab += `<p style="color:var(--fg-d);font-style:italic;">No current medications documented.</p>`;
-  }
-
-  medsTab += `</div>`;
-
-  // ─────────────────────────────────────────────────────────────
-  // DIAGNOSTICS TAB (internally still tab-labs for state compat)
-  // ─────────────────────────────────────────────────────────────
-  // Use the structured diagnostics data from parsePrenote when available.
-  // It separates lab tables from imaging cleanly. Fall back to raw section
-  // text if the structured version is empty.
+  // ──────────────────────────────────────────────────────────────
+  // LAB RESULTS TABLE
+  // ──────────────────────────────────────────────────────────────
+  let labsHtml = "";
   const structuredDiagnostics = parsedPrenote.diagnostics || {};
   const structuredTables = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
-  const structuredImaging = Array.isArray(structuredDiagnostics.imaging) ? structuredDiagnostics.imaging : [];
 
-  // Build a "labs body" from structured tables if we have them; otherwise
-  // use the raw diagnostics text.
-  let structuredLabsHtml = "";
-  if (structuredTables.length > 0) {
+  if (structuredTables.length > 0 || na.labTrendsSummary) {
+    labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
+
+    // Render each table as a lab-tbl
     structuredTables.forEach(t => {
-      const title = t.title || t.subsection || "Lab Panel";
-      structuredLabsHtml += `<div class="lab-panel-title" style="font-weight:600;color:var(--fg);margin-top:10px;margin-bottom:4px;">${esc(title)}</div>`;
-      structuredLabsHtml += `<pre class="verbatim">${esc(t.rawText || "")}</pre>`;
-    });
-  }
-
-  // Build imaging HTML from structured imaging entries
-  let structuredImagingHtml = "";
-  if (structuredImaging.length > 0) {
-    structuredImaging.forEach(study => {
-      structuredImagingHtml += `<div class="lab-panel-title" style="font-weight:600;color:var(--fg);margin-top:10px;margin-bottom:4px;">${esc(study.studyType || "Study")}</div>`;
-      if (study.entries && study.entries.length > 0) {
-        structuredImagingHtml += `<ul style="padding-left:1.25rem;margin-bottom:8px;">`;
-        study.entries.forEach(e => {
-          structuredImagingHtml += `<li>${esc(e)}</li>`;
-        });
-        structuredImagingHtml += `</ul>`;
+      if (!t.columns || t.columns.length === 0) return;
+      labsHtml += `<table class="lab-tbl">`;
+      // Header row
+      labsHtml += `<tr>`;
+      t.columns.forEach((col, i) => {
+        labsHtml += `<th>${esc(i === 0 ? "Test" : col)}</th>`;
+      });
+      labsHtml += `</tr>`;
+      // Section header for the panel title if available
+      if (t.title) {
+        labsHtml += `<tr class="lab-sec"><td colspan="${t.columns.length}">${esc(t.title)}</td></tr>`;
       }
+      // Data rows: t.rows is an array of objects keyed by column name
+      if (Array.isArray(t.rows)) {
+        // The first column typically contains dates; we transpose so each row is an analyte
+        // But since the parser structure has date rows... just render as-is
+        t.rows.forEach(row => {
+          labsHtml += `<tr>`;
+          t.columns.forEach((col, i) => {
+            const val = row[col] || "—";
+            let cls = "";
+            if (/H\b/.test(val)) cls = "lab-hi";
+            else if (/L\b/.test(val)) cls = "lab-lo";
+            else if (i > 0 && val !== "—" && /^\d/.test(val)) cls = "lab-ok";
+            labsHtml += `<td class="${cls}">${esc(val)}</td>`;
+          });
+          labsHtml += `</tr>`;
+        });
+      }
+      labsHtml += `</table>`;
     });
+
+    // AI-generated lab trends summary as a note below
+    if (na.labTrendsSummary) {
+      labsHtml += `<div class="lab-note">${esc(na.labTrendsSummary)}</div>`;
+    }
+
+    // Fallback: if no structured tables, dump the raw diagnostics text verbatim
+    if (structuredTables.length === 0 && diagnosticsText) {
+      labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:#374151;background:#f9fafb;border:1px solid #e5e7eb;border-radius:3px;padding:8px;">${esc(diagnosticsText)}</pre>`;
+    }
   }
 
-  let labsTab = `<div id="tab-labs" class="section">`;
-  labsTab += `<div class="sec-title">Diagnostics</div>`;
-
-  // Card 1: AI-generated diagnostics overview (imaging/procedures summary)
-  if (na.diagnosticsSummary) {
-    labsTab += `<div class="card open" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-microscope"></i></div><div><div class="ct">Diagnostics Overview</div><div class="cs">Imaging &amp; procedures at a glance</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi"><p>${esc(na.diagnosticsSummary)}</p></div></div></div>`;
+  // ──────────────────────────────────────────────────────────────
+  // SOCIAL HISTORY GRID
+  // ──────────────────────────────────────────────────────────────
+  const socialTiles = parseSocialTiles(socialText);
+  let socialHtml = "";
+  if (socialTiles.length > 0) {
+    socialHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Social History</div><div class="sec-div-line"></div></div>`;
+    socialHtml += `<div class="soc-grid">`;
+    socialTiles.forEach(tile => {
+      const icon = socialIcon(tile.label);
+      socialHtml += `<div class="soc-card"><div class="soc-label"><i class="fa-solid ${icon}"></i> ${esc(tile.label)}</div><div class="soc-text">${esc(tile.text)}</div></div>`;
+    });
+    socialHtml += `</div>`;
   }
 
-  // Card 2: AI-generated lab trends summary
-  if (na.labTrendsSummary) {
-    labsTab += `<div class="card open" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-chart-line"></i></div><div><div class="ct">Laboratory Trends Summary</div><div class="cs">Key lab movements at a glance</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi"><p>${esc(na.labTrendsSummary)}</p></div></div></div>`;
+  // ──────────────────────────────────────────────────────────────
+  // RECENT TIMELINE
+  // ──────────────────────────────────────────────────────────────
+  const timeline = parseTimeline(updatesText);
+  let timelineHtml = "";
+  if (timeline.length > 0) {
+    timelineHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Recent Timeline</div><div class="sec-div-line"></div></div>`;
+    timelineHtml += `<ul class="tl-compact">`;
+    timeline.forEach(t => {
+      timelineHtml += `<li><span class="tl-date">${esc(t.date)}</span> <span>${esc(t.event)}</span></li>`;
+    });
+    timelineHtml += `</ul>`;
   }
 
-  // Card 3: Full lab results (structured tables preferred, verbatim fallback)
-  const labsBodyHtml = structuredLabsHtml || (resolvedLabsText ? verbatim(resolvedLabsText) : "");
-  if (labsBodyHtml) {
-    labsTab += `<div class="card" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-flask-vial"></i></div><div><div class="ct">Full Laboratory Results</div><div class="cs">Panel-by-panel from chart</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${labsBodyHtml}</div></div></div>`;
+  // ──────────────────────────────────────────────────────────────
+  // PREVENTIVE CARE
+  // ──────────────────────────────────────────────────────────────
+  const preventiveItems = parsePreventive(preventiveText);
+  let preventiveHtml = "";
+  if (preventiveItems.length > 0) {
+    preventiveHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Preventive Care</div><div class="sec-div-line"></div></div>`;
+    preventiveHtml += `<ul class="prev-list">`;
+    preventiveItems.forEach(item => {
+      const statusCls = item.isDue ? "prev-due" : "prev-done";
+      preventiveHtml += `<li><span>${esc(item.name)}</span><span class="prev-st ${statusCls}">${esc(item.status)}</span></li>`;
+    });
+    preventiveHtml += `</ul>`;
   }
 
-  // Card 4: Imaging & procedures (structured preferred, verbatim fallback)
-  const hasStructuredImaging = structuredImagingHtml.length > 0;
-  const hasFallbackImaging = resolvedImagingText && resolvedImagingText !== resolvedLabsText && !/no imaging/i.test(resolvedImagingText);
-  const imagingBodyHtml = hasStructuredImaging
-    ? structuredImagingHtml
-    : (hasFallbackImaging ? verbatim(resolvedImagingText) : "");
-  if (imagingBodyHtml) {
-    labsTab += `<div class="card" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-x-ray"></i></div><div><div class="ct">Imaging &amp; Procedures</div><div class="cs">Studies from chart</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${imagingBodyHtml}</div></div></div>`;
-  }
-
-  if (!na.diagnosticsSummary && !na.labTrendsSummary && !labsBodyHtml && !imagingBodyHtml) {
-    labsTab += `<p style="color:var(--fg-d);font-style:italic;">No diagnostics documented.</p>`;
-  }
-
-  labsTab += `</div>`;
-
-  // ─────────────────────────────────────────────────────────────
-  // SOCIAL TAB
-  // ─────────────────────────────────────────────────────────────
-  let socialTab = `<div id="tab-social" class="section">`;
-  socialTab += `<div class="sec-title">Social History &amp; Context</div>`;
-  if (socialText) socialTab += infoBox("Social History", fmtHtml(socialText, { stripHeader: "Social History" }));
-  if (familyText) socialTab += infoBox("Family History", fmtHtml(familyText, { stripHeader: "Family History" }));
-  if (militaryText) socialTab += infoBox("Military History", fmtHtml(militaryText, { stripHeader: "Military History" }));
-  if (!socialText && !familyText && !militaryText) socialTab += `<p style="color:var(--fg-d);font-style:italic;">No social history documented.</p>`;
-  socialTab += `</div>`;
-
-  // ─────────────────────────────────────────────────────────────
-  // TIMELINE TAB
-  // ─────────────────────────────────────────────────────────────
-  let timelineTab = `<div id="tab-timeline" class="section"><div class="sec-title">Recent Visit Timeline</div>`;
-  if (updatesText) {
-    timelineTab += `<div class="card open"><div class="cb" style="max-height:none;"><div class="cbi">${fmtHtml(updatesText, { stripHeader: "Updates", dropTables: true })}</div></div></div>`;
-  } else {
-    timelineTab += `<p style="color:var(--fg-d);font-style:italic;">No recent visit updates documented.</p>`;
-  }
-  timelineTab += `</div>`;
-
-  // ─────────────────────────────────────────────────────────────
-  // PREVENTIVE TAB
-  // ─────────────────────────────────────────────────────────────
-  let preventiveTab = `<div id="tab-preventive" class="section"><div class="sec-title">Preventive Care Status</div>`;
-  if (preventiveText) {
-    preventiveTab += `<div class="card open"><div class="cb" style="max-height:none;"><div class="cbi">${fmtHtml(preventiveText, { stripHeader: "Preventive Medicine" })}</div></div></div>`;
-  } else {
-    preventiveTab += `<p style="color:var(--fg-d);font-style:italic;">No preventive care data documented.</p>`;
-  }
-  preventiveTab += `</div>`;
-
-  // ─────────────────────────────────────────────────────────────
-  // VISIT PLAN TAB (checklist from na.visitPlan)
-  // ─────────────────────────────────────────────────────────────
-  let checklistTab = `<div id="tab-checklist" class="section"><div class="sec-title">Today's Visit Plan</div>`;
+  // ──────────────────────────────────────────────────────────────
+  // TODAY'S VISIT PLAN
+  // ──────────────────────────────────────────────────────────────
+  let visitPlanHtml = "";
   if (Array.isArray(na.visitPlan) && na.visitPlan.length > 0) {
-    checklistTab += `<div class="card open"><div class="cb" style="max-height:none;"><div class="cbi"><ul class="cl">`;
+    visitPlanHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Today's Visit Plan</div><div class="sec-div-line"></div></div>`;
+    visitPlanHtml += `<ul class="ck-list">`;
     na.visitPlan.forEach(item => {
-      checklistTab += `<li onclick="toggleCK(this)"><div class="cbx"><i class="fa-solid fa-check"></i></div><span>${esc(item)}</span></li>`;
+      visitPlanHtml += `<li><span class="ck-box"></span><span>${esc(item)}</span></li>`;
     });
-    checklistTab += `</ul></div></div></div>`;
-  } else {
-    checklistTab += `<p style="color:var(--fg-d);font-style:italic;">No visit plan generated.</p>`;
-  }
-  if (na.redFlags?.length > 0) {
-    checklistTab += `<div class="tbox warn"><div class="tbox-l"><i class="fa-solid fa-triangle-exclamation"></i> Red Flags — Actively Screen For</div><ul>`;
-    na.redFlags.forEach(rf => checklistTab += `<li>${esc(rf)}</li>`);
-    checklistTab += `</ul></div>`;
+    visitPlanHtml += `</ul>`;
   }
 
-  // Ongoing long-term learning goals — persist across sessions, worth resurfacing
-  // as reminders when the student is prepping for a visit
-  const goals = Array.isArray(doc.longTermGoals) ? doc.longTermGoals : [];
-  if (goals.length > 0) {
-    const shownGoals = [...goals].sort((a, b) => (b.id || 0) - (a.id || 0)).slice(0, 5);
-    checklistTab += `<div class="card open" style="margin-top:16px;"><div class="ch"><div class="ch-l"><div class="ci social"><i class="fa-solid fa-bullseye"></i></div><div><div class="ct">Ongoing Learning Goals</div><div class="cs">${shownGoals.length} of ${goals.length} shown · your standing objectives</div></div></div></div><div class="cb" style="max-height:none;"><div class="cbi"><ul>`;
-    shownGoals.forEach(g => {
-      checklistTab += `<li><strong>${esc(g.text)}</strong>`;
-      if (g.added) checklistTab += ` <span style="color:var(--fg-d);font-size:.75rem;">(added ${esc(g.added)})</span>`;
-      checklistTab += `</li>`;
+  // Priority Focus Areas — placeholder for Phase 2 AI field.
+  // For now, synthesize a top-3 from redFlags if available.
+  let priorityFocusHtml = "";
+  if (Array.isArray(na.priorityFocusAreas) && na.priorityFocusAreas.length > 0) {
+    // Phase 2 will populate this
+    priorityFocusHtml += `<div class="wrn" style="margin-top:10px;"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Priority Focus Areas for This Visit</div>`;
+    na.priorityFocusAreas.forEach((item, i) => {
+      priorityFocusHtml += `<p><b>${i + 1}. ${esc(item.title || "")}:</b> ${esc(item.description || item)}</p>`;
     });
-    checklistTab += `</ul></div></div></div>`;
+    priorityFocusHtml += `</div>`;
+  } else if (Array.isArray(na.redFlags) && na.redFlags.length > 0) {
+    // Fallback: top 3 red flags framed as priorities
+    priorityFocusHtml += `<div class="wrn" style="margin-top:10px;"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Priority Focus Areas for This Visit</div>`;
+    na.redFlags.slice(0, 3).forEach((rf, i) => {
+      priorityFocusHtml += `<p><b>${i + 1}.</b> ${esc(rf)}</p>`;
+    });
+    priorityFocusHtml += `</div>`;
   }
 
-  checklistTab += `</div>`;
+  // Complex patient teaching (placeholder for Phase 2)
+  let complexTeachingHtml = "";
+  if (na.complexPatientTeaching) {
+    complexTeachingHtml += `<div class="tch" style="margin-top:8px;"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: Approaching This Patient</div>`;
+    if (Array.isArray(na.complexPatientTeaching)) {
+      complexTeachingHtml += `<ul>`;
+      na.complexPatientTeaching.forEach(item => {
+        complexTeachingHtml += `<li>${esc(item)}</li>`;
+      });
+      complexTeachingHtml += `</ul>`;
+    } else {
+      complexTeachingHtml += `<p>${esc(na.complexPatientTeaching)}</p>`;
+    }
+    complexTeachingHtml += `</div>`;
+  }
 
-  // ─────────────────────────────────────────────────────────────
-  // PRACTICE QUESTIONS TAB
-  // ─────────────────────────────────────────────────────────────
-  let practiceTab = `<div id="tab-practice" class="section"><div class="sec-title">Practice Questions</div>`;
-  let qNum = 0;
-  enabledCases.forEach(tc => {
-    const c = tc.data || tc;
-    if (!c.shelfQuestions?.length) return;
-    practiceTab += `<div class="sec-title" style="margin-top:20px;">${esc(c.problem)}</div>`;
-    c.shelfQuestions.forEach(q => {
+  // ──────────────────────────────────────────────────────────────
+  // PRACTICE QUESTIONS
+  // ──────────────────────────────────────────────────────────────
+  let practiceHtml = "";
+  const allShelfQs = enabledCases.flatMap(tc => (tc.data.shelfQuestions || []).map(q => ({ ...q, problem: tc.data.problem })));
+  if (allShelfQs.length > 0) {
+    practiceHtml += `<div class="pq-sep"><span class="pq-sep-label">Pre-Visit Review — Practice Questions</span></div>`;
+    let qNum = 0;
+    allShelfQs.forEach(q => {
       qNum++;
-      practiceTab += `<div class="pq-card" onclick="togglePQ(this)"><div class="pq-q"><div class="pq-num">${qNum}</div><div class="pq-text">${esc(q.vignette)}</div><i class="fa-solid fa-chevron-down pq-chev"></i></div><div class="pq-a"><div class="pq-ai">`;
+      practiceHtml += `<div class="pq-item">`;
+      practiceHtml += `<div class="pq-q"><span class="pq-type">${esc(q.problem || "Clinical")}</span>${qNum}. ${esc(q.vignette)}</div>`;
       if (q.options) {
-        practiceTab += `<ul class="pq-opts">`;
+        practiceHtml += `<ul class="pq-opts">`;
         Object.entries(q.options).forEach(([letter, opt]) => {
-          const cls = q.correctAnswer === letter ? "pq-correct" : "";
-          practiceTab += `<li class="${cls}"><span class="pq-letter">${esc(letter)}.</span>${esc(opt)}</li>`;
+          const isCorrect = q.correctAnswer === letter;
+          practiceHtml += `<li${isCorrect ? ' class="pq-right"' : ""}><span class="pq-l">${esc(letter)}.</span> ${esc(opt)}</li>`;
         });
-        practiceTab += `</ul>`;
+        practiceHtml += `</ul>`;
       }
-      practiceTab += `<p><strong>Answer: <span class="pq-correct">${esc(q.correctAnswer)}</span></strong></p><p>${esc(q.explanation)}</p>`;
-      practiceTab += `</div></div></div>`;
+      practiceHtml += `<p class="pq-exp"><b>Correct: ${esc(q.correctAnswer)}.</b> ${esc(q.explanation)}</p>`;
+      practiceHtml += `</div>`;
     });
-  });
-  if (qNum === 0) practiceTab += `<p style="color:var(--fg-d);font-style:italic;">No practice questions generated.</p>`;
-  practiceTab += `</div>`;
+  }
 
-  // ─────────────────────────────────────────────────────────────
-  // ASSEMBLE FULL HTML DOCUMENT
-  // ─────────────────────────────────────────────────────────────
+  // ──────────────────────────────────────────────────────────────
+  // CSS — screen-adaptive, print-optimized
+  // ──────────────────────────────────────────────────────────────
   const cssBlock = `
-:root{--bg:#0f1419;--bg-el:#161c22;--card:#1c242c;--card-h:#212a34;--brd:#2a3542;--brd-l:#344155;--fg:#e8edf3;--fg-m:#8899aa;--fg-d:#5c7080;--acc:#38bdf8;--acc-d:rgba(56,189,248,.12);--tch:#f59e0b;--tch-bg:rgba(245,158,11,.08);--tch-br:rgba(245,158,11,.25);--wrn:#f87171;--wrn-bg:rgba(248,113,113,.08);--wrn-br:rgba(248,113,113,.25);--suc:#34d399;--suc-bg:rgba(52,211,153,.08);--suc-br:rgba(52,211,153,.25);--inf:#818cf8;--inf-bg:rgba(129,140,248,.08);--inf-br:rgba(129,140,248,.25);--rx:#c084fc;--rx-bg:rgba(192,132,252,.08);--rx-br:rgba(192,132,252,.25);--pq:#2dd4bf;--pq-bg:rgba(45,212,191,.08);--pq-br:rgba(45,212,191,.25);--shadow:0 1px 3px rgba(0,0,0,.3);--toggle-bg:#2a3542;--toggle-knob:#e8edf3;--toggle-icon:#8899aa}
-body.light{--bg:#f3f4f8;--bg-el:#e9ebf0;--card:#fff;--card-h:#f7f8fa;--brd:#d8dce5;--brd-l:#c5cad6;--fg:#1a1f2e;--fg-m:#5a6275;--fg-d:#8b92a5;--acc:#0284c7;--acc-d:rgba(2,132,199,.08);--tch:#d97706;--tch-bg:rgba(217,119,6,.06);--tch-br:rgba(217,119,6,.2);--wrn:#dc2626;--wrn-bg:rgba(220,38,38,.05);--wrn-br:rgba(220,38,38,.18);--suc:#059669;--suc-bg:rgba(5,150,105,.06);--suc-br:rgba(5,150,105,.18);--inf:#6366f1;--inf-bg:rgba(99,102,241,.06);--inf-br:rgba(99,102,241,.18);--rx:#9333ea;--rx-bg:rgba(147,51,234,.06);--rx-br:rgba(147,51,234,.18);--pq:#0d9488;--pq-bg:rgba(13,148,136,.06);--pq-br:rgba(13,148,136,.18);--shadow:0 1px 3px rgba(0,0,0,.08);--toggle-bg:#cbd5e1;--toggle-knob:#fff;--toggle-icon:#64748b}
-*{margin:0;padding:0;box-sizing:border-box}
-html{scroll-behavior:smooth;font-size:15px}
-body{font-family:'DM Sans','Inter',system-ui,sans-serif;background:var(--bg);color:var(--fg);line-height:1.6;min-height:100vh;transition:background .3s,color .3s}
-.theme-toggle-wrap{position:fixed;top:16px;right:16px;z-index:1000;display:flex;align-items:center;gap:10px}
-.theme-toggle{position:relative;width:56px;height:30px;cursor:pointer;display:flex;align-items:center}
-.theme-toggle input{display:none}
-.toggle-track{position:absolute;inset:0;background:var(--toggle-bg);border-radius:15px;transition:background .3s;border:1px solid var(--brd)}
-.toggle-knob{position:absolute;left:3px;top:3px;width:24px;height:24px;background:var(--toggle-knob);border-radius:50%;transition:transform .3s,background .3s;box-shadow:0 1px 4px rgba(0,0,0,.2);display:flex;align-items:center;justify-content:center}
-.toggle-knob i{font-size:12px;color:var(--toggle-icon)}
-.theme-toggle input:checked~.toggle-knob{transform:translateX(26px)}
-.theme-toggle input:checked~.toggle-knob i.fa-moon{display:none}
-.theme-toggle input:not(:checked)~.toggle-knob i.fa-sun{display:none}
-.toggle-label{font-size:.72rem;font-weight:600;color:var(--fg-d);text-transform:uppercase;letter-spacing:.06em}
-@media(max-width:640px){.theme-toggle-wrap{top:10px;right:10px}.toggle-label{display:none}}
-.container{max-width:960px;margin:0 auto;padding:24px 20px 80px}
-.patient-header{background:var(--card);border:1px solid var(--brd);border-radius:14px;padding:28px 32px;margin-bottom:16px;position:relative;overflow:hidden;box-shadow:var(--shadow)}
-.patient-header::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,var(--acc),var(--tch),var(--suc))}
-.header-top{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:16px;margin-bottom:14px}
-.patient-name{font-size:1.6rem;font-weight:700;letter-spacing:-.02em}
-.patient-name span{color:var(--fg-m);font-weight:400;font-size:.92rem;margin-left:10px}
-.badge-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
-.badge{display:inline-flex;align-items:center;gap:5px;padding:4px 12px;border-radius:20px;font-size:.76rem;font-weight:600;white-space:nowrap}
-.badge-v{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
-.badge-sc{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
-.badge-a{background:var(--wrn-bg);color:var(--wrn);border:1px solid var(--wrn-br)}
-.sc-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:10px}
-.sc-c{font-size:.68rem;padding:2px 8px;border-radius:4px;background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br);font-weight:500}
-.hgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px;margin-top:14px}
-.hs{display:flex;flex-direction:column;gap:2px}
-.hs-l{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:600}
-.hs-v{font-size:.9rem;color:var(--fg);font-weight:500}
-.oneliner{background:var(--acc-d);border:1px solid rgba(56,189,248,.15);border-radius:10px;padding:14px 20px;margin-bottom:16px;font-size:.9rem;line-height:1.65}
-.qr-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-bottom:16px}
-@media(max-width:700px){.qr-grid{grid-template-columns:1fr}}
-.qr-panel{background:var(--card);border:1px solid var(--brd);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)}
-.qr-head{padding:12px 18px;font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-d);border-bottom:1px solid var(--brd);display:flex;align-items:center;gap:8px}
-.qr-body{padding:14px 18px}
-.pmh-list{list-style:none;padding:0}
-.pmh-list li{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--brd);font-size:.84rem;color:var(--fg-m)}
-.pmh-list li:last-child{border-bottom:none}
-.pmh-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
-.pmh-dot.active{background:var(--suc)}
-.pmh-dot.resolved{background:var(--fg-d)}
-.pmh-list li .sc-tag{margin-left:auto;font-size:.65rem;padding:1px 7px;border-radius:4px;background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br);font-weight:600}
-.ref-item{margin-bottom:12px}.ref-item:last-child{margin-bottom:0}
-.ref-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:4px;display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;border-left-width:0;border-style:solid;border-color:transparent}
-.ref-label.ref-surgical{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
-.ref-label.ref-allergies{background:var(--wrn-bg);color:var(--wrn);border:1px solid var(--wrn-br)}
-.ref-label.ref-family{background:var(--inf-bg);color:var(--inf);border:1px solid var(--inf-br)}
-.ref-label.ref-diagnostics{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
-.ref-label.ref-labs{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
-.ref-text{font-size:.84rem;color:var(--fg-m);line-height:1.6}
-.nav-tabs{display:flex;gap:4px;padding:6px;background:var(--bg-el);border:1px solid var(--brd);border-radius:12px;margin-bottom:18px;overflow-x:auto;-webkit-overflow-scrolling:touch}
-.nav-tab{padding:9px 14px;border-radius:8px;border:none;background:transparent;color:var(--fg-m);font-family:inherit;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap;display:flex;align-items:center;gap:6px}
-.nav-tab:hover{color:var(--fg);background:var(--card)}
-.nav-tab.active{background:var(--card);color:var(--acc);box-shadow:var(--shadow)}
-.section{display:none}.section.active{display:block}
-.sec-title{font-size:.72rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:var(--fg-d);margin-bottom:14px;padding-left:4px}
-.sec-row{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}
-.toggle-all{background:none;border:1px solid var(--brd);color:var(--fg-m);font-family:inherit;font-size:.74rem;font-weight:600;padding:6px 14px;border-radius:8px;cursor:pointer;transition:all .2s}
-.toggle-all:hover{color:var(--fg);border-color:var(--brd-l);background:var(--card)}
-.card{background:var(--card);border:1px solid var(--brd);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow);transition:border-color .2s}
-.card:hover{border-color:var(--brd-l)}
-.ch{display:flex;justify-content:space-between;align-items:center;padding:14px 18px;cursor:pointer;user-select:none;transition:background .15s;gap:12px}
-.ch:hover{background:var(--card-h)}
-.ch-l{display:flex;align-items:center;gap:11px;min-width:0}
-.ci{width:32px;height:32px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.82rem;flex-shrink:0}
-.ci.mental{background:var(--inf-bg);color:var(--inf);border:1px solid var(--inf-br)}
-.ci.skin{background:var(--rx-bg);color:var(--rx);border:1px solid var(--rx-br)}
-.ci.gi{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
-.ci.pain{background:var(--wrn-bg);color:var(--wrn);border:1px solid var(--wrn-br)}
-.ci.ent{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
-.ci.neuro{background:var(--inf-bg);color:var(--inf);border:1px solid var(--inf-br)}
-.ci.social{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
-.ci.lab{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
-.ct{font-size:.9rem;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.cs{font-size:.73rem;color:var(--fg-m);margin-top:1px}
-.ch-r{display:flex;align-items:center;gap:10px;flex-shrink:0}
-.sp{padding:3px 10px;border-radius:12px;font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.04em}
-.sp-active{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
-.sp-resolved{background:rgba(136,153,170,.1);color:var(--fg-m);border:1px solid rgba(136,153,170,.2)}
-.sp-stable{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
-.sp-reg{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
-.chev{color:var(--fg-d);font-size:.72rem;transition:transform .25s}
-.card.open .chev{transform:rotate(180deg)}
-.cb{max-height:0;overflow:hidden;transition:max-height .35s ease}
-.card.open .cb{max-height:8000px}
-.cbi{padding:0 18px 18px}
-.cbi p{font-size:.86rem;color:var(--fg-m);line-height:1.65;margin-bottom:8px}
-.cbi p:last-child{margin-bottom:0}
-.cbi p strong{color:var(--fg);font-weight:600}
-.cbi ul{padding-left:1.25rem;margin-bottom:8px}
-.cbi ul li{font-size:.86rem;color:var(--fg-m);line-height:1.6;margin-bottom:4px}
-.cond-sub{margin-top:14px;border-top:1px solid var(--brd);padding-top:12px}
-.cond-sub:first-child{margin-top:0;border-top:none;padding-top:0}
-.cond-sub-label{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:6px;display:flex;align-items:center;gap:6px}
-.tbox{border-radius:10px;padding:14px 18px;margin-top:14px;position:relative}
-.tbox::before{content:'';position:absolute;left:0;top:8px;bottom:8px;width:3px;border-radius:0 3px 3px 0}
-.tbox.teach{background:var(--tch-bg);border:1px solid var(--tch-br)}
-.tbox.teach::before{background:var(--tch)}
-.tbox.ask{background:var(--inf-bg);border:1px solid var(--inf-br)}
-.tbox.ask::before{background:var(--inf)}
-.tbox.warn{background:var(--wrn-bg);border:1px solid var(--wrn-br)}
-.tbox.warn::before{background:var(--wrn)}
-.tbox-l{font-size:.68rem;font-weight:700;text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px;display:flex;align-items:center;gap:6px}
-.tbox.teach .tbox-l{color:var(--tch)}
-.tbox.ask .tbox-l{color:var(--inf)}
-.tbox.warn .tbox-l{color:var(--wrn)}
-.tbox ul{margin:0;padding-left:18px}
-.tbox li{font-size:.81rem;color:var(--fg-m);line-height:1.65;margin-bottom:4px}
-.tbox li strong{color:var(--fg);font-weight:600}
-.tbox p{font-size:.81rem;color:var(--fg-m);line-height:1.65}
-.med-table-wrap{overflow-x:auto;border-radius:10px;border:1px solid var(--brd);box-shadow:var(--shadow)}
-.med-table{width:100%;border-collapse:collapse;font-size:.82rem}
-.med-table th{background:var(--bg-el);color:var(--fg-d);font-size:.68rem;font-weight:600;text-transform:uppercase;letter-spacing:.06em;padding:10px 14px;text-align:left;border-bottom:1px solid var(--brd);white-space:nowrap}
-.med-table td{padding:10px 14px;border-bottom:1px solid var(--brd);color:var(--fg-m);vertical-align:top;line-height:1.55}
-.med-table tr:last-child td{border-bottom:none}
-.med-table .drug-name{color:var(--rx);font-weight:600;white-space:nowrap}
-.verbatim{font-family:inherit;font-size:.83rem;white-space:pre-wrap;color:var(--fg-m);line-height:1.55;padding:12px 16px;background:var(--bg-el);border-radius:6px;overflow-x:auto}
-.fmt-block p{font-size:.86rem;color:var(--fg-m);line-height:1.65;margin-bottom:8px}
-.fmt-block p:last-child{margin-bottom:0}
-.fmt-block ul{padding-left:1.25rem;margin-bottom:8px}
-.fmt-block ul:last-child{margin-bottom:0}
-.fmt-block li{font-size:.85rem;color:var(--fg-m);line-height:1.6;margin-bottom:4px}
-.fmt-block li strong{color:var(--fg);font-weight:600}
-.vr{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px;margin-top:10px}
-.vc{background:var(--bg-el);border:1px solid var(--brd);border-radius:8px;padding:10px 14px;text-align:center}
-.vc-l{font-size:.64rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:600;margin-bottom:3px}
-.vc-v{font-family:monospace;font-size:.95rem;font-weight:500;color:var(--fg)}
-.info-box{background:var(--bg-el);border:1px solid var(--brd);border-radius:8px;padding:12px 16px;margin-bottom:12px}
-.info-box:last-child{margin-bottom:0}
-.info-box-title{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:700;margin-bottom:6px}
-.cl{list-style:none;padding:0}
-.cl li{display:flex;align-items:flex-start;gap:10px;padding:10px 0;border-bottom:1px solid var(--brd);font-size:.86rem;color:var(--fg-m);cursor:pointer;transition:color .15s}
-.cl li:last-child{border-bottom:none}
-.cl li:hover{color:var(--fg)}
-.cbx{width:20px;height:20px;border-radius:5px;border:2px solid var(--brd-l);flex-shrink:0;margin-top:1px;display:flex;align-items:center;justify-content:center;transition:all .2s}
-.cbx i{font-size:.62rem;color:transparent;transition:color .2s}
-.cl li.ck .cbx{background:var(--suc);border-color:var(--suc)}
-.cl li.ck .cbx i{color:#fff}
-.cl li.ck{color:var(--fg-d);text-decoration:line-through}
-.pq-card{background:var(--card);border:1px solid var(--brd);border-radius:12px;margin-bottom:14px;overflow:hidden;box-shadow:var(--shadow)}
-.pq-q{padding:16px 18px;cursor:pointer;transition:background .15s;display:flex;align-items:flex-start;gap:14px}
-.pq-q:hover{background:var(--card-h)}
-.pq-num{background:var(--pq-bg);color:var(--pq);border:1px solid var(--pq-br);width:30px;height:30px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:.78rem;font-weight:700;flex-shrink:0;font-family:monospace}
-.pq-text{font-size:.87rem;color:var(--fg);line-height:1.6;flex:1}
-.pq-chev{color:var(--fg-d);font-size:.72rem;transition:transform .25s;margin-top:4px;flex-shrink:0}
-.pq-card.open .pq-chev{transform:rotate(180deg)}
-.pq-a{max-height:0;overflow:hidden;transition:max-height .35s ease}
-.pq-card.open .pq-a{max-height:3000px}
-.pq-ai{padding:16px 18px;border-top:1px solid var(--brd)}
-.pq-ai p{font-size:.84rem;color:var(--fg-m);line-height:1.65;margin-bottom:8px}
-.pq-ai p:last-child{margin-bottom:0}
-.pq-ai strong{color:var(--fg);font-weight:600}
-.pq-ai .pq-correct{color:var(--suc);font-weight:700}
-.pq-opts{list-style:none;padding:0;margin:8px 0}
-.pq-opts li{padding:5px 0;font-size:.84rem;color:var(--fg-m)}
-.pq-opts li.pq-correct{color:var(--suc);font-weight:600}
-.pq-opts li .pq-letter{font-weight:700;margin-right:6px;color:var(--fg-d)}
-.pq-opts li.pq-correct .pq-letter{color:var(--suc)}
-::-webkit-scrollbar{width:6px;height:6px}::-webkit-scrollbar-track{background:transparent}::-webkit-scrollbar-thumb{background:var(--brd-l);border-radius:3px}
-@media print{body{background:#fff!important;color:#111!important}.card,.qr-panel,.pq-card{border-color:#ddd!important;background:#fff!important}.nav-tabs{display:none}.section{display:block!important}.cb,.pq-a{max-height:none!important}.chev,.pq-chev{display:none}.tbox{break-inside:avoid}.theme-toggle-wrap{display:none!important}}
-@media(max-width:640px){.container{padding:12px 10px 60px}.patient-header{padding:20px 16px}.patient-name{font-size:1.3rem}.hgrid{grid-template-columns:repeat(2,1fr)}.ch{padding:12px 14px}.cbi{padding:0 14px 14px}.vr{grid-template-columns:repeat(2,1fr)}.nav-tab{padding:8px 12px;font-size:.76rem}}
+:root {
+  --bg: #ffffff;
+  --fg: #1a1f2e;
+  --fg-m: #374151;
+  --fg-d: #6b7280;
+  --border: #d1d5db;
+  --border-l: #e5e7eb;
+  --border-vl: #f3f4f6;
+  --panel: #f9fafb;
+  --panel-h: #f3f4f6;
+  --accent: #2563eb;
+  --page-bg: #c8cdd5;
+}
+body.dark {
+  --bg: #0f1419;
+  --fg: #e8edf3;
+  --fg-m: #cbd5e1;
+  --fg-d: #94a3b8;
+  --border: #334155;
+  --border-l: #263149;
+  --border-vl: #1e293b;
+  --panel: #1c242c;
+  --panel-h: #212a34;
+  --accent: #60a5fa;
+  --page-bg: #0b1220;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { font-size: 11pt; }
+body {
+  font-family: 'DM Sans', -apple-system, sans-serif;
+  background: var(--page-bg);
+  color: var(--fg);
+  line-height: 1.45;
+  padding: 20px 0;
+  min-height: 100vh;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+  transition: background .2s, color .2s;
+}
+.page {
+  max-width: 10in;
+  margin: 0 auto;
+  background: var(--bg);
+  box-shadow: 0 2px 24px rgba(0,0,0,.18), 0 0 0 1px rgba(0,0,0,.05);
+  padding: 30px 36px 36px;
+  border-radius: 2px;
+}
+body.dark .page {
+  box-shadow: 0 2px 24px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.05);
+}
+strong, b { font-weight: 700; color: var(--fg); }
+.mono { font-family: 'JetBrains Mono', monospace; }
+
+/* Toolbar */
+.doc-toolbar {
+  max-width: 10in;
+  margin: 0 auto 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 8px;
+}
+.tb-btn {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-family: inherit;
+  font-size: .82rem;
+  font-weight: 600;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: background .15s, transform .1s;
+}
+.tb-btn:hover { background: var(--panel-h); transform: translateY(-1px); }
+.tb-btn:active { transform: translateY(0); }
+
+/* Patient header */
+.pt-header {
+  border-bottom: 2.5px solid var(--fg);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+.pt-name {
+  font-size: 17pt;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  margin-bottom: 4px;
+  color: var(--fg);
+}
+.pt-name .pt-demo { font-weight: 400; color: var(--fg-d); font-size: 12pt; margin-left: 8px; }
+.pt-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  font-size: 9pt;
+  color: var(--fg-d);
+}
+.pt-meta span { white-space: nowrap; }
+.pt-meta b { color: var(--fg-m); }
+.pt-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+.pt-b {
+  font-size: 7.5pt;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 3px;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.pt-b-v { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
+.pt-b-sc { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+.pt-b-a { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
+body.dark .pt-b-v { background: rgba(56,189,248,.15); color: #7dd3fc; border-color: rgba(125,211,252,.3); }
+body.dark .pt-b-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
+body.dark .pt-b-a { background: rgba(248,113,113,.15); color: #fca5a5; border-color: rgba(252,165,165,.3); }
+.pt-sc-row { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
+.pt-sc-c {
+  font-size: 7pt;
+  padding: 1px 6px;
+  border-radius: 2px;
+  background: #fef9c3;
+  color: #854d0e;
+  border: 1px solid #fde047;
+  font-weight: 600;
+}
+body.dark .pt-sc-c { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
+
+/* One-liner */
+.oneliner {
+  background: #f0f7ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+  font-size: 9.5pt;
+  line-height: 1.55;
+  color: var(--fg-m);
+}
+body.dark .oneliner { background: rgba(56,189,248,.08); border-color: rgba(56,189,248,.25); color: var(--fg-m); }
+.oneliner strong { color: #1d4ed8; }
+body.dark .oneliner strong { color: #93c5fd; }
+
+/* Allergy bar */
+.allergy {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9pt;
+  font-weight: 600;
+  color: #166534;
+  background: #dcfce7;
+  border: 1px solid #86efac;
+  border-radius: 3px;
+  padding: 3px 10px;
+  margin-bottom: 10px;
+}
+.allergy.allergy-warn {
+  color: #991b1b;
+  background: #fee2e2;
+  border-color: #fca5a5;
+}
+body.dark .allergy { background: rgba(52,211,153,.15); color: #6ee7b7; border-color: rgba(52,211,153,.3); }
+body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca5a5; border-color: rgba(248,113,113,.3); }
+
+/* Reference grid */
+.ref-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
+.ref-box { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--bg); }
+.ref-head {
+  background: var(--panel-h);
+  font-size: 7.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--fg-d);
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.ref-body { padding: 8px 10px; }
+.pmh-list { list-style: none; }
+.pmh-list li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9pt;
+  color: var(--fg-m);
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-vl);
+  line-height: 1.35;
+}
+.pmh-list li:last-child { border-bottom: none; }
+.pmh-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
+.pmh-dot.on { background: #22c55e; }
+.pmh-dot.off { background: #9ca3af; }
+.pmh-sc {
+  margin-left: auto;
+  font-size: 6.5pt;
+  padding: 0 5px;
+  border-radius: 2px;
+  background: #fef9c3;
+  color: #854d0e;
+  border: 1px solid #fde047;
+  font-weight: 600;
+  white-space: nowrap;
+}
+body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
+.ref-item { margin-bottom: 8px; }
+.ref-item:last-child { margin-bottom: 0; }
+.ref-label {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--fg-d);
+  margin-bottom: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ref-text { font-size: 8.5pt; color: var(--fg-m); line-height: 1.45; }
+
+/* Vitals row */
+.vitals-row {
+  display: flex;
+  flex-wrap: wrap;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  margin-bottom: 10px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.vital-chip { flex: 0 0 auto; padding: 5px 12px; border-right: 1px solid var(--border); text-align: center; }
+.vital-chip:last-child { border-right: none; }
+.vital-chip-label {
+  font-size: 6pt;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--fg-d);
+  font-weight: 700;
+}
+.vital-chip-val { font-family: 'JetBrains Mono', monospace; font-size: 10.5pt; font-weight: 500; color: var(--fg); }
+
+/* Section dividers */
+.sec-div {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 8px;
+  page-break-after: avoid;
+}
+.sec-div-line { flex: 1; height: 1.5px; background: var(--border); }
+.sec-div-label {
+  font-size: 8pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--fg-d);
+  white-space: nowrap;
+}
+
+/* Meds table */
+.med-tbl { width: 100%; border-collapse: collapse; font-size: 9pt; margin-bottom: 8px; background: var(--bg); }
+.med-tbl th {
+  background: var(--panel-h);
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--fg-d);
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1.5px solid var(--fg-d);
+  white-space: nowrap;
+}
+.med-tbl td {
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border-l);
+  color: var(--fg-m);
+  vertical-align: top;
+  line-height: 1.4;
+}
+.med-tbl tr:last-child td { border-bottom: none; }
+.drug-n { color: #7c3aed; font-weight: 700; white-space: nowrap; }
+body.dark .drug-n { color: #c084fc; }
+.med-ind { color: var(--fg-d); font-size: 8pt; }
+
+/* Problem cards */
+.prob {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin-bottom: 12px;
+  page-break-inside: avoid;
+  overflow: hidden;
+  background: var(--bg);
+}
+.prob-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  gap: 10px;
+  page-break-after: avoid;
+}
+.prob-title { font-size: 10pt; font-weight: 700; color: var(--fg); line-height: 1.3; }
+.prob-sub { font-size: 8pt; color: var(--fg-d); font-weight: 400; margin-top: 2px; }
+.prob-pill {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  padding: 3px 10px;
+  border-radius: 10px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.pill-active { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
+.pill-stable { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+.pill-resolved { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
+.pill-reg { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
+body.dark .pill-active { background: rgba(52,211,153,.15); color: #6ee7b7; border-color: rgba(52,211,153,.3); }
+body.dark .pill-stable { background: rgba(56,189,248,.15); color: #7dd3fc; border-color: rgba(56,189,248,.3); }
+body.dark .pill-resolved { background: rgba(148,163,184,.15); color: #cbd5e1; border-color: rgba(148,163,184,.3); }
+body.dark .pill-reg { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
+.prob-body { padding: 10px 12px; }
+.prob-body p { font-size: 9pt; color: var(--fg-m); line-height: 1.5; margin-bottom: 6px; }
+.prob-body p:last-child { margin-bottom: 0; }
+.prob-subsec {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px dashed var(--border-l);
+}
+.prob-subsec:first-child { margin-top: 0; padding-top: 0; border-top: none; }
+.prob-subsec-label {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--fg-d);
+  margin-bottom: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+/* Callout boxes */
+.tch {
+  background: #fffbeb;
+  border-left: 2.5px solid #f59e0b;
+  border-radius: 0 4px 4px 0;
+  padding: 8px 10px;
+  margin-top: 8px;
+  page-break-inside: avoid;
+}
+body.dark .tch { background: rgba(245,158,11,.08); }
+.tch-label {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #b45309;
+  margin-bottom: 4px;
+}
+body.dark .tch-label { color: #fcd34d; }
+.tch ul { margin: 0; padding-left: 16px; }
+.tch li { font-size: 8.5pt; color: #44403c; line-height: 1.45; margin-bottom: 3px; }
+body.dark .tch li { color: #d6d3d1; }
+.tch li:last-child { margin-bottom: 0; }
+.tch p { font-size: 8.5pt; color: #44403c; line-height: 1.45; margin: 0; }
+body.dark .tch p { color: #d6d3d1; }
+
+.ask {
+  background: #eef2ff;
+  border-left: 2.5px solid #6366f1;
+  border-radius: 0 4px 4px 0;
+  padding: 8px 10px;
+  margin-top: 8px;
+  page-break-inside: avoid;
+}
+body.dark .ask { background: rgba(99,102,241,.08); }
+.ask-label {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #4338ca;
+  margin-bottom: 4px;
+}
+body.dark .ask-label { color: #a5b4fc; }
+.ask p { font-size: 8.5pt; color: #3730a3; line-height: 1.45; margin: 0; }
+body.dark .ask p { color: #c7d2fe; }
+
+.wrn {
+  background: #fef2f2;
+  border-left: 2.5px solid #ef4444;
+  border-radius: 0 4px 4px 0;
+  padding: 8px 10px;
+  margin-top: 8px;
+  page-break-inside: avoid;
+}
+body.dark .wrn { background: rgba(239,68,68,.08); }
+.wrn-label {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #dc2626;
+  margin-bottom: 4px;
+}
+body.dark .wrn-label { color: #fca5a5; }
+.wrn p { font-size: 8.5pt; color: #991b1b; line-height: 1.45; margin: 0 0 3px; }
+body.dark .wrn p { color: #fecaca; }
+.wrn p:last-child { margin-bottom: 0; }
+
+/* Lab tables */
+.lab-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8.5pt;
+  margin-bottom: 6px;
+  background: var(--bg);
+}
+.lab-tbl th {
+  background: var(--panel-h);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: var(--fg-d);
+  padding: 5px 8px;
+  text-align: center;
+  border-bottom: 1px solid var(--fg-d);
+  white-space: nowrap;
+}
+.lab-tbl th:first-child { text-align: left; }
+.lab-tbl td {
+  padding: 4px 8px;
+  text-align: center;
+  border-bottom: 1px solid var(--border-l);
+  color: var(--fg-m);
+  white-space: nowrap;
+}
+.lab-tbl td:first-child { text-align: left; color: var(--fg); font-weight: 500; font-family: 'DM Sans', sans-serif; }
+.lab-tbl tr:last-child td { border-bottom: none; }
+.lab-hi, .lab-lo { color: #dc2626 !important; font-weight: 700; }
+body.dark .lab-hi, body.dark .lab-lo { color: #fca5a5 !important; }
+.lab-ok { color: #16a34a !important; }
+body.dark .lab-ok { color: #86efac !important; }
+.lab-sec {
+  font-family: 'DM Sans', sans-serif !important;
+  font-size: 7pt !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: .06em !important;
+  color: var(--fg-d) !important;
+  background: var(--panel-h) !important;
+  padding: 5px 8px 3px !important;
+  border-bottom: 1px solid var(--border) !important;
+  text-align: left !important;
+}
+.lab-note {
+  font-size: 8.5pt;
+  color: var(--fg-m);
+  background: var(--panel);
+  border: 1px solid var(--border-l);
+  border-radius: 3px;
+  padding: 7px 10px;
+  margin-top: 6px;
+  line-height: 1.45;
+  margin-bottom: 8px;
+}
+
+/* Social grid */
+.soc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+.soc-card {
+  background: var(--panel);
+  border: 1px solid var(--border-l);
+  border-radius: 3px;
+  padding: 6px 10px;
+}
+.soc-label {
+  font-size: 6.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--fg-d);
+  margin-bottom: 2px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.soc-text { font-size: 8.5pt; color: var(--fg-m); line-height: 1.4; }
+
+/* Timeline */
+.tl-compact { list-style: none; }
+.tl-compact li {
+  font-size: 9pt;
+  color: var(--fg-m);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-vl);
+  line-height: 1.45;
+  display: flex;
+  gap: 10px;
+  page-break-inside: avoid;
+}
+.tl-compact li:last-child { border-bottom: none; }
+.tl-date {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8pt;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 72px;
+}
+
+/* Preventive */
+.prev-list { list-style: none; }
+.prev-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-vl);
+  font-size: 9pt;
+  color: var(--fg-m);
+  gap: 10px;
+}
+.prev-list li:last-child { border-bottom: none; }
+.prev-st {
+  font-size: 7pt;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 8px;
+  white-space: nowrap;
+}
+.prev-due { background: #fee2e2; color: #991b1b; }
+.prev-done { background: #dcfce7; color: #166534; }
+body.dark .prev-due { background: rgba(239,68,68,.15); color: #fca5a5; }
+body.dark .prev-done { background: rgba(52,211,153,.15); color: #6ee7b7; }
+
+/* Visit plan checklist */
+.ck-list { list-style: none; }
+.ck-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  font-size: 9pt;
+  color: var(--fg-m);
+  padding: 4px 0;
+  border-bottom: 1px solid var(--border-vl);
+  line-height: 1.45;
+  page-break-inside: avoid;
+}
+.ck-list li:last-child { border-bottom: none; }
+.ck-box {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--fg-d);
+  border-radius: 2px;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+/* Practice questions */
+.pq-sep {
+  border-top: 2px dashed var(--fg-d);
+  margin: 20px 0 14px;
+  position: relative;
+}
+.pq-sep-label {
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg);
+  padding: 0 12px;
+  font-size: 8pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .1em;
+  color: var(--fg-d);
+}
+.pq-item {
+  margin-bottom: 12px;
+  page-break-inside: avoid;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-vl);
+}
+.pq-item:last-child { border-bottom: none; margin-bottom: 0; }
+.pq-q { font-size: 9pt; font-weight: 600; color: var(--fg); line-height: 1.5; margin-bottom: 4px; }
+.pq-type {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+  color: #0d9488;
+  display: block;
+  margin-bottom: 2px;
+}
+body.dark .pq-type { color: #5eead4; }
+.pq-opts { list-style: none; margin: 4px 0; padding: 0; }
+.pq-opts li { font-size: 8.5pt; color: var(--fg-m); padding: 2px 0; line-height: 1.4; }
+.pq-opts li .pq-l { font-weight: 700; margin-right: 5px; color: var(--fg-d); }
+.pq-opts li.pq-right { color: #166534; font-weight: 700; }
+body.dark .pq-opts li.pq-right { color: #86efac; }
+.pq-opts li.pq-right .pq-l { color: #166534; }
+body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
+.pq-exp { font-size: 8.5pt; color: var(--fg-m); line-height: 1.45; margin-top: 4px; }
+
+/* Footer */
+.doc-footer {
+  margin-top: 20px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+  font-size: 7.5pt;
+  color: var(--fg-d);
+  text-align: center;
+  letter-spacing: .03em;
+}
+
+/* Print */
+@page { size: letter; margin: 0.5in 0.55in 0.6in 0.55in; }
+@media print {
+  body { background: #fff !important; color: #1a1f2e !important; padding: 0 !important; }
+  body.dark { background: #fff !important; color: #1a1f2e !important; }
+  html { font-size: 9.5pt; }
+  .page { max-width: none; box-shadow: none; padding: 0; margin: 0; background: #fff !important; }
+  body.dark .page { background: #fff !important; }
+  .doc-toolbar { display: none !important; }
+  /* Force light-theme colors for print */
+  body.dark { --bg: #ffffff; --fg: #1a1f2e; --fg-m: #374151; --fg-d: #6b7280; --border: #d1d5db; --border-l: #e5e7eb; --border-vl: #f3f4f6; --panel: #f9fafb; --panel-h: #f3f4f6; --accent: #2563eb; }
+  body.dark .oneliner, body.dark .allergy, body.dark .pt-b-v, body.dark .pt-b-sc, body.dark .pt-b-a, body.dark .pt-sc-c, body.dark .pmh-sc, body.dark .pill-active, body.dark .pill-stable, body.dark .pill-resolved, body.dark .pill-reg, body.dark .tch, body.dark .ask, body.dark .wrn, body.dark .prev-due, body.dark .prev-done { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  .prob { break-inside: avoid; page-break-inside: avoid; }
+  .tch, .ask, .wrn { break-inside: avoid; page-break-inside: avoid; }
+  h1, h2, h3, h4, h5, h6, .sec-div, .prob-head { page-break-after: avoid; break-after: avoid; }
+  p, li, div { orphans: 3; widows: 3; }
+  tr { page-break-inside: avoid; }
+}
 `;
 
+  // ──────────────────────────────────────────────────────────────
+  // JS — theme toggle + print
+  // ──────────────────────────────────────────────────────────────
   const jsBlock = `
 (function(){
-  var STORAGE_KEY='inroom-${sessionId}-theme';
-  var CHECKLIST_KEY='inroom-${sessionId}-checks';
-  var sw=document.getElementById('themeSwitch');
-  if(sw){
-    try{var saved=localStorage.getItem(STORAGE_KEY);if(saved==='light'){sw.checked=true;document.body.classList.add('light')}}catch(e){}
-    sw.addEventListener('change',function(){
-      if(this.checked){document.body.classList.add('light');try{localStorage.setItem(STORAGE_KEY,'light')}catch(e){}}
-      else{document.body.classList.remove('light');try{localStorage.setItem(STORAGE_KEY,'dark')}catch(e){}}
+  var STORAGE_KEY = 'inroom-${sessionId}-theme';
+  var sw = document.getElementById('themeSwitch');
+  if (sw) {
+    try {
+      var saved = localStorage.getItem(STORAGE_KEY);
+      if (saved === 'dark') { document.body.classList.add('dark'); sw.checked = true; }
+    } catch(e) {}
+    sw.addEventListener('change', function(){
+      if (this.checked) { document.body.classList.add('dark'); try { localStorage.setItem(STORAGE_KEY, 'dark'); } catch(e) {} }
+      else { document.body.classList.remove('dark'); try { localStorage.setItem(STORAGE_KEY, 'light'); } catch(e) {} }
     });
   }
-  try{var savedChecks=JSON.parse(localStorage.getItem(CHECKLIST_KEY)||'{}');
-    document.querySelectorAll('.cl li').forEach(function(li,i){if(savedChecks[i])li.classList.add('ck')});
-  }catch(e){}
 })();
-function switchTab(id,btn){document.querySelectorAll('.nav-tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.section').forEach(function(s){s.classList.remove('active')});btn.classList.add('active');document.getElementById('tab-'+id).classList.add('active')}
-function toggleCard(h){h.parentElement.classList.toggle('open')}
-function toggleAll(sid){var s=document.getElementById(sid);var cs=s.querySelectorAll('.card');var allO=Array.from(cs).every(function(c){return c.classList.contains('open')});cs.forEach(function(c){if(allO)c.classList.remove('open');else c.classList.add('open')});var b=s.querySelector('.toggle-all');if(b)b.textContent=allO?'Expand All':'Collapse All'}
-function toggleCK(li){li.classList.toggle('ck');try{var lis=Array.from(document.querySelectorAll('.cl li'));var checks={};lis.forEach(function(l,i){if(l.classList.contains('ck'))checks[i]=true});localStorage.setItem('inroom-${sessionId}-checks',JSON.stringify(checks))}catch(e){}}
-function togglePQ(card){card.classList.toggle('open')}
+function printDoc(){ window.print(); }
 `;
 
+  // ──────────────────────────────────────────────────────────────
+  // ASSEMBLE
+  // ──────────────────────────────────────────────────────────────
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>${esc(title)}</title>
-<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <style>${cssBlock}</style>
 </head>
 <body>
-<div class="theme-toggle-wrap">
-  <span class="toggle-label">Theme</span>
-  <label class="theme-toggle" aria-label="Toggle theme">
-    <input type="checkbox" id="themeSwitch">
-    <div class="toggle-track"></div>
-    <div class="toggle-knob">
-      <i class="fa-solid fa-moon"></i>
-      <i class="fa-solid fa-sun"></i>
-    </div>
-  </label>
+
+<div class="doc-toolbar">
+  <button class="tb-btn" onclick="printDoc()"><i class="fa-solid fa-print"></i> Print / PDF</button>
+  <label class="tb-btn" style="cursor:pointer;"><input type="checkbox" id="themeSwitch" style="display:none;"><i class="fa-solid fa-moon"></i> Dark mode</label>
 </div>
-<div class="container">
+
+<div class="page">
 ${headerHtml}
 ${oneLinerHtml}
-${qrHtml}
+${allergyBarHtml}
+${refGridHtml}
 ${vitalsHtml}
-${navHtml}
-${problemsTab}
-${medsTab}
-${labsTab}
-${socialTab}
-${timelineTab}
-${preventiveTab}
-${checklistTab}
-${practiceTab}
+${medsSectionHtml}
+${problemsHtml}
+${labsHtml}
+${socialHtml}
+${timelineHtml}
+${preventiveHtml}
+${visitPlanHtml}
+${priorityFocusHtml}
+${complexTeachingHtml}
+${practiceHtml}
+<div class="doc-footer">Prenote for ${esc(primaryLabel)} — Generated for clinical education use — Session ${esc(sessionId)}</div>
 </div>
+
 <script>${jsBlock}<\/script>
 </body>
 </html>`;
