@@ -7478,10 +7478,18 @@ const buildInRoomHtml = (doc, session) => {
   // ─────────────────────────────────────────────────────────────
   // BUILD HEADER
   // ─────────────────────────────────────────────────────────────
+  // Primary heading: the patient descriptor ("38 y/o M veteran") — this is
+  // the closest we can get to a patient identifier without PHI, and it's what
+  // a resident would say first when presenting.
+  // Secondary heading (subtitle): the session context — chief concern or
+  // working diagnosis — so the student sees WHAT this visit is about.
+  const primaryLabel = na.patientDescriptor?.trim() || "Patient";
+  const subtitle = doc.chiefConcern?.trim() || doc.workingDx?.trim() || "";
+
   let headerHtml = `<div class="patient-header">`;
   headerHtml += `<div class="header-top"><div>`;
-  headerHtml += `<div class="patient-name">${esc(title)}`;
-  if (na.patientDescriptor) headerHtml += ` <span>${esc(na.patientDescriptor)}</span>`;
+  headerHtml += `<div class="patient-name">${esc(primaryLabel)}`;
+  if (subtitle) headerHtml += ` <span>${esc(subtitle)}</span>`;
   headerHtml += `</div>`;
 
   if (Array.isArray(na.patientBadges) && na.patientBadges.length > 0) {
@@ -7839,6 +7847,21 @@ const buildInRoomHtml = (doc, session) => {
     na.redFlags.forEach(rf => checklistTab += `<li>${esc(rf)}</li>`);
     checklistTab += `</ul></div>`;
   }
+
+  // Ongoing long-term learning goals — persist across sessions, worth resurfacing
+  // as reminders when the student is prepping for a visit
+  const goals = Array.isArray(doc.longTermGoals) ? doc.longTermGoals : [];
+  if (goals.length > 0) {
+    const shownGoals = [...goals].sort((a, b) => (b.id || 0) - (a.id || 0)).slice(0, 5);
+    checklistTab += `<div class="card open" style="margin-top:16px;"><div class="ch"><div class="ch-l"><div class="ci social"><i class="fa-solid fa-bullseye"></i></div><div><div class="ct">Ongoing Learning Goals</div><div class="cs">${shownGoals.length} of ${goals.length} shown · your standing objectives</div></div></div></div><div class="cb" style="max-height:none;"><div class="cbi"><ul>`;
+    shownGoals.forEach(g => {
+      checklistTab += `<li><strong>${esc(g.text)}</strong>`;
+      if (g.added) checklistTab += ` <span style="color:var(--fg-d);font-size:.75rem;">(added ${esc(g.added)})</span>`;
+      checklistTab += `</li>`;
+    });
+    checklistTab += `</ul></div></div></div>`;
+  }
+
   checklistTab += `</div>`;
 
   // ─────────────────────────────────────────────────────────────
@@ -8896,9 +8919,7 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
-  // Strips leading action verbs like "Continue", "Start", "Initiate", "Add",
-// "Consider" that the AI sometimes prepends to medication names when framing
-// treatment as ongoing management. Preserves the actual drug name.
+  
 const renderContent = () => {
     return <DocumentContent doc={doc} phase={phase} session={session} />;
   };
