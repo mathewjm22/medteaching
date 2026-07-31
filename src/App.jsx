@@ -2301,6 +2301,9 @@ const analyzeNote = async () => {
         deterministicProblemNames = (deterministicPrenote.pmhProblems || [])
           .map((p) => p.rawHeader || p.name)
           .filter(Boolean);
+          window.__lastParsedPrenote = deterministicPrenote;
+        console.log("[DEBUG] Raw pmhProblems:", deterministicPrenote.pmhProblems);
+        console.log("[DEBUG] Raw pmhProblems JSON:", JSON.stringify(deterministicPrenote.pmhProblems?.slice(0, 5), null, 2));
         console.log(
           `[analyzeNote] Deterministic PMH extraction found ${deterministicProblemNames.length} problems:`,
           deterministicProblemNames
