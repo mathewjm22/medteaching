@@ -59,7 +59,7 @@ const SECTION_DEFINITIONS = [
   },
   {
     key: "social",
-    match: (value) => value === "SOCIAL",
+    match: (value) => value === "SOCIAL" || value === "SOCIAL HISTORY",
   },
   {
     key: "familyHistory",
@@ -445,6 +445,54 @@ function parseStandaloneDiagnosisAt(lines, index) {
   };
 }
 
+// Recognize a naked section heading — a line by itself matching one of the
+// known section names, without divider box wrapping. Used when the LLM
+// generating the prenote skipped the divider format.
+//
+// Rules:
+// - Line must contain ONLY the heading text (optional trailing colon)
+// - Accept both ALL CAPS ("SOCIAL") and Title Case ("Social History")
+// - Must not be inside a divider box (identifyStructuralToken checks
+//   parseBoxAt first, so if we got here it's a naked line)
+// - Adjacent lines must NOT be divider chars (that would be a box we
+//   should let parseBoxAt handle)
+function parseNakedHeadingAt(lines, index) {
+  const raw = String(lines[index] ?? "").trim();
+  if (!raw) return null;
+  if (raw.length > 60) return null;
+
+  // Strip trailing colon
+  const stripped = raw.replace(/:\s*$/, "").trim();
+  if (!stripped) return null;
+
+  // Reject if line contains anything that looks like content (numbers,
+  // lowercase words in ALL CAPS mode with mixed content, etc.)
+  // Allow letters, spaces, /, &, -, and periods for things like "PAST MEDICAL HISTORY"
+  if (!/^[A-Za-z][A-Za-z0-9 /&.\-']*$/.test(stripped)) return null;
+
+  // Must map to a canonical section key
+  const key = canonicalSectionKey(stripped);
+  if (!key) return null;
+
+  // Guard: if previous or next non-blank line is a divider, this line is
+  // the interior of a box — let parseBoxAt handle it, don't double-count.
+  const prev = previousNonBlankIndex(lines, index - 1, 3);
+  const next = nextNonBlankIndex(lines, index + 1, 3);
+  if (prev >= 0 && dividerKind(lines[prev])) return null;
+  if (next >= 0 && dividerKind(lines[next])) return null;
+
+  return {
+    type: "heading",
+    kind: "naked",
+    start: index,
+    headingStart: index,
+    headingEnd: index,
+    end: index,
+    title: stripped,
+    status: "",
+  };
+}
+
 function identifyStructuralToken(lines, index) {
   // Standalone ICD diagnosis lines are intentionally not global structure.
   // PMH uses the same line shape. They are checked only while DIAGNOSTICS
@@ -452,7 +500,8 @@ function identifyStructuralToken(lines, index) {
   return (
     parseBoxAt(lines, index) ||
     parseMarkdownHeadingAt(lines, index) ||
-    parseInlineDiagnosisAt(lines, index)
+    parseInlineDiagnosisAt(lines, index) ||
+    parseNakedHeadingAt(lines, index)
   );
 }
 

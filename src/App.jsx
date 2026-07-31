@@ -8347,13 +8347,43 @@ const buildInRoomHtml = (doc, session) => {
     prenoteSections.medRec ||
     "";
 
-  const fullPrenoteText = doc.rawPrenote || doc.clinicalNote || "";
+  // Prefer the parsed MED REC section (which has been through prenoteParser
+  // and its C-CDA stripper) over the raw prenote. Only fall back to the raw
+  // prenote if the parsed section is empty — and even then, strip any
+  // C-CDA appendix before searching so hospital discharge Med Reconciliation
+  // sections don't leak in as "current meds".
+  const stripCcdaForFallback = (text) => {
+    if (!text) return "";
+    const markers = [
+      /\nPrint\s*\nContinuity of Care Document/i,
+      /\nContinuity of Care Document\s*\nCreation Date:/i,
+      /\n\[-\]\s+Patient\s*&\s*Contact Information/i,
+      /\n\[-\]\s+Table of Contents/i,
+      /\nCreation Date:\s*[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}/i,
+      /\n\[-\]\s+Encounter\b/i,
+      /\n\[-\]\s+Allergies, Adverse Reactions, Alerts/i,
+    ];
+    let earliest = text.length;
+    for (const marker of markers) {
+      const match = marker.exec(text);
+      if (match && match.index < earliest) earliest = match.index;
+    }
+    return text.slice(0, earliest).trim();
+  };
+
+  const rawFullPrenote = doc.rawPrenote || doc.clinicalNote || "";
+  const fullPrenoteText = stripCcdaForFallback(rawFullPrenote);
 
   const currentMedsText =
+    // First: use the parsed MED REC section body (cleanest, already parsed)
+    (medRecText && extractCurrentMedsFromFullText(medRecText)) ||
+    // Second: search the C-CDA-stripped full prenote
     extractCurrentMedsFromFullText(fullPrenoteText) ||
+    // Third: fall back to the raw MED REC section itself
     extractCurrentMedsSubsection(medRecText);
 
   const discontinuedMedsText =
+    (medRecText && extractMedSectionFromFullText(medRecText, /RECENTLY\s+DISCONTINUED/)) ||
     extractMedSectionFromFullText(fullPrenoteText, /RECENTLY\s+DISCONTINUED/) ||
     extractMedSubsection(
       medRecText,
@@ -8362,6 +8392,10 @@ const buildInRoomHtml = (doc, session) => {
     );
 
   const historicalMedsText =
+    (medRecText && extractMedSectionFromFullText(
+      medRecText,
+      /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/
+    )) ||
     extractMedSectionFromFullText(
       fullPrenoteText,
       /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/
