@@ -205,13 +205,55 @@ function normalizeSpaces(value) {
     .replace(/^[ \t]+/g, (spaces) => spaces.replace(/\t/g, "  "));
 }
 
+
+
+// Strip a C-CDA hospital record dump if one is appended to the prenote.
+// These dumps start with markers like "Print\nContinuity of Care Document",
+// "Creation Date:", "Table of Contents", or "[-] Patient & Contact Information"
+// and can be 50K+ characters of machine-generated tables. They cause
+// catastrophic regex backtracking in the parser and are not useful for
+// teaching content generation.
+function stripCcdaAppendix(text) {
+  if (!text) return text;
+
+  const markers = [
+    /\nPrint\s*\nContinuity of Care Document/i,
+    /\nContinuity of Care Document\s*\nCreation Date:/i,
+    /\n\[-\]\s+Patient\s*&\s*Contact Information/i,
+    /\n\[-\]\s+Table of Contents/i,
+    /\nCreation Date:\s*[A-Z][a-z]+\s+\d{1,2},?\s+\d{4}/i,
+    /\n\[-\]\s+Encounter\b/i,
+    /\n\[-\]\s+Allergies, Adverse Reactions, Alerts/i,
+  ];
+
+  let earliest = text.length;
+  for (const marker of markers) {
+    const match = marker.exec(text);
+    if (match && match.index < earliest) {
+      earliest = match.index;
+    }
+  }
+
+  if (earliest < text.length) {
+    const stripped = text.length - earliest;
+    console.warn(
+      `[prenoteParser] Stripped ${stripped} characters of C-CDA appendix from prenote (parser and AI would choke on it).`
+    );
+    return text.slice(0, earliest).trim();
+  }
+
+  return text;
+}
+
 export function normalizePrenoteText(input) {
-  return String(input ?? "")
+  const normalized = String(input ?? "")
     .replace(/^\uFEFF/, "")
     .replace(/\r\n?/g, "\n")
     .split("\n")
     .map(normalizeSpaces)
     .join("\n");
+
+  return stripCcdaAppendix(normalized);
 }
 
 function normalizeHeading(value) {
