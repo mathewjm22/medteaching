@@ -8110,17 +8110,51 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
   const [srcDoc, setSrcDoc] = React.useState("");
 
   // Build the HTML whenever the underlying doc data changes
-  React.useEffect(() => {
+    React.useEffect(() => {
     if (!doc) return;
-    setSrcDoc(buildInRoomHtml(doc, session));
+
+    try {
+      setSrcDoc(buildInRoomHtml(doc, session));
+    } catch (error) {
+      console.error("Failed to build in-room preview:", error);
+
+      const errorMessage = String(error?.message || error)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+
+      setSrcDoc(`
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="UTF-8" />
+            <title>Preview error</title>
+          </head>
+          <body style="font-family: sans-serif; padding: 24px;">
+            <h2>Preview could not be generated</h2>
+            <pre style="white-space: pre-wrap; color: #b91c1c;">${errorMessage}</pre>
+          </body>
+        </html>
+      `);
+    }
   }, [doc, session]);
 
   // Export uses the same shared template — guaranteed byte-identical to preview
   // Export the in-room doc as a standalone interactive HTML file. Uses the
   // shared buildInRoomHtml() template so the exported file is guaranteed to
   // match what the attending sees in the preview.
-  const exportInRoomAsHtml = () => {
-    const html = buildInRoomHtml(doc, session);
+    const exportInRoomAsHtml = () => {
+    let html;
+
+    try {
+      html = buildInRoomHtml(doc, session);
+    } catch (error) {
+      console.error("Failed to export in-room document:", error);
+      window.alert(
+        `The document could not be exported: ${error?.message || error}`
+      );
+      return;
+    }
 
     const blob = new Blob([html], { type: "text/html;charset=utf-8" });
     const url = URL.createObjectURL(blob);
