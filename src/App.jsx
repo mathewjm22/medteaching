@@ -8427,23 +8427,47 @@ const buildInRoomHtml = (doc, session) => {
     return "fa-circle-info";
   };
 
-  // Parse UPDATES/RECENT VISITS into a timeline of {date, event} pairs
+  // Parse UPDATES/RECENT VISITS into a timeline of {date, event} pairs.
+  // Filters out lines that look like tabular lab data (embedded in prenote
+  // sections when the LLM puts lab tables under UPDATES or similar).
   const parseTimeline = (text) => {
     if (!text) return [];
     const entries = [];
     const lines = text.split(/\r?\n/);
+
+    // A line's "event" portion is REJECTED as tabular lab content if:
+    //  - it starts with a pipe (table cell)
+    //  - it contains no lowercase letters (pure numbers/flags/pipes)
+    //  - it's mostly non-alphabetic chars (digits, |, <, >, ., H, L)
+    const looksLikeLabRow = (event) => {
+      const trimmed = event.trim();
+      if (trimmed.startsWith("|")) return true;
+      const hasLowercase = /[a-z]/.test(trimmed);
+      if (!hasLowercase) return true;
+      // Count alpha (word) characters vs non-alpha
+      const alphaCount = (trimmed.match(/[a-zA-Z]/g) || []).length;
+      const nonAlphaCount = trimmed.length - alphaCount;
+      // If mostly non-alpha and short, likely a table row
+      if (alphaCount < 8 && nonAlphaCount > alphaCount * 2) return true;
+      return false;
+    };
+
     for (const line of lines) {
       const trimmed = line.trim().replace(/^[\-\*•]\s*/, "");
       // Match: MM/DD/YY or MM/DD/YYYY at start
       const m = trimmed.match(/^(\d{1,2}\/\d{1,2}\/\d{2,4})\s*[:\-]?\s*(.+)$/);
       if (m) {
-        entries.push({ date: m[1], event: m[2].trim() });
+        const event = m[2].trim();
+        if (looksLikeLabRow(event)) continue;
+        entries.push({ date: m[1], event });
         continue;
       }
       // Match: MM/YYYY at start
       const m2 = trimmed.match(/^(\d{1,2}\/\d{4})\s*[:\-]?\s*(.+)$/);
       if (m2) {
-        entries.push({ date: m2[1], event: m2[2].trim() });
+        const event = m2[2].trim();
+        if (looksLikeLabRow(event)) continue;
+        entries.push({ date: m2[1], event });
       }
     }
     return entries;
@@ -8884,58 +8908,428 @@ const buildInRoomHtml = (doc, session) => {
   });
 
   // ──────────────────────────────────────────────────────────────
-  // LAB RESULTS TABLE
+  // LAB RESULTS — master table + per-panel breakdowns
   // ──────────────────────────────────────────────────────────────
+  // Approach:
+  // 1. Flatten all analyte observations from every parser-source table into
+  //    a list of {analyte, date, value, isHigh, isLow}.
+  // 2. Group each analyte into a canonical panel (Glucose & Renal, Electrolytes,
+  //    Liver Function, Lipids, CBC, Endocrine, Other) — independent of what
+  //    the parser called the source table, since prenote formatting varies.
+  // 3. Pick the N most recent unique dates → these become columns.
+  // 4. Render one master table (analytes as rows, dates as columns, panels as
+  //    section-row headers within the table).
+  // 5. Below the master, render smaller per-panel tables for focused review.
   let labsHtml = "";
   const structuredDiagnostics = parsedPrenote.diagnostics || {};
   const structuredTables = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
 
-  if (structuredTables.length > 0 || na.labTrendsSummary) {
-    labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
+  // ── Canonical panel assignment ──
+  // Uppercased analyte names → canonical panel.
+  // Order of panels here = order in the master table.
+  const PANEL_ORDER = ["Glucose & Renal", "Electrolytes", "Liver Function", "Lipids", "CBC", "Endocrine", "Cardiac Markers", "Inflammatory / Sepsis", "Other"];
+  const ANALYTE_TO_PANEL = {
+    // Glucose & Renal
+    "GLUCOSE": "Glucose & Renal", "GLUCOSE LEVEL": "Glucose & Renal", "GLUC": "Glucose & Renal", "GLU": "Glucose & Renal",
+    "A1C": "Glucose & Renal", "HBA1C": "Glucose & Renal", "HGB A1C": "Glucose & Renal", "HEMOGLOBIN A1C": "Glucose & Renal",
+    "EST AVG GLUC": "Glucose & Renal", "ESTIMATED AVERAGE GLUCOSE": "Glucose & Renal",
+    "BUN": "Glucose & Renal", "CREATININE": "Glucose & Renal", "CREATININE LEVEL": "Glucose & Renal", "CREAT": "Glucose & Renal", "CR": "Glucose & Renal",
+    "EGFR": "Glucose & Renal", "GFR": "Glucose & Renal", "ACR": "Glucose & Renal",
+    "EGFR CKD-EPI": "Glucose & Renal", "EGFR CKD-EPI 2021": "Glucose & Renal", "ESTIMATED GFR": "Glucose & Renal",
+    "ESTIMATED CREATININE CLEARANCE": "Glucose & Renal", "BUN/CREAT RATIO": "Glucose & Renal",
+    // Electrolytes
+    "SODIUM": "Electrolytes", "SODIUM LEVEL": "Electrolytes", "NA": "Electrolytes",
+    "POTASSIUM": "Electrolytes", "POTASSIUM LEVEL": "Electrolytes", "K": "Electrolytes",
+    "CHLORIDE": "Electrolytes", "CHLORIDE LEVEL": "Electrolytes", "CL": "Electrolytes",
+    "CO2": "Electrolytes", "CALCIUM": "Electrolytes", "CALCIUM LEVEL": "Electrolytes", "CA": "Electrolytes",
+    "ANION GAP": "Electrolytes", "MAGNESIUM": "Electrolytes", "MG": "Electrolytes",
+    "PHOSPHORUS": "Electrolytes", "PHOS": "Electrolytes",
+    // Liver Function
+    "AST": "Liver Function", "SGOT": "Liver Function", "SGOT (AST)": "Liver Function",
+    "ALT": "Liver Function", "SGPT": "Liver Function", "SGPT (ALT)": "Liver Function",
+    "ALKALINE PHOSPHATASE": "Liver Function", "ALK PHOS": "Liver Function", "ALKP": "Liver Function", "ALP": "Liver Function",
+    "TOTAL BILIRUBIN": "Liver Function", "BILIRUBIN TOTAL": "Liver Function", "TBILI": "Liver Function", "T.BILI": "Liver Function",
+    "ALBUMIN": "Liver Function", "ALB": "Liver Function", "ALBUMIN LEVEL": "Liver Function",
+    "TOTAL PROTEIN": "Liver Function", "PROTEIN TOTAL": "Liver Function", "TP": "Liver Function",
+    "GGT": "Liver Function", "LIPASE": "Liver Function", "AMYLASE": "Liver Function",
+    // Lipids
+    "TOTAL CHOLESTEROL": "Lipids", "CHOL": "Lipids", "CHOLESTEROL": "Lipids", "TOTAL CHOL": "Lipids",
+    "TRIGLYCERIDES": "Lipids", "TRIG": "Lipids", "TRIGLYC": "Lipids", "TG": "Lipids",
+    "HDL": "Lipids", "LDL": "Lipids", "LDL (CALCULATED)": "Lipids", "NON-HDL": "Lipids", "APOB": "Lipids", "LP(A)": "Lipids",
+    // CBC
+    "WBC": "CBC", "RBC": "CBC", "HGB": "CBC", "HEMOGLOBIN": "CBC",
+    "HCT": "CBC", "HEMATOCRIT": "CBC", "MCV": "CBC", "MCH": "CBC", "MCHC": "CBC",
+    "RDW-CV": "CBC", "RDW": "CBC", "PLATELETS": "CBC", "PLATELET COUNT": "CBC", "PLT": "CBC",
+    "MPV": "CBC",
+    "NEUT": "CBC", "NEUTROPHIL": "CBC", "NEUTROPHIL %": "CBC", "NEUTROPHIL ABSOLUTE": "CBC",
+    "NEUT AUTO": "CBC", "NEUTRO AUTO": "CBC", "NEUTRO ABSOLUTE": "CBC",
+    "LYMPH": "CBC", "LYMPHOCYTE": "CBC", "LYMPHOCYTE %": "CBC", "LYMPHOCYTE ABSOLUTE": "CBC",
+    "LYMPH AUTO": "CBC", "LYMPH ABSOLUTE": "CBC",
+    "MONO": "CBC", "MONOCYTE": "CBC", "MONOCYTE %": "CBC", "MONOCYTE ABSOLUTE": "CBC",
+    "MONO AUTO": "CBC", "MONO ABSOLUTE": "CBC",
+    "EOS": "CBC", "EOSINOPHIL": "CBC", "EOSINOPHIL %": "CBC", "EOSINOPHIL ABSOLUTE": "CBC",
+    "EOS AUTO": "CBC", "EOS, AUTO": "CBC", "EOS ABSOLUTE": "CBC",
+    "BASO": "CBC", "BASOPHIL": "CBC", "BASOPHIL %": "CBC", "BASOPHIL ABSOLUTE": "CBC",
+    "BASOPHIL AUTO": "CBC", "BASO ABSOLUTE": "CBC",
+    "IMM GRAN": "CBC", "IMM GRAN AUTO": "CBC", "IMM GRAN ABSOLUTE": "CBC",
+    "IMMATURE GRANULOCYTE": "CBC", "IMMATURE GRANULOCYTE %": "CBC", "IMMATURE GRANULOCYTE ABSOLUTE": "CBC",
+    "NRBC": "CBC", "NRBC %": "CBC", "NRBC #": "CBC",
+    "RETIC": "CBC", "RETICULOCYTE": "CBC",
+    // Endocrine
+    "TSH": "Endocrine", "T3": "Endocrine", "T4": "Endocrine",
+    "FREE T4": "Endocrine", "FREE T3": "Endocrine", "FT4": "Endocrine", "FT3": "Endocrine",
+    "PSA": "Endocrine",
+    "VIT D": "Endocrine", "VITAMIN D": "Endocrine", "25-OH VITAMIN D": "Endocrine", "25 OH VIT D": "Endocrine",
+    "CORTISOL": "Endocrine", "ACTH": "Endocrine",
+    "TESTOSTERONE": "Endocrine", "FREE TESTOSTERONE": "Endocrine",
+    "FSH": "Endocrine", "LH": "Endocrine", "ESTRADIOL": "Endocrine", "PROGESTERONE": "Endocrine",
+    "PROLACTIN": "Endocrine", "IGF-1": "Endocrine",
+    "PTH": "Endocrine", "INSULIN": "Endocrine",
+    // Cardiac Markers
+    "TROPONIN": "Cardiac Markers", "TROPONIN I": "Cardiac Markers", "TROPONIN T": "Cardiac Markers",
+    "HS TROPONIN": "Cardiac Markers", "HS TROPONIN-I": "Cardiac Markers", "HS TROPONIN T": "Cardiac Markers",
+    "HIGH SENSITIVITY TROPONIN": "Cardiac Markers",
+    "BNP": "Cardiac Markers", "NT-PROBNP": "Cardiac Markers", "NT PROBNP": "Cardiac Markers", "PROBNP": "Cardiac Markers",
+    "CK": "Cardiac Markers", "CK-MB": "Cardiac Markers", "CREATINE KINASE": "Cardiac Markers",
+    "D-DIMER": "Cardiac Markers", "DDIMER": "Cardiac Markers",
+    // Inflammatory / Sepsis
+    "CRP": "Inflammatory / Sepsis", "C-REACTIVE PROTEIN": "Inflammatory / Sepsis", "C REACTIVE PROTEIN": "Inflammatory / Sepsis", "HS-CRP": "Inflammatory / Sepsis",
+    "PROCALCITONIN": "Inflammatory / Sepsis", "PCT": "Inflammatory / Sepsis",
+    "LACTIC ACID": "Inflammatory / Sepsis", "LACTATE": "Inflammatory / Sepsis",
+    "ESR": "Inflammatory / Sepsis", "SED RATE": "Inflammatory / Sepsis", "ERYTHROCYTE SEDIMENTATION RATE": "Inflammatory / Sepsis",
+    "FERRITIN": "Inflammatory / Sepsis",
+  };
 
-    // Render each table as a lab-tbl
-    structuredTables.forEach(t => {
-      if (!t.columns || t.columns.length === 0) return;
-      labsHtml += `<table class="lab-tbl">`;
-      // Header row
-      labsHtml += `<tr>`;
-      t.columns.forEach((col, i) => {
-        labsHtml += `<th>${esc(i === 0 ? "Test" : col)}</th>`;
-      });
-      labsHtml += `</tr>`;
-      // Section header for the panel title if available
-      if (t.title) {
-        labsHtml += `<tr class="lab-sec"><td colspan="${t.columns.length}">${esc(t.title)}</td></tr>`;
-      }
-      // Data rows: t.rows is an array of objects keyed by column name
-      if (Array.isArray(t.rows)) {
-        // The first column typically contains dates; we transpose so each row is an analyte
-        // But since the parser structure has date rows... just render as-is
-        t.rows.forEach(row => {
-          labsHtml += `<tr>`;
-          t.columns.forEach((col, i) => {
-            const val = row[col] || "—";
-            let cls = "";
-            if (/H\b/.test(val)) cls = "lab-hi";
-            else if (/L\b/.test(val)) cls = "lab-lo";
-            else if (i > 0 && val !== "—" && /^\d/.test(val)) cls = "lab-ok";
-            labsHtml += `<td class="${cls}">${esc(val)}</td>`;
+  // Fuzzy substring rules: applied ONLY when exact match fails, in order.
+  // Each rule is [substring pattern to match, target panel]. First match wins.
+  // Keep patterns specific to avoid false positives (e.g., "CR" alone would
+  // match too many things — we use "CREAT" instead).
+  const FUZZY_PANEL_RULES = [
+    // Glucose & Renal
+    [/GFR/i, "Glucose & Renal"],
+    [/CREAT(?!INE\s+KINASE)/i, "Glucose & Renal"],
+    [/GLUCOSE|GLYC/i, "Glucose & Renal"],
+    [/A1C|HBA1C/i, "Glucose & Renal"],
+    [/BUN/i, "Glucose & Renal"],
+    [/UREA/i, "Glucose & Renal"],
+    // Lipids
+    [/CHOLESTEROL|CHOL\b/i, "Lipids"],
+    [/TRIGLYC|TRIG\b/i, "Lipids"],
+    [/HDL|LDL/i, "Lipids"],
+    // Liver
+    [/BILIRUBIN|BILI\b/i, "Liver Function"],
+    [/ALBUMIN|ALB\b/i, "Liver Function"],
+    [/ALK\s*PHOS|ALKP|ALP\b/i, "Liver Function"],
+    [/PROTEIN\s+TOTAL|TOTAL\s+PROTEIN/i, "Liver Function"],
+    // CBC
+    [/HEMOGLOBIN|HGB|HB\b/i, "CBC"],
+    [/HEMATOCRIT|HCT/i, "CBC"],
+    [/PLATELET|PLT/i, "CBC"],
+    [/WBC|WHITE\s+BLOOD/i, "CBC"],
+    [/RBC|RED\s+BLOOD/i, "CBC"],
+    [/NEUTROPHIL|NEUTRO/i, "CBC"],
+    [/LYMPHOCYTE|LYMPH/i, "CBC"],
+    [/MONOCYTE|MONO\b/i, "CBC"],
+    [/EOSINOPHIL|EOS\b/i, "CBC"],
+    [/BASOPHIL|BASO/i, "CBC"],
+    [/GRANULOCYTE/i, "CBC"],
+    [/RETIC/i, "CBC"],
+    // Electrolytes
+    [/SODIUM|NA\b/i, "Electrolytes"],
+    [/POTASSIUM/i, "Electrolytes"],
+    [/CHLORIDE/i, "Electrolytes"],
+    [/CALCIUM/i, "Electrolytes"],
+    [/MAGNESIUM/i, "Electrolytes"],
+    [/PHOSPHOR|PHOSPHATE/i, "Electrolytes"],
+    [/ANION/i, "Electrolytes"],
+    // Endocrine
+    [/TSH|THYROID/i, "Endocrine"],
+    [/CORTISOL/i, "Endocrine"],
+    [/TESTOSTERONE/i, "Endocrine"],
+    [/ESTRADIOL|ESTROGEN/i, "Endocrine"],
+    [/PROGESTERONE/i, "Endocrine"],
+    [/PROLACTIN/i, "Endocrine"],
+    [/VITAMIN\s*D|VIT\s*D/i, "Endocrine"],
+    [/PSA/i, "Endocrine"],
+    [/INSULIN/i, "Endocrine"],
+    // Cardiac
+    [/TROPONIN/i, "Cardiac Markers"],
+    [/BNP|PROBNP/i, "Cardiac Markers"],
+    [/D-?DIMER/i, "Cardiac Markers"],
+    [/CREATINE\s+KINASE|CK-MB|CKMB/i, "Cardiac Markers"],
+    // Inflammatory
+    [/C-?REACTIVE|CRP/i, "Inflammatory / Sepsis"],
+    [/PROCALCITONIN|PCT\b/i, "Inflammatory / Sepsis"],
+    [/LACTIC|LACTATE/i, "Inflammatory / Sepsis"],
+    [/ESR|SED\s*RATE/i, "Inflammatory / Sepsis"],
+    [/FERRITIN/i, "Inflammatory / Sepsis"],
+  ];
+
+  const panelForAnalyte = (name) => {
+    const raw = String(name || "").trim();
+    const key = raw.toUpperCase();
+    // 1. Try exact dictionary match
+    if (ANALYTE_TO_PANEL[key]) return ANALYTE_TO_PANEL[key];
+    // 2. Try fuzzy substring rules
+    for (const [pattern, panel] of FUZZY_PANEL_RULES) {
+      if (pattern.test(raw)) return panel;
+    }
+    // 3. Truly unknown → Other
+    return "Other";
+  };
+
+  // ── Parse a lab value cell — extract number + H/L flag ──
+  const parseLabCell = (raw) => {
+    if (!raw || raw === "--" || raw === "—") return null;
+    const val = String(raw).trim();
+    const isHigh = /(?:^|[^A-Z])H(?:$|[^A-Z])/i.test(val) || / HIGH\b/i.test(val);
+    const isLow = /(?:^|[^A-Z])L(?:$|[^A-Z])/i.test(val) || / LOW\b/i.test(val);
+    const isCritical = /critical/i.test(val);
+    return { display: val, isHigh, isLow, isCritical };
+  };
+
+  // ── Detect if a "column header" is actually a date ──
+  const looksLikeDate = (s) => {
+    const v = String(s || "").trim();
+    return /^\d{1,2}\/\d{2,4}$/.test(v) || /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(v) || /^\d{4}-\d{2}$/.test(v);
+  };
+
+  // ── Normalize date to MM/YYYY for comparison + display ──
+  const normalizeDate = (s) => {
+    const v = String(s || "").trim();
+    // MM/DD/YYYY → MM/YYYY
+    let m = v.match(/^(\d{1,2})\/\d{1,2}\/(\d{4})$/);
+    if (m) return `${m[1].padStart(2, "0")}/${m[2]}`;
+    // MM/DD/YY → MM/20YY
+    m = v.match(/^(\d{1,2})\/\d{1,2}\/(\d{2})$/);
+    if (m) return `${m[1].padStart(2, "0")}/20${m[2]}`;
+    // MM/YYYY → MM/YYYY
+    m = v.match(/^(\d{1,2})\/(\d{4})$/);
+    if (m) return `${m[1].padStart(2, "0")}/${m[2]}`;
+    // MM/YY → MM/20YY
+    m = v.match(/^(\d{1,2})\/(\d{2})$/);
+    if (m) return `${m[1].padStart(2, "0")}/20${m[2]}`;
+    // YYYY-MM → MM/YYYY
+    m = v.match(/^(\d{4})-(\d{2})$/);
+    if (m) return `${m[2]}/${m[1]}`;
+    return v;
+  };
+
+  const dateSortKey = (mmYYYY) => {
+    const m = mmYYYY.match(/^(\d{2})\/(\d{4})$/);
+    if (!m) return 0;
+    return parseInt(m[2], 10) * 100 + parseInt(m[1], 10);
+  };
+
+  // ── Flatten all parser tables into a list of observations ──
+  // Each source table can be shaped two ways depending on the parser:
+  //   Shape A: columns = [dates...], rows = [{date: "MM/YYYY", ANALYTE_A: val, ANALYTE_B: val}, ...]
+  //            (Dates are ROWS, analytes are the object keys — this is the shape we see.)
+  //   Shape B: columns = ["Test", DATE1, DATE2], rows = [{Test: "AnalyteName", DATE1: val, DATE2: val}, ...]
+  //            (Test names are rows, dates are columns — less common.)
+  // We handle both by inspecting whether columns[0] is a date-like string.
+  const observations = []; // {analyte, date (MM/YYYY), cell: {display, isHigh, isLow}}
+
+  structuredTables.forEach(t => {
+    if (!Array.isArray(t.columns) || !Array.isArray(t.rows)) return;
+    const cols = t.columns;
+
+    // Determine shape
+    const firstColHeader = String(cols[0] || "").trim().toUpperCase();
+    const otherColsLookLikeDates = cols.slice(1).filter(c => looksLikeDate(c)).length >= Math.max(1, cols.slice(1).length - 1);
+    const isShapeB = /^TEST$/i.test(firstColHeader) && otherColsLookLikeDates;
+
+    if (isShapeB) {
+      // Shape B: rows are analytes, columns 1..N are dates
+      t.rows.forEach(row => {
+        const analyte = String(row[cols[0]] || "").trim();
+        if (!analyte) return;
+        cols.slice(1).forEach(dateCol => {
+          const cell = parseLabCell(row[dateCol]);
+          if (!cell) return;
+          observations.push({
+            analyte,
+            date: normalizeDate(dateCol),
+            cell,
           });
-          labsHtml += `</tr>`;
         });
-      }
-      labsHtml += `</table>`;
-    });
+      });
+    } else {
+      // Shape A: rows are date-collections, keys are analytes
+      // The first column is typically "COLLECTION" and contains dates like "07/2026"
+      t.rows.forEach(row => {
+        // Find the date for this row
+        let dateStr = "";
+        for (const c of cols) {
+          const v = row[c];
+          if (v && looksLikeDate(v)) { dateStr = v; break; }
+        }
+        // Also check if firstCol value is a date
+        if (!dateStr && row[cols[0]] && looksLikeDate(row[cols[0]])) dateStr = row[cols[0]];
+        if (!dateStr) return;
+        const normalizedDate = normalizeDate(dateStr);
 
-    // AI-generated lab trends summary as a note below
+        // Every other column is an analyte
+        cols.forEach(c => {
+          if (c === cols[0]) return; // skip date column
+          const cellValue = row[c];
+          const cell = parseLabCell(cellValue);
+          if (!cell) return;
+          // Don't treat date-like values as analyte values
+          if (looksLikeDate(cellValue)) return;
+          observations.push({
+            analyte: c,
+            date: normalizedDate,
+            cell,
+          });
+        });
+      });
+    }
+  });
+
+  // ── Build the pivot: analyte → { date → cell } ──
+  const analyteMap = {}; // { analyteName: { date: cell } }
+  const dateSet = new Set();
+  observations.forEach(obs => {
+    if (!analyteMap[obs.analyte]) analyteMap[obs.analyte] = {};
+    // If the same analyte+date appears twice, keep the last (assume that's most complete)
+    analyteMap[obs.analyte][obs.date] = obs.cell;
+    dateSet.add(obs.date);
+  });
+
+  // ── Pick the 4 most recent unique dates as column headers ──
+  const allDates = Array.from(dateSet).sort((a, b) => dateSortKey(b) - dateSortKey(a));
+  const MAX_DATE_COLS = 4;
+  const displayDates = allDates.slice(0, MAX_DATE_COLS);
+  const droppedDates = allDates.slice(MAX_DATE_COLS);
+
+  // ── Group analytes by panel ──
+  const analytesByPanel = {};
+  PANEL_ORDER.forEach(p => { analytesByPanel[p] = []; });
+  Object.keys(analyteMap).forEach(analyte => {
+    const panel = panelForAnalyte(analyte);
+    analytesByPanel[panel].push(analyte);
+  });
+
+  // Sort analytes within each panel alphabetically (except keep some clinical ordering for common panels)
+  const PREFERRED_ORDER = {
+    "Glucose & Renal": ["Glucose", "GLUC", "GLU", "A1C", "HBA1C", "BUN", "Creatinine", "CREAT", "CR", "eGFR", "EGFR", "GFR", "ACR"],
+    "Electrolytes": ["Sodium", "NA", "Potassium", "K", "Chloride", "CL", "CO2", "Calcium", "CA", "Magnesium", "MG", "Phosphorus", "Anion Gap"],
+    "Liver Function": ["AST", "SGOT", "ALT", "SGPT", "Alk Phos", "ALKP", "ALP", "T.Bili", "TBILI", "Total Bilirubin", "Bilirubin Total", "Albumin", "ALB", "Total Protein", "Protein Total", "TP", "GGT"],
+    "Lipids": ["Total Cholesterol", "CHOL", "Cholesterol", "Total Chol", "Triglycerides", "TRIG", "TG", "HDL", "LDL", "Non-HDL", "ApoB"],
+    "CBC": ["WBC", "RBC", "Hgb", "Hemoglobin", "Hct", "Hematocrit", "MCV", "MCH", "MCHC", "RDW-CV", "Platelets", "PLT", "MPV", "Neutrophil", "Lymphocyte", "Monocyte", "Eosinophil", "Basophil"],
+    "Endocrine": ["TSH", "Free T4", "FT4", "Free T3", "FT3", "T3", "T4", "PSA", "Cortisol", "Testosterone", "Vit D", "Vitamin D"],
+    "Cardiac Markers": ["Troponin", "hs Troponin-I", "hs Troponin", "BNP", "NT-proBNP", "D-Dimer", "CK", "CK-MB"],
+    "Inflammatory / Sepsis": ["CRP", "C-Reactive Protein", "hs-CRP", "Procalcitonin", "PCT", "Lactic Acid", "Lactate", "ESR", "Ferritin"],
+  };
+  const orderAnalytes = (panel, analytes) => {
+    const preferred = PREFERRED_ORDER[panel] || [];
+    const preferredUpper = preferred.map(p => p.toUpperCase());
+    const seen = new Set();
+    const ordered = [];
+    // First pass: add in preferred order
+    preferredUpper.forEach((prefUpper, idx) => {
+      const match = analytes.find(a => a.toUpperCase() === prefUpper);
+      if (match && !seen.has(match)) {
+        ordered.push(match);
+        seen.add(match);
+      }
+    });
+    // Second pass: add remaining analytes alphabetically
+    analytes.filter(a => !seen.has(a)).sort().forEach(a => ordered.push(a));
+    return ordered;
+  };
+
+  // ── Render helper: one row of the master table ──
+  const renderAnalyteRow = (analyte, dates) => {
+    let row = `<tr><td>${esc(analyte)}</td>`;
+    dates.forEach(d => {
+      const cell = analyteMap[analyte][d];
+      if (!cell) {
+        row += `<td>—</td>`;
+      } else {
+        let cls = "lab-ok";
+        if (cell.isHigh) cls = "lab-hi";
+        else if (cell.isLow) cls = "lab-lo";
+        else if (cell.isCritical) cls = "lab-hi";
+        // Strip the H/L suffix from display since it's implied by color
+        const display = cell.display.replace(/\s*(?:H|L|HIGH|LOW|CRITICAL)\s*$/i, "").trim();
+        row += `<td class="${cls}">${esc(display || cell.display)}${cell.isHigh ? " H" : cell.isLow ? " L" : ""}</td>`;
+      }
+    });
+    row += `</tr>`;
+    return row;
+  };
+
+  // ── Build master table + per-panel tables ──
+  const hasAnyLabs = observations.length > 0;
+
+  if (hasAnyLabs || na.labTrendsSummary) {
+    labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
+  }
+
+  if (hasAnyLabs) {
+    // ── Master table ──
+    labsHtml += `<table class="lab-tbl">`;
+    labsHtml += `<tr><th>Test</th>`;
+    displayDates.forEach(d => { labsHtml += `<th>${esc(d)}</th>`; });
+    labsHtml += `</tr>`;
+
+    PANEL_ORDER.forEach(panel => {
+      const analytes = analytesByPanel[panel];
+      if (!analytes || analytes.length === 0) return;
+      // Panel section row
+      labsHtml += `<tr class="lab-sec"><td colspan="${1 + displayDates.length}">${esc(panel)}</td></tr>`;
+      // Analyte rows
+      orderAnalytes(panel, analytes).forEach(analyte => {
+        labsHtml += renderAnalyteRow(analyte, displayDates);
+      });
+    });
+    labsHtml += `</table>`;
+
+    // Note if we truncated dates
+    if (droppedDates.length > 0) {
+      labsHtml += `<div class="lab-note" style="font-style:italic;font-size:7.5pt;">Showing ${MAX_DATE_COLS} most recent dates. Older dates in chart: ${droppedDates.join(", ")}.</div>`;
+    }
+
+    // AI-generated interpretive summary
     if (na.labTrendsSummary) {
       labsHtml += `<div class="lab-note">${esc(na.labTrendsSummary)}</div>`;
     }
 
-    // Fallback: if no structured tables, dump the raw diagnostics text verbatim
-    if (structuredTables.length === 0 && diagnosticsText) {
-      labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:#374151;background:#f9fafb;border:1px solid #e5e7eb;border-radius:3px;padding:8px;">${esc(diagnosticsText)}</pre>`;
+    // ── Per-panel breakdown tables ──
+    // Skip "Other" for the per-panel breakdowns since it's a grab-bag of
+    // uncategorized items without clinical cohesion. The unknowns still
+    // appear in the master table above under the "Other" section row.
+    const panelsWithBreakdowns = PANEL_ORDER.filter(p =>
+      p !== "Other" && analytesByPanel[p] && analytesByPanel[p].length > 0
+    );
+    if (panelsWithBreakdowns.length > 0) {
+      labsHtml += `<div style="margin-top:14px;"><div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:6px;">Panel Breakdowns</div>`;
+      panelsWithBreakdowns.forEach(panel => {
+        const analytes = analytesByPanel[panel];
+        labsHtml += `<div style="margin-bottom:10px;">`;
+        labsHtml += `<table class="lab-tbl">`;
+        labsHtml += `<tr><th>${esc(panel)}</th>`;
+        displayDates.forEach(d => { labsHtml += `<th>${esc(d)}</th>`; });
+        labsHtml += `</tr>`;
+        orderAnalytes(panel, analytes).forEach(analyte => {
+          labsHtml += renderAnalyteRow(analyte, displayDates);
+        });
+        labsHtml += `</table>`;
+        labsHtml += `</div>`;
+      });
+      labsHtml += `</div>`;
     }
+  } else if (na.labTrendsSummary) {
+    // No structured data but AI has a summary — still show it
+    labsHtml += `<div class="lab-note">${esc(na.labTrendsSummary)}</div>`;
+  }
+
+  // Fallback: no structured tables and no AI summary → dump raw verbatim
+  if (!hasAnyLabs && !na.labTrendsSummary && diagnosticsText) {
+    labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
+    labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(diagnosticsText)}</pre>`;
   }
 
   // ──────────────────────────────────────────────────────────────
