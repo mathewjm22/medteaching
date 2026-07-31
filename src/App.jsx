@@ -1942,7 +1942,10 @@ const [customTopics, setCustomTopics] = useState([]);
         const waitMatch = err.match(/try again in ([\d.]+)s/i);
         const waitSec = waitMatch ? Math.ceil(parseFloat(waitMatch[1])) + 3 : (retryCount + 1) * 30;
         console.warn(`[callAi] Rate limit. Waiting ${waitSec}s, retry ${retryCount + 1}/${MAX_RETRIES}`);
-        setAiStatus(prev => ({ ...prev, progress: `Rate limited — waiting ${waitSec}s then retrying (${retryCount + 1}/${MAX_RETRIES})` }));
+        setAiStatus(prev => ({
+          ...prev,
+          progress: `Pausing briefly to stay within AI service limits (${waitSec}s)...`,
+        }));
         await new Promise(r => setTimeout(r, waitSec * 1000));
         return callAi(systemPrompt, userPrompt, maxTokens, retryCount + 1);
       }
@@ -3275,8 +3278,8 @@ ${isTangential
       }
 
       if (i < problemsToTeach.length - 1) {
-        setAiStatus(prev => ({ ...prev, progress: `Working on case ${i+2} of ${problemsToTeach.length}` }));
-        await wait(8000);
+        setAiStatus(prev => ({ ...prev, progress: `Preparing case ${i+2} of ${problemsToTeach.length}...` }));
+        await wait(15000);
       }
     }
 
@@ -3391,7 +3394,16 @@ Return ONLY valid JSON (no markdown fences):
 
 Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patient's chart context where helpful. Cite real references — society guidelines by year (e.g., "ATA 2014"), landmark trials by name (e.g., "SPRINT"), USPSTF grades — NEVER cite AI tools like OpenEvidence/UpToDate.`;
 
-    const problemList = nonSelectedProblems.map((p, i) => `${i + 1}. ${p}`).join("\n");
+    // Cap at 8 problems to stay within rate limits. Excess problems still
+    // appear in the doc but without lightweight teaching content — they
+    // render as "background problem, no teaching generated" placeholders.
+    const CAP = 8;
+    const cappedProblems = nonSelectedProblems.slice(0, CAP);
+    const overflow = nonSelectedProblems.length - CAP;
+    if (overflow > 0) {
+      console.log(`[generateLightweightTeaching] Capped at ${CAP}; ${overflow} problem(s) will render without teaching content`);
+    }
+    const problemList = cappedProblems.map((p, i) => `${i + 1}. ${p}`).join("\n");
     const contextLine = chiefConcern ? `\n\nPatient context: ${chiefConcern}` : "";
     const user = `Generate lightweight teaching content for these chronic problems on the patient's chart:\n${problemList}${contextLine}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase).`;
 
@@ -7376,12 +7388,18 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           <>
             {aiStatus.generating && !previewData ? (
               <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
-                <div style={{ display: "inline-flex", alignItems: "center", gap: "0.75rem", padding: "0.75rem 1.25rem", background: "#eef2ff", border: "1px solid #c7d2fe", borderRadius: "999px", color: "#4338ca", fontSize: "0.9rem", fontWeight: 500 }}>
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                  <span>Preparing your teaching document...</span>
+                <Loader2 className="w-12 h-12 animate-spin text-indigo-600 mx-auto mb-4" />
+                <h2 className="text-xl font-semibold text-slate-900 mb-2">
+                  Building your teaching document
+                </h2>
+                <div className="text-base text-indigo-700 font-medium mb-3 min-h-[1.5em]">
+                  {aiStatus.progress || "Getting started..."}
                 </div>
-                <div className="text-xs text-slate-500 mt-4 max-w-md mx-auto">
-                  Synthesizing evidence · generating case teaching · calibrating shelf questions to phase · assembling document
+                <div className="text-sm text-slate-600 max-w-lg mx-auto mb-2">
+                  This usually takes 2 to 5 minutes depending on how much material we're working with.
+                </div>
+                <div className="text-xs text-slate-500 max-w-lg mx-auto italic">
+                  Please keep this tab open. The app pauses periodically to stay within AI service limits — this is normal.
                 </div>
               </div>
             ) : !previewData && !generatedDoc ? (
@@ -8621,11 +8639,11 @@ const buildInRoomHtml = (doc, session) => {
   // render as proper lists instead of raw text. Fixes duplication artifacts
   // by relying on prenoteParser's dedup (fix 1) rather than string slicing.
   qrHtml += `<div class="qr-panel"><div class="qr-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="qr-body">`;
-  if (surgicalText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${fmtHtml(surgicalText, { stripHeader: "Surgical History" })}</div></div>`;
-  if (allergiesText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield-virus"></i> Allergies</div><div class="ref-text">${fmtHtml(allergiesText, { stripHeader: "Allergies" })}</div></div>`;
-  if (familyText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${fmtHtml(familyText, { stripHeader: "Family History" })}</div></div>`;
-  if (na.diagnosticsSummary) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
-  if (na.labTrendsSummary) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
+  if (surgicalText) qrHtml += `<div class="ref-item"><div class="ref-label ref-surgical"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${fmtHtml(surgicalText, { stripHeader: "Surgical History" })}</div></div>`;
+  if (allergiesText) qrHtml += `<div class="ref-item"><div class="ref-label ref-allergies"><i class="fa-solid fa-shield-virus"></i> Allergies</div><div class="ref-text">${fmtHtml(allergiesText, { stripHeader: "Allergies" })}</div></div>`;
+  if (familyText) qrHtml += `<div class="ref-item"><div class="ref-label ref-family"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${fmtHtml(familyText, { stripHeader: "Family History" })}</div></div>`;
+  if (na.diagnosticsSummary) qrHtml += `<div class="ref-item"><div class="ref-label ref-diagnostics"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
+  if (na.labTrendsSummary) qrHtml += `<div class="ref-item"><div class="ref-label ref-labs"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
   qrHtml += `</div></div></div>`;
 
   // ─────────────────────────────────────────────────────────────
@@ -8668,7 +8686,7 @@ const buildInRoomHtml = (doc, session) => {
   const navHtml = `<div class="nav-tabs" role="tablist">
   <button class="nav-tab active" onclick="switchTab('problems',this)"><i class="fa-solid fa-stethoscope"></i> Problems</button>
   <button class="nav-tab" onclick="switchTab('meds',this)"><i class="fa-solid fa-pills"></i> Meds</button>
-  <button class="nav-tab" onclick="switchTab('labs',this)"><i class="fa-solid fa-flask"></i> Labs</button>
+  <button class="nav-tab" onclick="switchTab('labs',this)"><i class="fa-solid fa-microscope"></i> Diagnostics</button>
   <button class="nav-tab" onclick="switchTab('social',this)"><i class="fa-solid fa-users"></i> Social</button>
   <button class="nav-tab" onclick="switchTab('timeline',this)"><i class="fa-solid fa-clock-rotate-left"></i> Timeline</button>
   <button class="nav-tab" onclick="switchTab('preventive',this)"><i class="fa-solid fa-shield-heart"></i> Preventive</button>
@@ -8951,44 +8969,74 @@ const buildInRoomHtml = (doc, session) => {
   medsTab += `</div>`;
 
   // ─────────────────────────────────────────────────────────────
-  // LABS TAB
+  // DIAGNOSTICS TAB (internally still tab-labs for state compat)
   // ─────────────────────────────────────────────────────────────
-  let labsTab = `<div id="tab-labs" class="section">`;
-  labsTab += `<div class="sec-title">Laboratory Results</div>`;
-  if (na.labTrendsSummary) labsTab += `<div class="oneliner" style="margin-bottom:14px;">${esc(na.labTrendsSummary)}</div>`;
-  if (resolvedLabsText) {
-  labsTab += `
-    <div class="card open">
-      <div class="ch" onclick="toggleCard(this)">
-        <div class="ch-l">
-          <div class="ci lab">
-            <i class="fa-solid fa-flask-vial"></i>
-          </div>
-          <div>
-            <div class="ct">Full Lab Results</div>
-            <div class="cs">Verbatim from chart</div>
-          </div>
-        </div>
-        <div class="ch-r">
-          <i class="fa-solid fa-chevron-down chev"></i>
-        </div>
-      </div>
-      <div class="cb">
-        <div class="cbi">
-          ${verbatim(resolvedLabsText)}
-        </div>
-      </div>
-    </div>
-  `;
-}
+  // Use the structured diagnostics data from parsePrenote when available.
+  // It separates lab tables from imaging cleanly. Fall back to raw section
+  // text if the structured version is empty.
+  const structuredDiagnostics = parsedPrenote.diagnostics || {};
+  const structuredTables = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
+  const structuredImaging = Array.isArray(structuredDiagnostics.imaging) ? structuredDiagnostics.imaging : [];
 
-if (
-  resolvedImagingText &&
-  resolvedImagingText !== resolvedLabsText &&
-  !/no imaging/i.test(resolvedImagingText)
-) {
-  labsTab += `<div class="card"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-x-ray"></i></div><div><div class="ct">Imaging &amp; Procedures</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${verbatim(resolvedImagingText)}</div></div></div>`;
-}
+  // Build a "labs body" from structured tables if we have them; otherwise
+  // use the raw diagnostics text.
+  let structuredLabsHtml = "";
+  if (structuredTables.length > 0) {
+    structuredTables.forEach(t => {
+      const title = t.title || t.subsection || "Lab Panel";
+      structuredLabsHtml += `<div class="lab-panel-title" style="font-weight:600;color:var(--fg);margin-top:10px;margin-bottom:4px;">${esc(title)}</div>`;
+      structuredLabsHtml += `<pre class="verbatim">${esc(t.rawText || "")}</pre>`;
+    });
+  }
+
+  // Build imaging HTML from structured imaging entries
+  let structuredImagingHtml = "";
+  if (structuredImaging.length > 0) {
+    structuredImaging.forEach(study => {
+      structuredImagingHtml += `<div class="lab-panel-title" style="font-weight:600;color:var(--fg);margin-top:10px;margin-bottom:4px;">${esc(study.studyType || "Study")}</div>`;
+      if (study.entries && study.entries.length > 0) {
+        structuredImagingHtml += `<ul style="padding-left:1.25rem;margin-bottom:8px;">`;
+        study.entries.forEach(e => {
+          structuredImagingHtml += `<li>${esc(e)}</li>`;
+        });
+        structuredImagingHtml += `</ul>`;
+      }
+    });
+  }
+
+  let labsTab = `<div id="tab-labs" class="section">`;
+  labsTab += `<div class="sec-title">Diagnostics</div>`;
+
+  // Card 1: AI-generated diagnostics overview (imaging/procedures summary)
+  if (na.diagnosticsSummary) {
+    labsTab += `<div class="card open" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-microscope"></i></div><div><div class="ct">Diagnostics Overview</div><div class="cs">Imaging &amp; procedures at a glance</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi"><p>${esc(na.diagnosticsSummary)}</p></div></div></div>`;
+  }
+
+  // Card 2: AI-generated lab trends summary
+  if (na.labTrendsSummary) {
+    labsTab += `<div class="card open" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-chart-line"></i></div><div><div class="ct">Laboratory Trends Summary</div><div class="cs">Key lab movements at a glance</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi"><p>${esc(na.labTrendsSummary)}</p></div></div></div>`;
+  }
+
+  // Card 3: Full lab results (structured tables preferred, verbatim fallback)
+  const labsBodyHtml = structuredLabsHtml || (resolvedLabsText ? verbatim(resolvedLabsText) : "");
+  if (labsBodyHtml) {
+    labsTab += `<div class="card" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-flask-vial"></i></div><div><div class="ct">Full Laboratory Results</div><div class="cs">Panel-by-panel from chart</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${labsBodyHtml}</div></div></div>`;
+  }
+
+  // Card 4: Imaging & procedures (structured preferred, verbatim fallback)
+  const hasStructuredImaging = structuredImagingHtml.length > 0;
+  const hasFallbackImaging = resolvedImagingText && resolvedImagingText !== resolvedLabsText && !/no imaging/i.test(resolvedImagingText);
+  const imagingBodyHtml = hasStructuredImaging
+    ? structuredImagingHtml
+    : (hasFallbackImaging ? verbatim(resolvedImagingText) : "");
+  if (imagingBodyHtml) {
+    labsTab += `<div class="card" style="margin-bottom:14px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci lab"><i class="fa-solid fa-x-ray"></i></div><div><div class="ct">Imaging &amp; Procedures</div><div class="cs">Studies from chart</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${imagingBodyHtml}</div></div></div>`;
+  }
+
+  if (!na.diagnosticsSummary && !na.labTrendsSummary && !labsBodyHtml && !imagingBodyHtml) {
+    labsTab += `<p style="color:var(--fg-d);font-style:italic;">No diagnostics documented.</p>`;
+  }
+
   labsTab += `</div>`;
 
   // ─────────────────────────────────────────────────────────────
@@ -9137,7 +9185,12 @@ body{font-family:'DM Sans','Inter',system-ui,sans-serif;background:var(--bg);col
 .pmh-dot.resolved{background:var(--fg-d)}
 .pmh-list li .sc-tag{margin-left:auto;font-size:.65rem;padding:1px 7px;border-radius:4px;background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br);font-weight:600}
 .ref-item{margin-bottom:12px}.ref-item:last-child{margin-bottom:0}
-.ref-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);font-weight:700;margin-bottom:4px;display:flex;align-items:center;gap:6px}
+.ref-label{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin-bottom:4px;display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:12px;border-left-width:0;border-style:solid;border-color:transparent}
+.ref-label.ref-surgical{background:var(--tch-bg);color:var(--tch);border:1px solid var(--tch-br)}
+.ref-label.ref-allergies{background:var(--wrn-bg);color:var(--wrn);border:1px solid var(--wrn-br)}
+.ref-label.ref-family{background:var(--inf-bg);color:var(--inf);border:1px solid var(--inf-br)}
+.ref-label.ref-diagnostics{background:var(--suc-bg);color:var(--suc);border:1px solid var(--suc-br)}
+.ref-label.ref-labs{background:var(--acc-d);color:var(--acc);border:1px solid rgba(56,189,248,.2)}
 .ref-text{font-size:.84rem;color:var(--fg-m);line-height:1.6}
 .nav-tabs{display:flex;gap:4px;padding:6px;background:var(--bg-el);border:1px solid var(--brd);border-radius:12px;margin-bottom:18px;overflow-x:auto;-webkit-overflow-scrolling:touch}
 .nav-tab{padding:9px 14px;border-radius:8px;border:none;background:transparent;color:var(--fg-m);font-family:inherit;font-size:.8rem;font-weight:600;cursor:pointer;transition:all .2s;white-space:nowrap;display:flex;align-items:center;gap:6px}
