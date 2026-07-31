@@ -82,7 +82,17 @@ const SECTION_DEFINITIONS = [
     match: (value) =>
       value === "MED REC" ||
       value === "MEDICATION RECONCILIATION" ||
-      value === "CURRENT ACTIVE MEDICATIONS",
+      value === "CURRENT ACTIVE MEDICATIONS" ||
+      value === "CURRENT MEDICATIONS" ||
+      value === "CURRENT MEDICATIONS (GROUPED BY SPECIALTY)" ||
+      value === "PAST MEDICATIONS" ||
+      value === "MEDICATION ADHERENCE" ||
+      value === "MEDICATION ADHERENCE / BARRIERS" ||
+      value === "RECENTLY DISCONTINUED" ||
+      value === "RECENTLY DISCONTINUED (PAST 6 MONTHS)" ||
+      value === "SIGNIFICANT HISTORICAL MEDICATIONS" ||
+      value === "SIGNIFICANT HISTORICAL MEDICATIONS / TIMELINE" ||
+      value === "HISTORICAL MEDICATIONS",
   },
   {
     key: "preventiveMedicine",
@@ -611,14 +621,54 @@ export function extractPrenoteSections(input) {
 
   flush(lines.length);
 
+  // Similarity-based dedup helpers. When a section appears in Part 1 and
+  // Part 2 of a summary, or repeats with minor whitespace differences, keep
+  // only the first occurrence. This prevents visible artifacts like
+  // "Appendectomy - 2010 - Appendectomy - 2010" from bleeding into the doc.
+  const normalizeForCompare = (text) =>
+    String(text || "")
+      .toLowerCase()
+      .replace(/[^\w\s]/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const bodiesAreSimilar = (a, b) => {
+    const normA = normalizeForCompare(a);
+    const normB = normalizeForCompare(b);
+    if (!normA || !normB) return false;
+    if (normA === normB) return true;
+
+    const shorter = normA.length <= normB.length ? normA : normB;
+    const longer = shorter === normA ? normB : normA;
+    if (longer.includes(shorter)) return true;
+
+    const tokensA = new Set(normA.split(" ").filter((t) => t.length > 2));
+    const tokensB = new Set(normB.split(" ").filter((t) => t.length > 2));
+    if (tokensA.size === 0 || tokensB.size === 0) return false;
+
+    const smaller = tokensA.size <= tokensB.size ? tokensA : tokensB;
+    const larger = smaller === tokensA ? tokensB : tokensA;
+    let shared = 0;
+    smaller.forEach((t) => {
+      if (larger.has(t)) shared++;
+    });
+    return shared / smaller.size >= 0.85;
+  };
+
   const sections = {};
   const sectionOrder = SECTION_DEFINITIONS.map((definition) => definition.key);
   for (const key of sectionOrder) {
     const parts = occurrences[key] ?? [];
-    sections[key] = parts
-      .map((part) => part.text)
-      .filter(Boolean)
-      .join("\n\n");
+    const uniqueTexts = [];
+    for (const part of parts) {
+      const text = part.text;
+      if (!text) continue;
+      if (uniqueTexts.some((existing) => bodiesAreSimilar(existing, text))) {
+        continue; // silently drop duplicate
+      }
+      uniqueTexts.push(text);
+    }
+    sections[key] = uniqueTexts.join("\n\n");
   }
 
   return {

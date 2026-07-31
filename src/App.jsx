@@ -8583,11 +8583,13 @@ const buildInRoomHtml = (doc, session) => {
   });
   qrHtml += `</ul></div></div>`;
 
-  // Clinical Reference Data
+  // Clinical Reference Data — use fmtHtml() so bullets and key:value pairs
+  // render as proper lists instead of raw text. Fixes duplication artifacts
+  // by relying on prenoteParser's dedup (fix 1) rather than string slicing.
   qrHtml += `<div class="qr-panel"><div class="qr-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="qr-body">`;
-  if (surgicalText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${esc(surgicalText.slice(0, 400))}</div></div>`;
-  if (allergiesText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield-virus"></i> Allergies</div><div class="ref-text">${esc(allergiesText.slice(0, 200))}</div></div>`;
-  if (familyText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${esc(familyText.slice(0, 400))}</div></div>`;
+  if (surgicalText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${fmtHtml(surgicalText, { stripHeader: "Surgical History" })}</div></div>`;
+  if (allergiesText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield-virus"></i> Allergies</div><div class="ref-text">${fmtHtml(allergiesText, { stripHeader: "Allergies" })}</div></div>`;
+  if (familyText) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${fmtHtml(familyText, { stripHeader: "Family History" })}</div></div>`;
   if (na.diagnosticsSummary) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
   if (na.labTrendsSummary) qrHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
   qrHtml += `</div></div></div>`;
@@ -8863,8 +8865,21 @@ const buildInRoomHtml = (doc, session) => {
   // ─────────────────────────────────────────────────────────────
   // MEDS TAB
   // ─────────────────────────────────────────────────────────────
+  // Helper: extract "Clinical Notes" prose that some prenotes append at the
+  // end of MED REC (after historical meds), separated by a divider line.
+  const extractClinicalNotesFromMedRec = (medRecFullText) => {
+    if (!medRecFullText) return "";
+    const marker = /Clinical\s+Notes?\s*:/i;
+    const m = marker.exec(medRecFullText);
+    if (!m) return "";
+    return medRecFullText.slice(m.index + m[0].length).trim();
+  };
+  const clinicalNotesText = extractClinicalNotesFromMedRec(medRecText || fullPrenoteText);
+
   let medsTab = `<div id="tab-meds" class="section">`;
   medsTab += `<div class="sec-title">Current Medications</div>`;
+
+  // Card 1: AI-annotated med table (name + treats + mechanism)
   if (currentMedNames.length > 0) {
     medsTab += `<div class="med-table-wrap" style="margin-bottom:20px;"><table class="med-table"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
     currentMedNames.forEach(name => {
@@ -8873,47 +8888,32 @@ const buildInRoomHtml = (doc, session) => {
       medsTab += `<tr><td class="drug-name"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)} ↗</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
     });
     medsTab += `</tbody></table></div>`;
+  }
 
-if (currentMedsText) {
-  medsTab += `
-    <div class="card open" style="margin-top:16px;">
-      <div class="ch" onclick="toggleCard(this)">
-        <div class="ch-l">
-          <div class="ci rx">
-            <i class="fa-solid fa-file-prescription"></i>
-          </div>
-          <div>
-            <div class="ct">Complete Medication Reconciliation</div>
-            <div class="cs">Dose, route, frequency, specialty grouping, and supplements</div>
-          </div>
-        </div>
-        <div class="ch-r">
-          <i class="fa-solid fa-chevron-down chev"></i>
-        </div>
-      </div>
+  // Card 2: Complete current-medication reconciliation with specialty grouping (formatted)
+  if (currentMedsText) {
+    medsTab += `<div class="card open" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci rx"><i class="fa-solid fa-file-prescription"></i></div><div><div class="ct">Complete Medication Reconciliation</div><div class="cs">Dose, route, frequency, and specialty grouping</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(currentMedsText)}</div></div></div>`;
+  }
 
-      <div class="cb">
-        <div class="cbi">
-          ${verbatim(currentMedsText)}
-        </div>
-      </div>
-    </div>
-  `;
-}
-  } else if (currentMedsText) {
-    medsTab += infoBox("Current medications (verbatim)", verbatim(currentMedsText));
-  } else {
+  // Card 3: Recently discontinued meds (separate card)
+  if (discontinuedMedsText) {
+    medsTab += `<div class="card" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci pain"><i class="fa-solid fa-ban"></i></div><div><div class="ct">Recently Discontinued</div><div class="cs">Stopped in the past 6 months</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(discontinuedMedsText)}</div></div></div>`;
+  }
+
+  // Card 4: Historical medications / timeline (separate card)
+  if (historicalMedsText) {
+    medsTab += `<div class="card" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci ent"><i class="fa-solid fa-clock-rotate-left"></i></div><div><div class="ct">Historical Medications &amp; Timeline</div><div class="cs">Significant prior medications and chronology</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(historicalMedsText)}</div></div></div>`;
+  }
+
+  // Card 5: Clinical notes prose (separate card, if present)
+  if (clinicalNotesText) {
+    medsTab += `<div class="card" style="margin-top:16px;"><div class="ch" onclick="toggleCard(this)"><div class="ch-l"><div class="ci social"><i class="fa-solid fa-note-sticky"></i></div><div><div class="ct">Clinical Notes on Medications</div><div class="cs">Context and adherence considerations</div></div></div><div class="ch-r"><i class="fa-solid fa-chevron-down chev"></i></div></div><div class="cb"><div class="cbi">${fmtHtml(clinicalNotesText)}</div></div></div>`;
+  }
+
+  if (!currentMedsText && !discontinuedMedsText && !historicalMedsText && !clinicalNotesText && currentMedNames.length === 0) {
     medsTab += `<p style="color:var(--fg-d);font-style:italic;">No current medications documented.</p>`;
   }
 
-  if (discontinuedMedsText) {
-    medsTab += `<div class="sec-title" style="margin-top:24px;">Recently Discontinued</div>`;
-    medsTab += `<div class="med-table-wrap">${verbatim(discontinuedMedsText)}</div>`;
-  }
-  if (historicalMedsText) {
-    medsTab += `<div class="sec-title" style="margin-top:24px;">Historical Medications</div>`;
-    medsTab += `<div class="med-table-wrap">${verbatim(historicalMedsText)}</div>`;
-  }
   medsTab += `</div>`;
 
   // ─────────────────────────────────────────────────────────────
@@ -9234,7 +9234,7 @@ body{font-family:'DM Sans','Inter',system-ui,sans-serif;background:var(--bg);col
     document.querySelectorAll('.cl li').forEach(function(li,i){if(savedChecks[i])li.classList.add('ck')});
   }catch(e){}
 })();
-function switchTab(id,btn){document.querySelectorAll('.nav-tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.section').forEach(function(s){s.classList.remove('active')});btn.classList.add('active');document.getElementById('tab-'+id).classList.add('active');window.scrollTo({top:0,behavior:'smooth'})}
+function switchTab(id,btn){document.querySelectorAll('.nav-tab').forEach(function(t){t.classList.remove('active')});document.querySelectorAll('.section').forEach(function(s){s.classList.remove('active')});btn.classList.add('active');document.getElementById('tab-'+id).classList.add('active')}
 function toggleCard(h){h.parentElement.classList.toggle('open')}
 function toggleAll(sid){var s=document.getElementById(sid);var cs=s.querySelectorAll('.card');var allO=Array.from(cs).every(function(c){return c.classList.contains('open')});cs.forEach(function(c){if(allO)c.classList.remove('open');else c.classList.add('open')});var b=s.querySelector('.toggle-all');if(b)b.textContent=allO?'Expand All':'Collapse All'}
 function toggleCK(li){li.classList.toggle('ck');try{var lis=Array.from(document.querySelectorAll('.cl li'));var checks={};lis.forEach(function(l,i){if(l.classList.contains('ck'))checks[i]=true});localStorage.setItem('inroom-${sessionId}-checks',JSON.stringify(checks))}catch(e){}}
