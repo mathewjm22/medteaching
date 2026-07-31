@@ -2419,6 +2419,15 @@ Return ONLY valid JSON (no markdown fences):
   "diagnosticsSummary": "one-paragraph AI summary of imaging, endoscopy, and other diagnostic procedures visible in the chart",
   "visitPlan": [
     "checklist items for today's visit — 10-15 items"
+  ],
+  "priorityFocusAreas": [
+    {
+      "title": "2-4 word priority label — e.g., 'Mental health safety net', 'Alcohol and anger', 'Legal documentation awareness'",
+      "description": "2-3 sentences explaining WHY this is a priority for THIS visit and WHAT action to take. Reference specific chart facts (dates, scores, medications, life events) — do not speak in generalities."
+    }
+  ],
+  "complexPatientTeaching": [
+    "3-5 short teaching points about how to APPROACH this specific patient in the visit. Each is a full sentence or two of practical advice from an attending to a student. Examples: 'Don't try to address everything — 12+ active problems means prioritize.', 'Start with open-ended questions — you'll learn more in 60 seconds than 10 minutes of yes/no screening.', 'Therapeutic alliance matters more than being thorough with a SOF veteran.' Grounded in what makes THIS patient challenging or unique, not generic 'be empathetic' platitudes."
   ]
 }`;
 
@@ -3210,7 +3219,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   },
   "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "${isPreVisit ? "why you should hold this in mind going into the visit — reference the patient's chart features, meds, or context" : "why you considered it for OUR patient — reference her actual features, meds, or context"}"}],
   "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with ${isPreVisit ? "something specific from the chart" : "something specific about our patient's presentation"}, THEN ${isPreVisit ? "tell the student what to think about or do in the upcoming visit" : "teach the concept"} — written TO the student. The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
-  "shelfQuestions": [{"vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
+"shelfQuestions": [{"specialty": "one-word or short specialty tag for this question — e.g., 'Pathophysiology', 'Psychiatry', 'Nephrology', 'Gastroenterology', 'Hepatology', 'Preventive Medicine', 'Veterans Health Policy', 'Clinical Reasoning' — pick what best matches the concept being tested, not the patient's diagnosis", "vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
   "keyLabsAndImaging": [{"study": "name", "purpose": "${isPreVisit ? "why you might order it — or, if the chart shows it's already been done, what to look for in the result" : "why I ordered/would order it for OUR patient"}", "interpretation": "${isPreVisit ? "what the actual (or expected) result means clinically" : "what her actual result (or what a hypothetical result) would mean in her clinical context"}", "role": "${isPreVisit ? "how the result should change your plan" : "how it changes management for HER"}"}],
@@ -9389,24 +9398,30 @@ const buildInRoomHtml = (doc, session) => {
     visitPlanHtml += `</ul>`;
   }
 
-  // Priority Focus Areas — placeholder for Phase 2 AI field.
-  // For now, synthesize a top-3 from redFlags if available.
+  // Priority Focus Areas — the top things the student should ACTUALLY DO
+  // in the visit today, from the AI's synthesis. Falls back to red flags
+  // if the AI didn't produce this field for some reason.
   let priorityFocusHtml = "";
   if (Array.isArray(na.priorityFocusAreas) && na.priorityFocusAreas.length > 0) {
-    // Phase 2 will populate this
     priorityFocusHtml += `<div class="wrn" style="margin-top:10px;"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Priority Focus Areas for This Visit</div>`;
     na.priorityFocusAreas.forEach((item, i) => {
-      priorityFocusHtml += `<p><b>${i + 1}. ${esc(item.title || "")}:</b> ${esc(item.description || item)}</p>`;
+      if (typeof item === "string") {
+        priorityFocusHtml += `<p><b>${i + 1}.</b> ${esc(item)}</p>`;
+      } else {
+        const title = item.title || "";
+        const desc = item.description || "";
+        priorityFocusHtml += `<p><b>${i + 1}. ${esc(title)}${title ? ":" : ""}</b> ${esc(desc)}</p>`;
+      }
     });
     priorityFocusHtml += `</div>`;
   } else if (Array.isArray(na.redFlags) && na.redFlags.length > 0) {
-    // Fallback: top 3 red flags framed as priorities
     priorityFocusHtml += `<div class="wrn" style="margin-top:10px;"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Priority Focus Areas for This Visit</div>`;
     na.redFlags.slice(0, 3).forEach((rf, i) => {
       priorityFocusHtml += `<p><b>${i + 1}.</b> ${esc(rf)}</p>`;
     });
     priorityFocusHtml += `</div>`;
   }
+
 
   // Complex patient teaching (placeholder for Phase 2)
   let complexTeachingHtml = "";
@@ -9434,8 +9449,11 @@ const buildInRoomHtml = (doc, session) => {
     let qNum = 0;
     allShelfQs.forEach(q => {
       qNum++;
+      // Prefer AI-provided specialty tag; fall back to the problem name so
+      // legacy cached teaching content still displays sensibly.
+      const specialty = q.specialty || q.problem || "Clinical";
       practiceHtml += `<div class="pq-item">`;
-      practiceHtml += `<div class="pq-q"><span class="pq-type">${esc(q.problem || "Clinical")}</span>${qNum}. ${esc(q.vignette)}</div>`;
+      practiceHtml += `<div class="pq-q"><span class="pq-type">${esc(specialty)}</span>${qNum}. ${esc(q.vignette)}</div>`;
       if (q.options) {
         practiceHtml += `<ul class="pq-opts">`;
         Object.entries(q.options).forEach(([letter, opt]) => {
