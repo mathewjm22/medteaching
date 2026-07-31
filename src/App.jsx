@@ -1009,7 +1009,272 @@ const parseMedNames = (text) => {
       names.add(name);
     }
   }
-  return Array.from(names);
+    return Array.from(names);
+};
+
+// ===== Deterministic prenote adapters =====
+// These helpers convert the new parser's PMH results into the object shape
+// the rest of this existing App.jsx already expects.
+
+const normalizePrenoteProblemKey = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/\s*\([A-Z]\d{2}(?:\.\d{1,4})?\)\s*$/i, "")
+    .replace(
+      /\b(history of|stable|chronic|active|changing|resolved|controlled)\b/g,
+      " "
+    )
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+const normalizePrenoteProblemStatus = (value) => {
+  const status = String(value || "").toLowerCase();
+
+  if (status.includes("resolved")) return "resolved";
+  if (status.includes("remission")) return "remission";
+  if (status.includes("controlled")) return "controlled";
+  if (status.includes("registry")) return "registry";
+
+  if (
+    status.includes("stable") ||
+    status.includes("chronic")
+  ) {
+    return "stable";
+  }
+
+  return "active";
+};
+
+const readPrenoteProblemField = (
+  fields,
+  ...candidateLabels
+) => {
+  const entries = Object.entries(fields || {});
+
+  for (const candidate of candidateLabels) {
+    const normalizedCandidate =
+      candidate.toLowerCase().trim();
+
+    const exactMatch = entries.find(
+      ([label]) =>
+        label.toLowerCase().trim() ===
+        normalizedCandidate
+    );
+
+    if (exactMatch) {
+      return exactMatch[1] || null;
+    }
+
+    const partialMatch = entries.find(
+      ([label]) =>
+        label.toLowerCase().trim().startsWith(
+          normalizedCandidate
+        )
+    );
+
+    if (partialMatch) {
+      return partialMatch[1] || null;
+    }
+  }
+
+  return null;
+};
+
+const buildDeterministicProblemBlockMap = (
+  pmhProblems
+) => {
+  const blocks = {};
+
+  for (const problem of pmhProblems || []) {
+    const rawHeader =
+      problem.rawHeader ||
+      problem.name ||
+      "Problem";
+
+    const fields = problem.fields || {};
+
+    blocks[rawHeader.toLowerCase().trim()] = {
+      rawHeader,
+      rawBody: problem.rawText || "",
+      currentMeds: readPrenoteProblemField(
+        fields,
+        "Medications - Current"
+      ),
+      pastMeds: readPrenoteProblemField(
+        fields,
+        "Past"
+      ),
+      labTrends: readPrenoteProblemField(
+        fields,
+        "Lab trends relevant"
+      ),
+      recentControl: readPrenoteProblemField(
+        fields,
+        "Recent control/trends",
+        "Recent control"
+      ),
+      imaging: readPrenoteProblemField(
+        fields,
+        "Imaging/procedures",
+        "Imaging"
+      ),
+      careTeam: readPrenoteProblemField(
+        fields,
+        "Care team"
+      ),
+      currentStatus: readPrenoteProblemField(
+        fields,
+        "Current status or brief chronological course",
+        "Current status"
+      ),
+      statusNotes: readPrenoteProblemField(
+        fields,
+        "Status notes"
+      ),
+    };
+  }
+
+  return blocks;
+};
+
+const mergePrenoteProblemsForUi = (
+  pmhProblems,
+  aiProblems
+) => {
+  const deterministicProblems =
+    Array.isArray(pmhProblems)
+      ? pmhProblems
+      : [];
+
+  const aiProblemList =
+    Array.isArray(aiProblems)
+      ? aiProblems
+      : [];
+
+  const usedAiIndexes = new Set();
+
+  const merged = deterministicProblems.map(
+    (pmhProblem) => {
+      const pmhKey =
+        normalizePrenoteProblemKey(
+          pmhProblem.name ||
+          pmhProblem.rawHeader
+        );
+
+      const aiIndex = aiProblemList.findIndex(
+        (aiProblem, index) => {
+          if (usedAiIndexes.has(index)) {
+            return false;
+          }
+
+          const aiKey =
+            normalizePrenoteProblemKey(
+              aiProblem.problem ||
+              aiProblem.name ||
+              aiProblem.rawHeader
+            );
+
+          if (!pmhKey || !aiKey) {
+            return false;
+          }
+
+          return (
+            aiKey === pmhKey ||
+            aiKey.includes(pmhKey) ||
+            pmhKey.includes(aiKey)
+          );
+        }
+      );
+
+      const aiMatch =
+        aiIndex >= 0
+          ? aiProblemList[aiIndex]
+          : null;
+
+      if (aiIndex >= 0) {
+        usedAiIndexes.add(aiIndex);
+      }
+
+      const problemName =
+        pmhProblem.rawHeader ||
+        pmhProblem.name ||
+        aiMatch?.problem ||
+        "Problem";
+
+      return {
+        ...(aiMatch || {}),
+        problem: problemName,
+        icdContext:
+          aiMatch?.icdContext ||
+          pmhProblem.code ||
+          "",
+        category:
+          aiMatch?.category ||
+          "other",
+        status: normalizePrenoteProblemStatus(
+          aiMatch?.status ||
+          pmhProblem.status
+        ),
+        shortSubtitle:
+          aiMatch?.shortSubtitle ||
+          pmhProblem.code ||
+          pmhProblem.status ||
+          "From prenote PMH",
+        scPercent:
+          aiMatch?.scPercent ??
+          null,
+        teachingValue:
+          aiMatch?.teachingValue ||
+          "",
+        keyIssue:
+          aiMatch?.keyIssue ||
+          "",
+        source: aiMatch
+          ? "prenote+ai"
+          : "prenote",
+      };
+    }
+  );
+
+  aiProblemList.forEach((aiProblem, index) => {
+    if (usedAiIndexes.has(index)) {
+      return;
+    }
+
+    const problemName =
+      aiProblem.problem ||
+      aiProblem.name ||
+      aiProblem.rawHeader;
+
+    if (!problemName) {
+      return;
+    }
+
+    merged.push({
+      ...aiProblem,
+      problem: problemName,
+      category:
+        aiProblem.category ||
+        "other",
+      status:
+        normalizePrenoteProblemStatus(
+          aiProblem.status
+        ),
+      shortSubtitle:
+        aiProblem.shortSubtitle ||
+        aiProblem.icdContext ||
+        "AI-extracted problem",
+      scPercent:
+        aiProblem.scPercent ??
+        null,
+      source:
+        aiProblem.source ||
+        "ai",
+    });
+  });
+
+  return merged;
 };
 
 // ===== Storage adapter =====
@@ -1938,27 +2203,116 @@ FOR EACH activeProblems ENTRY, REQUIRED per-problem fields:
 
 If any of these fields are absent from your JSON, the response is invalid. Do a final check before returning.`;
 
-      const extractedForAnalysis = extractEssentialNote(clinicalNote);
-      console.log(`[analyzeNote] ${isPreVisit ? "Prenote" : "Note"}: ${clinicalNote.length} chars → ${extractedForAnalysis.length} chars`);
-      const user = `${isPreVisit ? "Prenote / chart summary" : "Clinical note"} (de-identified):\n\n${extractedForAnalysis}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase). Focus on: ${phase.focus}`;
+            const deterministicPrenote = isPreVisit
+        ? parsePrenote(clinicalNote)
+        : null;
+
+      const extractedForAnalysis = isPreVisit
+        ? deterministicPrenote.aiInput
+        : extractEssentialNote(clinicalNote);
+
+      console.log(
+        `[analyzeNote] ${
+          isPreVisit
+            ? "Prenote"
+            : "Note"
+        }: ${clinicalNote.length} chars -> ${
+          extractedForAnalysis.length
+        } chars`
+      );
+
+      const user = `${
+        isPreVisit
+          ? "Prenote / chart summary"
+          : "Clinical note"
+      } (de-identified):
+
+${extractedForAnalysis}
+
+Student is in month ${phase.monthsIn} of LIC (${phase.name} phase).
+Focus on: ${phase.focus}`;
+
       // Increased from 4000 to accommodate the expanded output schema
       // (oneLiner, patientBadges, scPercentages, per-problem category/status,
       // labTrendsSummary, diagnosticsSummary, visitPlan, perProblemRedFlags).
-      const response = await callAi(sys, user, 8000);
+      const response = await callAi(
+        sys,
+        user,
+        8000
+      );
+
       const parsed = extractJson(response);
 
-      setNoteAnalysis(parsed);
+      const mergedActiveProblems = isPreVisit
+        ? mergePrenoteProblemsForUi(
+            deterministicPrenote.pmhProblems,
+            parsed.activeProblems
+          )
+        : Array.isArray(parsed.activeProblems)
+          ? parsed.activeProblems
+          : [];
+
+      const analysisForState = {
+        ...parsed,
+        activeProblems:
+          mergedActiveProblems,
+      };
+
+      setNoteAnalysis(analysisForState);
+
       // Always auto-fill chief concern and working dx from AI analysis
-      if (parsed.chiefConcern) setChiefConcern(parsed.chiefConcern);
-      if (parsed.workingDiagnosis) setWorkingDx(parsed.workingDiagnosis);
-      if (parsed.complexity) setSession(prev => ({ ...prev, complexity: parsed.complexity }));
-      if (parsed.keyTopics) setExtractedTopics(parsed.keyTopics);
-      if (parsed.activeProblems) {
-        setActiveProblems(parsed.activeProblems);
-        setSelectedProblems(parsed.activeProblems.slice(0, 2).map(p => p.problem));
+      if (parsed.chiefConcern) {
+        setChiefConcern(parsed.chiefConcern);
       }
-      if (parsed.patientQuotes) setPatientQuotes(parsed.patientQuotes);
-      if (parsed.labTrends) setLabTrends(parsed.labTrends);
+
+      if (parsed.workingDiagnosis) {
+        setWorkingDx(
+          parsed.workingDiagnosis
+        );
+      }
+
+      if (parsed.complexity) {
+        setSession((previous) => ({
+          ...previous,
+          complexity:
+            parsed.complexity,
+        }));
+      }
+
+      if (parsed.keyTopics) {
+        setExtractedTopics(
+          parsed.keyTopics
+        );
+      }
+
+      if (
+        mergedActiveProblems.length > 0
+      ) {
+        setActiveProblems(
+          mergedActiveProblems
+        );
+
+        setSelectedProblems(
+          mergedActiveProblems
+            .slice(0, 2)
+            .map(
+              (problem) =>
+                problem.problem
+            )
+        );
+      }
+
+      if (parsed.patientQuotes) {
+        setPatientQuotes(
+          parsed.patientQuotes
+        );
+      }
+
+      if (parsed.labTrends) {
+        setLabTrends(
+          parsed.labTrends
+        );
+      }
       // Auto-select focus areas from AI suggestion. If the AI dropped the field or
 // returned an empty list, fall back to a phase-appropriate default so the
 // student always has something pre-selected on Step 3.
@@ -2345,12 +2699,30 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
     };
     const includedSections = Object.entries(focusFilters).filter(([_, v]) => v).map(([k]) => k).join(", ");
 
-// Extract only the essential sections from the note (client-side, no API call)
-    const extracted = extractEssentialNote(clinicalNote);
-    console.log(`[extractEssentialNote] Original: ${clinicalNote.length} chars → Extracted: ${extracted.length} chars (${Math.round(100 * extracted.length / clinicalNote.length)}%)`);
+    // Pre-visit prenotes use deterministic section extraction.
+    // Post-visit notes continue using the existing note reducer.
+    const extracted =
+      sessionMode === "pre"
+        ? parsePrenote(
+            clinicalNote
+          ).aiInput
+        : extractEssentialNote(
+            clinicalNote
+          );
 
-    // Belt-and-suspenders: still hard-cap in case extraction leaves too much
-    const MAX_NOTE = 12000;
+    console.log(
+      `[notePayload] Original: ${
+        clinicalNote.length
+      } chars -> Extracted: ${
+        extracted.length
+      } chars`
+    );
+
+    // Prenotes contain more structured chart data than post-visit notes.
+    const MAX_NOTE =
+      sessionMode === "pre"
+        ? 30000
+        : 12000;
     let notePayload = extracted.length > MAX_NOTE
       ? extracted.slice(0, MAX_NOTE) + "\n[truncated]"
       : extracted;
@@ -3371,53 +3743,50 @@ Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patien
       return "";
     }
 
-    let problemSource = "";
+        let problemSource = "";
     let fallbackSource = "";
+    let parsedPrenoteForPrompt = null;
 
     if (sessionMode === "pre") {
-      const sections =
-        extractPrenoteSections(clinicalNote);
+      parsedPrenoteForPrompt =
+        parsePrenote(clinicalNote);
 
       problemSource =
-        getSection(
-          sections,
-          "PAST MEDICAL HISTORY",
-          "PMH"
-        ) || "";
+        parsedPrenoteForPrompt
+          .sections
+          .pastMedicalHistory ||
+        "";
 
       fallbackSource = [
-        getSection(
-          sections,
-          "WHAT TO KNOW ABOUT",
-          "PATIENT SUMMARY",
-          "SUMMARY"
-        ),
+        parsedPrenoteForPrompt
+          .sections
+          .whatToKnow,
         problemSource,
-        getSection(
-          sections,
-          "LABORATORY STUDIES",
-          "LABS",
-          "LABORATORY RESULTS",
-          "RECENT LABS"
-        ),
-        getSection(
-          sections,
-          "IMAGING AND DIAGNOSTIC PROCEDURES",
-          "IMAGING",
-          "DIAGNOSTIC PROCEDURES"
-        ),
+        parsedPrenoteForPrompt
+          .sections
+          .diagnostics,
       ]
         .filter(Boolean)
         .join("\n");
     } else {
       problemSource =
-        extractEssentialNote(clinicalNote);
+        extractEssentialNote(
+          clinicalNote
+        );
 
-      fallbackSource = problemSource;
+      fallbackSource =
+        problemSource;
     }
 
     const blocks =
-      parseProblemBlocks(problemSource);
+      parsedPrenoteForPrompt
+        ? buildDeterministicProblemBlockMap(
+            parsedPrenoteForPrompt
+              .pmhProblems
+          )
+        : parseProblemBlocks(
+            problemSource
+          );
 
     const heading =
       "Concise clinical context by problem:";
@@ -3925,9 +4294,12 @@ Formatting rules:
 
         // Pre-visit only: extract current-medications from the prenote and get brief
         // descriptions for each. This annotates the top medication table in the in-room doc.
-        if (sessionMode === "pre") {
-          const sections = extractPrenoteSections(clinicalNote);
-          const medRec = getSection(sections, "MED REC", "MEDICATIONS", "MEDICATION LIST");
+                if (sessionMode === "pre") {
+          const parsedPrenote =
+            parsePrenote(clinicalNote);
+
+          const medRec =
+            parsedPrenote.sections.medRec;
           if (medRec) {
             const currentMedSection = extractCurrentMedsSubsection(medRec);
             const medNames = parseMedNames(currentMedSection);
@@ -3946,10 +4318,18 @@ Formatting rules:
           // Also generate LIGHTWEIGHT teaching for all non-selected problems from PMH.
           // These are the problems the attending didn't pick for deep teaching — the student
           // still sees them in the doc, but with brief prep content rather than full cases.
-          const pmhText = getSection(sections, "PAST MEDICAL HISTORY", "PMH");
-          if (pmhText) {
-            const problemBlocks = parseProblemBlocks(pmhText);
-            const allProblemNames = Object.keys(problemBlocks).map(k => problemBlocks[k].rawHeader);
+                    const pmhProblems =
+            parsedPrenote.pmhProblems ||
+            [];
+
+          if (pmhProblems.length > 0) {
+            const allProblemNames =
+              pmhProblems
+                .map(
+                  (problem) =>
+                    problem.rawHeader
+                )
+                .filter(Boolean);
             const selectedLower = new Set((selectedProblems || []).map(p => p.toLowerCase().trim()));
             // Non-selected = problems in the prenote NOT already in the deep-teaching selection
             const nonSelected = allProblemNames.filter(name => {
@@ -7671,71 +8051,109 @@ const buildInRoomHtml = (doc, session) => {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
-  // Parse prenote sections (verbatim data source for labs, vitals, etc.)
-  const prenoteSections = extractPrenoteSections(doc.rawPrenote || doc.clinicalNote || "");
-  const getSec = (...names) => getSection(prenoteSections, ...names);
+   // Deterministic prenote parsing. AI may summarize these sections,
+  // but it no longer determines where any section begins or ends.
+  const parsedPrenote = parsePrenote(
+    doc.rawPrenote ||
+      doc.clinicalNote ||
+      "",
+    na
+  );
 
-  const vitalsText = getSec(
-  "VITAL SIGNS TRENDS",
-  "VITAL SIGN TRENDS",
-  "VITALS"
-);
+  const prenoteSections =
+    parsedPrenote.sections;
 
-const labsText = getSec(
-  "LABORATORY DATA",
-  "LABORATORY STUDIES",
-  "LABORATORY RESULTS",
-  "LABORATORY TRENDS",
-  "LABORATORY TRENDS KEY ABNORMALITIES",
-  "RECENT LABS SUMMARY MOST RECENT FIRST",
-  "KEY LABS IMAGING RESULTS WITH TRENDS",
-  "LAB TREND TABLES",
-  "LABS"
-);
+  const whatToKnowText =
+    prenoteSections.whatToKnow ||
+    "";
 
-const imagingText = getSec(
-  "IMAGING AND DIAGNOSTIC PROCEDURES",
-  "IMAGING DIAGNOSTIC PROCEDURES",
-  "IMAGING",
-  "DIAGNOSTIC PROCEDURES",
-  "DIAGNOSTICS"
-);
-const diagnosticsText = getSec(
-  "DIAGNOSTICS",
-  "KEY LABS IMAGING RESULTS WITH TRENDS"
-);
+  const vitalsText =
+    prenoteSections.vitalSigns ||
+    "";
 
-const resolvedLabsText =
-  labsText ||
-  diagnosticsText ||
-  "";
+  const diagnosticsText =
+    prenoteSections.diagnostics ||
+    "";
 
-const resolvedImagingText =
-  imagingText ||
-  diagnosticsText ||
-  "";
+  // Preserve the complete DIAGNOSTICS section. It may contain both
+  // lab tables and imaging/procedure content.
+  const resolvedLabsText =
+    diagnosticsText;
 
-  const socialText = getSec("SOCIAL", "SOCIAL HISTORY");
-  const familyText = getSec("FAMILY HISTORY");
-  const surgicalText = getSec("SURGICAL HISTORY");
-  const allergiesText = getSec("ALLERGIES");
-  const militaryText = getSec("MILITARY HISTORY");
-  const preventiveText = getSec("PREVENTIVE MEDICINE", "PREVENTION");
-  const updatesText = getSec("UPDATES / RECENT VISITS", "UPDATES");
-  const pmhText = getSec(
-  "PAST MEDICAL HISTORY",
-  "PMH",
-  "KEY DIAGNOSES"
-);
-  const medRecText = getSec("MED REC", "MEDICATIONS", "MEDICATION LIST");
+  const resolvedImagingText =
+    diagnosticsText;
 
-  const currentMedsText = extractCurrentMedsSubsection(medRecText);
-  const discontinuedMedsText = extractMedSubsection(medRecText, /RECENTLY\s+DISCONTINUED/, [/SIGNIFICANT\s+HISTORICAL/, /HISTORICAL\s+MEDICATIONS?/]);
-  const historicalMedsText = extractMedSubsection(medRecText, /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/, []);
-  const currentMedNames = parseMedNames(currentMedsText);
-  const medDesc = doc.medDescriptions || {};
+  const socialText =
+    prenoteSections.social ||
+    "";
 
-  const problemBlocks = parseProblemBlocks(pmhText || "");
+  const familyText =
+    prenoteSections.familyHistory ||
+    "";
+
+  const surgicalText =
+    prenoteSections.surgicalHistory ||
+    "";
+
+  const allergiesText =
+    prenoteSections.allergies ||
+    "";
+
+  const militaryText =
+    prenoteSections.militaryHistory ||
+    "";
+
+  const preventiveText =
+    prenoteSections.preventiveMedicine ||
+    "";
+
+  const updatesText =
+    prenoteSections.recentVisits ||
+    "";
+
+  const pmhText =
+    prenoteSections.pastMedicalHistory ||
+    "";
+
+  const medRecText =
+    prenoteSections.medRec ||
+    "";
+
+  const currentMedsText =
+    extractCurrentMedsSubsection(
+      medRecText
+    );
+
+  const discontinuedMedsText =
+    extractMedSubsection(
+      medRecText,
+      /RECENTLY\s+DISCONTINUED/,
+      [
+        /SIGNIFICANT\s+HISTORICAL/,
+        /HISTORICAL\s+MEDICATIONS?/,
+      ]
+    );
+
+  const historicalMedsText =
+    extractMedSubsection(
+      medRecText,
+      /(?:SIGNIFICANT\s+HISTORICAL|HISTORICAL\s+MEDICATIONS?)/,
+      []
+    );
+
+  const currentMedNames =
+    parseMedNames(
+      currentMedsText
+    );
+
+  const medDesc =
+    doc.medDescriptions ||
+    {};
+
+  const problemBlocks =
+    buildDeterministicProblemBlockMap(
+      parsedPrenote.pmhProblems
+    );
 
   // Fuzzy match a case problem to a PMH block
   const findBlockFor = (problemName) => {
@@ -7904,9 +8322,16 @@ const resolvedImagingText =
   // ─────────────────────────────────────────────────────────────
   // ONE-LINER
   // ─────────────────────────────────────────────────────────────
-  const oneLinerHtml = na.oneLiner
-    ? `<div class="oneliner">${esc(na.oneLiner)}</div>`
-    : "";
+    const oneLinerHtml =
+    na.oneLiner
+      ? `<div class="oneliner">${esc(
+          na.oneLiner
+        )}</div>`
+      : whatToKnowText
+        ? `<div class="oneliner">${fmtHtml(
+            whatToKnowText
+          )}</div>`
+        : "";
 
   // ─────────────────────────────────────────────────────────────
   // QUICK REFERENCE PANELS
@@ -7915,7 +8340,11 @@ const resolvedImagingText =
 
   // PMH list
   qrHtml += `<div class="qr-panel"><div class="qr-head"><i class="fa-solid fa-list-check"></i> Past Medical History</div><div class="qr-body"><ul class="pmh-list">`;
-  const problemsForPMH = na.activeProblems?.length ? na.activeProblems : Object.values(problemBlocks).map(b => ({ problem: b.rawHeader, status: "active" }));
+    const problemsForPMH =
+    mergePrenoteProblemsForUi(
+      parsedPrenote.pmhProblems,
+      na.activeProblems || []
+    );
   problemsForPMH.forEach(p => {
     const dot = p.status === "resolved" ? "resolved" : "active";
     const scTag = p.scPercent ? `<span class="sc-tag">${esc(p.scPercent)}% SC</span>` : "";
