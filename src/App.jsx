@@ -9249,9 +9249,59 @@ const buildInRoomHtml = (doc, session) => {
   //    section-row headers within the table).
   // 5. Below the master, render smaller per-panel tables for focused review.
   let labsHtml = "";
+  // Lab tables can appear in multiple sections depending on how the source LLM
+  // organized the prenote — sometimes under DIAGNOSTICS, sometimes under
+  // "Most recent labs" within UPDATES / RECENT VISITS, sometimes both.
+  // We scan the raw text of every relevant section for pipe-delimited lab
+  // tables and combine everything.
   const structuredDiagnostics = parsedPrenote.diagnostics || {};
-  const structuredTables = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
+  const tablesFromDiagnostics = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
 
+  // Additionally scan UPDATES/RECENT VISITS and WHAT TO KNOW sections for
+  // inline lab tables. Some prenotes put "Most recent labs" there.
+  const extractInlineLabTables = (text) => {
+    if (!text) return [];
+    const tables = [];
+    const lines = text.split(/\r?\n/);
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i].trim();
+      // Look for a header row: starts with COLLECTION | or DATE |
+      if (/^COLLECTION\s*\|/i.test(line) || /^DATE\s*\|/i.test(line)) {
+        const columns = line.split("|").map(c => c.trim()).filter(Boolean);
+        const rows = [];
+        // Collect subsequent lines that also have pipes
+        let j = i + 1;
+        while (j < lines.length) {
+          const rowLine = lines[j].trim();
+          // Row must have pipes AND start with a date-like token
+          if (!/\|/.test(rowLine)) break;
+          if (!/^\d{1,2}\/\d{2,4}/.test(rowLine) && !/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(rowLine)) break;
+          const cells = rowLine.split("|").map(c => c.trim());
+          if (cells.length !== columns.length) break;
+          // Build a row object keyed by column name
+          const rowObj = {};
+          columns.forEach((col, idx) => { rowObj[col] = cells[idx] || ""; });
+          rows.push(rowObj);
+          j++;
+        }
+        if (rows.length > 0) {
+          tables.push({ columns, rows });
+        }
+        i = j;
+      } else {
+        i++;
+      }
+    }
+    return tables;
+  };
+
+  const tablesFromUpdates = extractInlineLabTables(updatesText);
+  const tablesFromWhatToKnow = extractInlineLabTables(whatToKnowText);
+  const structuredTables = [...tablesFromDiagnostics, ...tablesFromUpdates, ...tablesFromWhatToKnow];
+
+  console.log(`[buildInRoomHtml] lab tables found: diagnostics=${tablesFromDiagnostics.length} updates=${tablesFromUpdates.length} whatToKnow=${tablesFromWhatToKnow.length}`);
+  
   // ── Canonical panel assignment ──
   // Uppercased analyte names → canonical panel.
   // Order of panels here = order in the master table.
