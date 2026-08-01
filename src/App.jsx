@@ -8660,11 +8660,11 @@ const buildInRoomHtml = (doc, session) => {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
   // Deterministic prenote parsing
-  const parsedPrenote = parsePrenote(
-    const structured = doc.structuredData || {};
+ const parsedPrenote = parsePrenote(
     doc.rawPrenote || doc.clinicalNote || "",
     na
   );
+  const structured = doc.structuredData || {};
 
   // TEMPORARY: diagnostic for forEach crash
   console.log("[buildInRoomHtml DIAG] na keys:", Object.keys(na));
