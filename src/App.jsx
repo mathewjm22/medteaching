@@ -2383,7 +2383,7 @@ Return ONLY valid JSON (no markdown fences):
 {
   "chiefConcern": "${isPreVisit ? 'anticipated reason for the upcoming visit if stated in prenote, else the primary chronic issue driving the visit' : 'brief chief concern or reason for visit'}",
   "workingDiagnosis": "${isPreVisit ? `primary problem the visit will center on, or the most teachable chronic condition` : `primary/most teachable diagnosis`}",
-  "oneLiner": "2-3 sentence admission-style one-liner. Anchor patient demographics, key active problems, current situation, medication status, and the 'why now' framing.",
+  "oneLiner": "EXACTLY 2 sentences. Sentence 1: standard clinical assessment format — 'AGE Y/O SEX with PMHx of [top 3-5 chronic conditions] and [notable recent event or lab finding if applicable] presenting today for [reason for visit]'. Sentence 2: additional context worth flagging — current active issue, medication concern, recent hospitalization, or overdue preventive care. Written the way a resident would open a presentation to their attending. Do not exceed 2 sentences.",
   "patientDescriptor": "brief age+sex string like '38 y/o M' or '57 y/o F veteran' — used in the header next to name",
   "patientBadges": [
     {"text": "e.g. 'Navy SEAL (ret 2008)' — noteworthy identity/status facts", "type": "info|warning|alert"}
@@ -4840,6 +4840,81 @@ Formatting rules:
     }
   };
 
+  // Fetch a PubMed abstract for a PDF based on its extracted citation.
+  // Uses the Worker's /pubmed route with the citation as the search query,
+  // takes the top result if it looks like a reasonable match, populates
+  // pdf.pubmedAbstract / pmid / url. Fails silently — abstract is a
+  // nice-to-have, not required for the app to function.
+  const fetchPubmedAbstract = async (pdf) => {
+    if (!pdf?.citation && !pdf?.shortLabel) return;
+
+    // Mark as fetching so the UI can show a spinner on this specific card
+    setPdfAttachments(prev => prev.map(p =>
+      p.id === pdf.id ? { ...p, pubmedFetching: true, pubmedError: null } : p
+    ));
+
+    // Build a search query. Prefer the full citation, fall back to short label.
+    // Clip to 300 chars so we don't blow past URL limits on the search endpoint.
+    const query = (pdf.citation || pdf.shortLabel || "").slice(0, 300).trim();
+    if (!query) {
+      setPdfAttachments(prev => prev.map(p =>
+        p.id === pdf.id ? { ...p, pubmedFetching: false } : p
+      ));
+      return;
+    }
+
+    try {
+      const pubmedUrl = WORKER_URL.replace(/\/$/, "") + "/pubmed";
+      const res = await fetch(pubmedUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, maxResults: 3, dateRange: "30" }),
+      });
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`HTTP ${res.status}: ${errText.slice(0, 100)}`);
+      }
+      const data = await res.json();
+
+      // Take the top result. Reject if it has no abstract at all — probably
+      // not a real match if PubMed returned zero abstract content.
+      const top = (data.papers || [])[0];
+      if (!top || (!top.abstract && !top.title)) {
+        setPdfAttachments(prev => prev.map(p =>
+          p.id === pdf.id
+            ? { ...p, pubmedFetching: false, pubmedError: "No PubMed match found" }
+            : p
+        ));
+        return;
+      }
+
+      setPdfAttachments(prev => prev.map(p =>
+        p.id === pdf.id
+          ? {
+              ...p,
+              pubmedFetching: false,
+              pubmedError: null,
+              pubmedPmid: top.pmid,
+              pubmedUrl: top.url,
+              pubmedTitle: top.title,
+              pubmedAuthors: top.authors,
+              pubmedJournal: top.journal,
+              pubmedYear: top.year,
+              pubmedAbstract: top.abstract || "",
+            }
+          : p
+      ));
+      console.log(`[fetchPubmedAbstract] ${pdf.filename} → PMID ${top.pmid} (${top.title?.slice(0, 60)}...)`);
+    } catch (e) {
+      console.warn(`[fetchPubmedAbstract] ${pdf.filename} failed:`, e.message);
+      setPdfAttachments(prev => prev.map(p =>
+        p.id === pdf.id
+          ? { ...p, pubmedFetching: false, pubmedError: e.message.slice(0, 80) }
+          : p
+      ));
+    }
+  };
+
   // Ask the AI to produce a short AMA-style citation from the PDF's title page / abstract text.
   // Runs once per PDF, non-blocking, populated into pdfAttachments state when ready.
   const extractPdfCitation = async (pdf, opts = {}) => {
@@ -4880,13 +4955,22 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
       const hasResult = parsed.citation?.trim() || parsed.shortLabel?.trim();
 
       if (hasResult) {
+        const updatedPdf = {
+          ...pdf,
+          citation: parsed.citation || null,
+          shortLabel: parsed.shortLabel || null,
+          citationExtracting: false,
+          citationError: null,
+        };
         setPdfAttachments(prev => prev.map(p =>
-          p.id === pdf.id
-            ? { ...p, citation: parsed.citation || null, shortLabel: parsed.shortLabel || null, citationExtracting: false, citationError: null }
-            : p
+          p.id === pdf.id ? updatedPdf : p
         ));
         console.log(`[extractPdfCitation] ${pdf.filename} (attempt ${attempt}) → "${parsed.shortLabel}" / "${parsed.citation}"`);
+        // Kick off PubMed abstract fetch in the background (non-blocking).
+        // Runs in parallel with any other PDF citation extraction.
+        fetchPubmedAbstract(updatedPdf).catch(e => console.warn("PubMed fetch error:", e));
         return;
+      }
       }
 
       // Empty result — retry with bigger sample if this was the first pass
@@ -4913,6 +4997,8 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
       ));
       console.warn(`[extractPdfCitation] ${pdf.filename} failed:`, e.message);
     }
+
+
   };
 
   const removePdfAttachment = (id) => {
@@ -7148,6 +7234,47 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                               </>
                             )}
                           </div>
+                          {/* PubMed abstract preview — auto-fetched after citation extraction */}
+                          {(pdf.pubmedFetching || pdf.pubmedAbstract || pdf.pubmedError) && (
+                            <div className="mt-2 pt-2 border-t border-slate-200">
+                              {pdf.pubmedFetching ? (
+                                <div className="text-xs text-indigo-600 flex items-center gap-1">
+                                  <Loader2 className="w-3 h-3 animate-spin" />Looking up PubMed abstract...
+                                </div>
+                              ) : pdf.pubmedAbstract ? (
+                                <details className="text-xs">
+                                  <summary className="cursor-pointer text-indigo-700 hover:text-indigo-900 font-medium flex items-center gap-1">
+                                    <BookOpen className="w-3 h-3" />
+                                    PubMed abstract found
+                                    {pdf.pubmedPmid && <span className="text-slate-500 font-normal">· PMID {pdf.pubmedPmid}</span>}
+                                    <span className="text-slate-400 font-normal ml-1">(click to expand)</span>
+                                  </summary>
+                                  <div className="mt-2 p-3 bg-indigo-50 border border-indigo-100 rounded text-xs text-slate-700 space-y-1">
+                                    {pdf.pubmedTitle && (
+                                      <div className="font-semibold text-slate-900">{pdf.pubmedTitle}</div>
+                                    )}
+                                    {pdf.pubmedAuthors && (
+                                      <div className="text-slate-600 italic">{pdf.pubmedAuthors}{pdf.pubmedJournal ? ` — ${pdf.pubmedJournal}` : ""}{pdf.pubmedYear ? ` (${pdf.pubmedYear})` : ""}</div>
+                                    )}
+                                    {pdf.pubmedAbstract && (
+                                      <div className="mt-1 leading-relaxed">{pdf.pubmedAbstract}</div>
+                                    )}
+                                    {pdf.pubmedUrl && (
+                                      <div className="mt-1">
+                                        <a href={pdf.pubmedUrl} target="_blank" rel="noreferrer" className="text-indigo-700 hover:text-indigo-900 underline">
+                                          View on PubMed ↗
+                                        </a>
+                                      </div>
+                                    )}
+                                  </div>
+                                </details>
+                              ) : pdf.pubmedError ? (
+                                <div className="text-xs text-slate-500 italic">
+                                  PubMed lookup: {pdf.pubmedError}
+                                </div>
+                              ) : null}
+                            </div>
+                          )}
                         </div>
                         <button
                           onClick={() => removePdfAttachment(pdf.id)}
@@ -7424,24 +7551,55 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
               </div>
             ) : previewMode && previewData ? (
               // ============ PREVIEW/EDIT MODE ============
-              <PreviewEditor
-                previewData={previewData}
-                setPreviewData={setPreviewData}
-                togglePreviewSection={togglePreviewSection}
-                toggleTeachingCase={toggleTeachingCase}
-                updatePreviewField={updatePreviewField}
-                updateTeachingCaseField={updateTeachingCaseField}
-                commitPreviewToDocument={commitPreviewToDocument}
-                onBack={() => setActiveTab("goals")}
-                onRegenerate={generateDocument}
-                onRetryFailed={() => generateDocument({ retryFailedOnly: true })}
-                generationAttempts={generationAttempts}
-                fetchingPubmed={fetchingPubmed}
-                aiStatus={aiStatus}
-                focusLabels={focusLabels}
-                phase={phase}
-                session={session}
-              />
+              // For pre-visit mode, use the long-form InRoomDocument as the
+               // preview so what you see matches what the final doc will render.
+              sessionMode === "pre" ? (
+                <div>
+                  <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4 mb-4">
+                    <div className="flex items-start justify-between flex-wrap gap-2">
+                      <div>
+                        <h2 className="text-lg font-bold text-slate-900">Preview</h2>
+                        <p className="text-sm text-slate-700 mt-1">This is exactly what the final document will look like. Review, then click Generate to finalize.</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => setActiveTab("goals")} className="px-3 py-2 text-slate-600 hover:bg-white rounded-lg text-sm">← Back to Goals</button>
+                        <button onClick={generateDocument} className="px-3 py-2 bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200 text-sm flex items-center gap-1">
+                          <Wand2 className="w-4 h-4" />Re-run AI
+                        </button>
+                        <button onClick={commitPreviewToDocument} className="px-4 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium flex items-center gap-2">
+                          <Sparkles className="w-4 h-4" />Generate Final Document
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                  <InRoomDocument
+                    doc={previewData}
+                    phase={phase}
+                    session={session}
+                    onEdit={() => {}}
+                    onPrint={printDoc}
+                  />
+                </div>
+              ) : (
+                <PreviewEditor
+                  previewData={previewData}
+                  setPreviewData={setPreviewData}
+                  togglePreviewSection={togglePreviewSection}
+                  toggleTeachingCase={toggleTeachingCase}
+                  updatePreviewField={updatePreviewField}
+                  updateTeachingCaseField={updateTeachingCaseField}
+                  commitPreviewToDocument={commitPreviewToDocument}
+                  onBack={() => setActiveTab("goals")}
+                  onRegenerate={generateDocument}
+                  onRetryFailed={() => generateDocument({ retryFailedOnly: true })}
+                  generationAttempts={generationAttempts}
+                  fetchingPubmed={fetchingPubmed}
+                  aiStatus={aiStatus}
+                  focusLabels={focusLabels}
+                  phase={phase}
+                  session={session}
+                />
+              )
             ) : sessionMode === "pre" ? (
               // ============ IN-ROOM DOCUMENT (pre-visit) ============
               // The attending's preview is ephemeral — no state persistence.
@@ -8655,20 +8813,17 @@ const buildInRoomHtml = (doc, session) => {
   const lastPcpMatch = rawFullPrenote.match(/Last Primary Care Visit Date:\s*([^\n]+)/i);
   const lastPcpDate = lastPcpMatch ? lastPcpMatch[1].trim() : "";
 
+  // Header — patient identity line on top, 2-sentence clinical assessment
+  // as the subtitle (matches attending-style opening), then badges and SC%.
+  // The meta row (DOB/PCP/Marital/Allergies/Meds) is dropped; allergies live
+  // in the allergy bar below, meds live in the med table further down.
   let headerHtml = `<div class="pt-header">`;
   headerHtml += `<div class="pt-name">${esc(primaryLabel)}`;
-  if (subtitle) headerHtml += ` <span class="pt-demo">${esc(subtitle)}</span>`;
-  headerHtml += `</div>`;
-
-  headerHtml += `<div class="pt-meta">`;
-  if (dob) headerHtml += `<span><b>DOB:</b> ${esc(dob)}</span>`;
-  if (lastPcpDate) headerHtml += `<span><b>Last PCP:</b> ${esc(lastPcpDate)}</span>`;
-  if (maritalStatus) headerHtml += `<span><b>Marital:</b> ${esc(maritalStatus)}</span>`;
-  headerHtml += `<span><b>Allergies:</b> ${esc(allergiesShort)}</span>`;
-  if (currentMedNames.length > 0 && currentMedNames.length <= 2) {
-    headerHtml += `<span><b>Meds:</b> ${esc(currentMedNames.slice(0, 2).join(", "))}</span>`;
-  } else if (currentMedNames.length > 2) {
-    headerHtml += `<span><b>Meds:</b> ${currentMedNames.length} active (see below)</span>`;
+  if (na.oneLiner && na.oneLiner.trim()) {
+    // AI-generated 2-sentence assessment goes here as the subtitle
+    headerHtml += ` <span class="pt-assessment">${esc(na.oneLiner)}</span>`;
+  } else if (subtitle) {
+    headerHtml += ` <span class="pt-demo">${esc(subtitle)}</span>`;
   }
   headerHtml += `</div>`;
 
@@ -8693,11 +8848,12 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // ONE-LINER
   // ──────────────────────────────────────────────────────────────
-  const oneLinerHtml = na.oneLiner
-    ? `<div class="oneliner">${esc(na.oneLiner)}</div>`
-    : whatToKnowText
-      ? `<div class="oneliner">${esc(whatToKnowText.slice(0, 800))}</div>`
-      : "";
+  // One-liner is now rendered inline within the header (as .pt-assessment).
+  // Fall back to a separate box only when there's no AI oneLiner and we have
+  // WHAT TO KNOW prose from the prenote worth showing.
+  const oneLinerHtml = !na.oneLiner && whatToKnowText
+    ? `<div class="oneliner">${esc(whatToKnowText.slice(0, 800))}</div>`
+    : "";
 
   // ──────────────────────────────────────────────────────────────
   // ALLERGY BAR (only when NKDA — otherwise allergies are in header)
@@ -9643,6 +9799,15 @@ body.dark {
   --accent: #60a5fa;
   --page-bg: #0b1220;
 }
+  /* Font size hierarchy — enforce consistency.
+   Only 4 sizes are used:
+     - 10pt: card titles and prominent identifiers
+     - 9pt:  all body text (paragraphs, list items, table cells, callout content)
+     - 8pt:  secondary annotations (citations, interpretation subtext)
+     - 7pt:  section labels and eyebrow text (uppercase small caps) */
+.doc-body-9 { font-size: 9pt !important; }
+.doc-body-8 { font-size: 8pt !important; }
+
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 html { font-size: 11pt; }
 body {
@@ -9711,6 +9876,17 @@ strong, b { font-weight: 700; color: var(--fg); }
   color: var(--fg);
 }
 .pt-name .pt-demo { font-weight: 400; color: var(--fg-d); font-size: 12pt; margin-left: 8px; }
+
+.pt-name .pt-assessment {
+  font-weight: 400;
+  color: var(--fg-m);
+  font-size: 10pt;
+  margin-left: 12px;
+  line-height: 1.45;
+  display: block;
+  margin-top: 4px;
+}
+
 .pt-meta {
   display: flex;
   flex-wrap: wrap;
@@ -9754,7 +9930,7 @@ body.dark .pt-sc-c { background: rgba(245,158,11,.15); color: #fcd34d; border-co
   border-radius: 4px;
   padding: 10px 12px;
   margin-bottom: 10px;
-  font-size: 9.5pt;
+  font-size: 9pt;
   line-height: 1.55;
   color: var(--fg-m);
 }
@@ -9838,7 +10014,7 @@ body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-col
   align-items: center;
   gap: 5px;
 }
-.ref-text { font-size: 8.5pt; color: var(--fg-m); line-height: 1.45; }
+.ref-text { font-size: 9pt; color: var(--fg-m); line-height: 1.45; }
 
 /* Vitals row */
 .vitals-row {
@@ -9859,7 +10035,7 @@ body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-col
   color: var(--fg-d);
   font-weight: 700;
 }
-.vital-chip-val { font-family: 'JetBrains Mono', monospace; font-size: 10.5pt; font-weight: 500; color: var(--fg); }
+.vital-chip-val { font-family: 'JetBrains Mono', monospace; font-size: 10pt; font-weight: 500; color: var(--fg); }
 
 /* Section dividers */
 .sec-div {
@@ -9903,7 +10079,7 @@ body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-col
 .med-tbl tr:last-child td { border-bottom: none; }
 .drug-n { color: #7c3aed; font-weight: 700; white-space: nowrap; }
 body.dark .drug-n { color: #c084fc; }
-.med-ind { color: var(--fg-d); font-size: 8pt; }
+.med-ind { color: var(--fg-d); font-size: 9pt; }
 
 /* Problem cards */
 .prob {
@@ -9985,10 +10161,10 @@ body.dark .tch { background: rgba(245,158,11,.08); }
 }
 body.dark .tch-label { color: #fcd34d; }
 .tch ul { margin: 0; padding-left: 16px; }
-.tch li { font-size: 8.5pt; color: #44403c; line-height: 1.45; margin-bottom: 3px; }
+.tch li { font-size: 9pt; color: #44403c; line-height: 1.45; margin-bottom: 3px; }
 body.dark .tch li { color: #d6d3d1; }
 .tch li:last-child { margin-bottom: 0; }
-.tch p { font-size: 8.5pt; color: #44403c; line-height: 1.45; margin: 0; }
+.tch p { font-size: 9pt; color: #44403c; line-height: 1.45; margin: 0; }
 body.dark .tch p { color: #d6d3d1; }
 
 .ask {
@@ -10009,7 +10185,7 @@ body.dark .ask { background: rgba(99,102,241,.08); }
   margin-bottom: 4px;
 }
 body.dark .ask-label { color: #a5b4fc; }
-.ask p { font-size: 8.5pt; color: #3730a3; line-height: 1.45; margin: 0; }
+.ask p { font-size: 9pt; color: #3730a3; line-height: 1.45; margin: 0; }
 body.dark .ask p { color: #c7d2fe; }
 
 .wrn {
@@ -10030,7 +10206,7 @@ body.dark .wrn { background: rgba(239,68,68,.08); }
   margin-bottom: 4px;
 }
 body.dark .wrn-label { color: #fca5a5; }
-.wrn p { font-size: 8.5pt; color: #991b1b; line-height: 1.45; margin: 0 0 3px; }
+.wrn p { font-size: 9pt; color: #991b1b; line-height: 1.45; margin: 0 0 3px; }
 body.dark .wrn p { color: #fecaca; }
 .wrn p:last-child { margin-bottom: 0; }
 
@@ -10039,7 +10215,7 @@ body.dark .wrn p { color: #fecaca; }
   width: 100%;
   border-collapse: collapse;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 8.5pt;
+  font-size: 9pt;
   margin-bottom: 6px;
   background: var(--bg);
 }
@@ -10083,7 +10259,7 @@ body.dark .lab-ok { color: #86efac !important; }
   text-align: left !important;
 }
 .lab-note {
-  font-size: 8.5pt;
+  font-size: 9pt;
   color: var(--fg-m);
   background: var(--panel);
   border: 1px solid var(--border-l);
@@ -10113,7 +10289,7 @@ body.dark .lab-ok { color: #86efac !important; }
   align-items: center;
   gap: 5px;
 }
-.soc-text { font-size: 8.5pt; color: var(--fg-m); line-height: 1.4; }
+.soc-text { font-size: 9pt; color: var(--fg-m); line-height: 1.4; }
 
 /* Timeline */
 .tl-compact { list-style: none; }
@@ -10223,13 +10399,13 @@ body.dark .prev-done { background: rgba(52,211,153,.15); color: #6ee7b7; }
 }
 body.dark .pq-type { color: #5eead4; }
 .pq-opts { list-style: none; margin: 4px 0; padding: 0; }
-.pq-opts li { font-size: 8.5pt; color: var(--fg-m); padding: 2px 0; line-height: 1.4; }
+.pq-opts li { font-size: 9pt; color: var(--fg-m); padding: 2px 0; line-height: 1.4; }
 .pq-opts li .pq-l { font-weight: 700; margin-right: 5px; color: var(--fg-d); }
 .pq-opts li.pq-right { color: #166534; font-weight: 700; }
 body.dark .pq-opts li.pq-right { color: #86efac; }
 .pq-opts li.pq-right .pq-l { color: #166534; }
 body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
-.pq-exp { font-size: 8.5pt; color: var(--fg-m); line-height: 1.45; margin-top: 4px; }
+.pq-exp { font-size: 9pt; color: var(--fg-m); line-height: 1.45; margin-top: 4px; }
 
 /* Footer */
 .doc-footer {
@@ -10259,6 +10435,38 @@ body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
   h1, h2, h3, h4, h5, h6, .sec-div, .prob-head { page-break-after: avoid; break-after: avoid; }
   p, li, div { orphans: 3; widows: 3; }
   tr { page-break-inside: avoid; }
+  /* Consistency overrides — enforce the 4-size hierarchy */
+.oneliner,
+.allergy,
+.pmh-list li,
+.ref-text,
+.med-tbl,
+.med-tbl td,
+.med-ind,
+.prob-body p,
+.tch li,
+.tch p,
+.ask p,
+.wrn p,
+.wrn li,
+.soc-text,
+.tl-compact li,
+.prev-list li,
+.ck-list li,
+.pq-q,
+.pq-opts li,
+.pq-exp,
+.lab-tbl,
+.lab-note {
+  font-size: 9pt;
+}
+.med-ind,
+.wrn ul li,
+.wrn ol li {
+  font-size: 8pt;
+}
+.prob-title, .vital-chip-val { font-size: 10pt; }
+.doc-footer { font-size: 8pt; }
 }
 `;
 
