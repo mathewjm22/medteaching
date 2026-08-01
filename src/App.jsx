@@ -4855,13 +4855,46 @@ Formatting rules:
 
     // Build a search query. Prefer the full citation, fall back to short label.
     // Clip to 300 chars so we don't blow past URL limits on the search endpoint.
-    const query = (pdf.citation || pdf.shortLabel || "").slice(0, 300).trim();
-    if (!query) {
+    // Build a PubMed-friendly search query. Strategy:
+    //   1. If the citation contains a DOI, use "10.xxx/xxx[doi]" — most reliable.
+    //   2. Otherwise, extract first author last name + year and either
+    //      journal or a few keywords — cleaner than the full citation string.
+    // NCBI's esearch works poorly with full citation strings full of
+    // punctuation, volume/issue numbers, and page ranges.
+    const rawCitation = (pdf.citation || pdf.shortLabel || "").trim();
+    if (!rawCitation) {
       setPdfAttachments(prev => prev.map(p =>
         p.id === pdf.id ? { ...p, pubmedFetching: false } : p
       ));
       return;
     }
+
+    // Try to extract a DOI first (highest signal)
+    const doiMatch = rawCitation.match(/\b(10\.\d{4,9}\/[-._;()/:A-Za-z0-9]+)/i);
+    let query;
+    if (doiMatch) {
+      // Strip trailing punctuation from DOI capture
+      const doi = doiMatch[1].replace(/[.,;)]+$/, "");
+      query = `${doi}[doi]`;
+    } else {
+      // Extract first author surname (usually first Capitalized word)
+      const authorMatch = rawCitation.match(/^([A-Z][a-z]+)(?:\s+[A-Z](?:\s|$)|\s+et\s+al\.|,)/);
+      const author = authorMatch ? authorMatch[1] : "";
+      // Extract year
+      const yearMatch = rawCitation.match(/\b(19|20)\d{2}\b/);
+      const year = yearMatch ? yearMatch[0] : "";
+      // Extract journal (usually appears after author, before year)
+      const journalMatch = rawCitation.match(/(?:et\s+al\.|,)\s+([A-Z][A-Za-z\s]+?)\.\s+(?:19|20)\d{2}/);
+      const journal = journalMatch ? journalMatch[1].trim() : "";
+
+      const parts = [];
+      if (author) parts.push(`${author}[au]`);
+      if (year) parts.push(`${year}[dp]`);
+      if (journal) parts.push(`"${journal}"[journal]`);
+      query = parts.length >= 2 ? parts.join(" AND ") : rawCitation.slice(0, 200);
+    }
+
+    console.log(`[fetchPubmedAbstract] ${pdf.filename} → search query: ${query}`);
 
     try {
       const pubmedUrl = WORKER_URL.replace(/\/$/, "") + "/pubmed";
@@ -4950,7 +4983,7 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
     const user = `Extract the AMA citation from this PDF's text:\n\n${sample}`;
 
     try {
-      const response = await callAi(sys, user, 400);
+      const response = await callAi(sys, user, 1000);
       const parsed = extractJson(response);
       const hasResult = parsed.citation?.trim() || parsed.shortLabel?.trim();
 
