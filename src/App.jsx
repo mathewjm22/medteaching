@@ -9478,10 +9478,6 @@ const buildInRoomHtml = (doc, session) => {
     return tables;
   };
 
-  const tablesFromUpdates = extractInlineLabTables(updatesText);
-  const tablesFromWhatToKnow = extractInlineLabTables(whatToKnowText);
-  const structuredTables = [...tablesFromDiagnostics, ...tablesFromUpdates, ...tablesFromWhatToKnow];
-
   // ── Canonical panel assignment ──
   // Uppercased analyte names → canonical panel.
   // Order of panels here = order in the master table.
