@@ -4971,7 +4971,6 @@ NEVER fabricate authors, years, journals, or numbers you cannot see in the text.
         fetchPubmedAbstract(updatedPdf).catch(e => console.warn("PubMed fetch error:", e));
         return;
       }
-      }
 
       // Empty result — retry with bigger sample if this was the first pass
       if (attempt === 1 && text.length > 4000) {
