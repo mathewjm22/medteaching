@@ -2301,6 +2301,11 @@ const analyzeNote = async () => {
       let deterministicProblemNames = [];
       if (isPreVisit) {
         deterministicPrenote = parsePrenote(clinicalNote);
+        console.log("[DEBUG] Full normalized text length:", deterministicPrenote?.normalizedText?.length);
+console.log("[DEBUG] Sections found:", Object.keys(deterministicPrenote?.sections || {}));
+console.log("[DEBUG] PMH chars:", (deterministicPrenote?.sections?.pastMedicalHistory || "").length);
+console.log("[DEBUG] Search for 'PAST MEDICAL HISTORY' position:", deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY"));
+console.log("[DEBUG] Text right around PMH heading:", deterministicPrenote?.normalizedText?.slice(Math.max(0, (deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY") || 0) - 100), (deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY") || 0) + 500));
         console.log("[analyzeNote DIAG] diagnostics section length:", (deterministicPrenote.sections?.diagnostics || "").length, "tables found:", deterministicPrenote.diagnostics?.tables?.length || 0);
         deterministicProblemNames = (deterministicPrenote.pmhProblems || [])
           .map((p) => p.rawHeader || p.name)
@@ -9301,7 +9306,7 @@ const buildInRoomHtml = (doc, session) => {
   const structuredTables = [...tablesFromDiagnostics, ...tablesFromUpdates, ...tablesFromWhatToKnow];
 
   console.log(`[buildInRoomHtml] lab tables found: diagnostics=${tablesFromDiagnostics.length} updates=${tablesFromUpdates.length} whatToKnow=${tablesFromWhatToKnow.length}`);
-  
+
   // ── Canonical panel assignment ──
   // Uppercased analyte names → canonical panel.
   // Order of panels here = order in the master table.
