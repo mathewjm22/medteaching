@@ -3272,7 +3272,11 @@ ${isTangential
   )
 }`;
       try {
-        const response = await callAi(sys, user, 8000);
+        const response = await callAi(
+        sys,
+        user,
+        16000
+      );
         const parsed = extractJson(response);
         console.log(`[teachingCase] "${problem}" citations:`, parsed.keyLearningPoints?.map(lp => lp.citation).filter(Boolean));
         // Always inject the known problem name and kind — never trust the AI to echo them correctly
