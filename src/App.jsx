@@ -8713,9 +8713,33 @@ const buildInRoomHtml = (doc, session) => {
 
   // Right: Clinical Reference Data
   refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="ref-body">`;
-  if (surgicalText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${esc(surgicalText.slice(0, 400))}</div></div>`;
-  if (familyText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${esc(familyText.slice(0, 400))}</div></div>`;
-  if (militaryText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield"></i> Military History</div><div class="ref-text">${esc(militaryText.slice(0, 300))}</div></div>`;
+  // Helper: split reference-text on inline separators (" - ", " * ", "*", newlines)
+  // into a bullet list. Used for Surgical, Family, Military — which the prenote
+  // often formats as dash-separated inline items instead of proper newlines.
+  const renderRefBullets = (text) => {
+    if (!text) return "";
+    // First split on newlines
+    let items = text.split(/\r?\n/).flatMap(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return [];
+      // Further split on " - " (with spaces around to avoid breaking hyphenated words)
+      // AND on " * " (asterisk separator)
+      return trimmed
+        .split(/\s+[-*•]\s+/)
+        .map(s => s.trim())
+        .filter(s => s.length > 0);
+    });
+    // Strip leading bullet chars each item may still carry
+    items = items.map(i => i.replace(/^[\-\*•●○]+\s*/, "").trim()).filter(Boolean);
+    if (items.length === 0) return "";
+    // Single-item case → just render as paragraph
+    if (items.length === 1) return `<div>${esc(items[0])}</div>`;
+    return `<ul style="margin:0;padding-left:1rem;">${items.map(i => `<li style="margin-bottom:2px;">${esc(i)}</li>`).join("")}</ul>`;
+  };
+
+  if (surgicalText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${renderRefBullets(surgicalText)}</div></div>`;
+  if (familyText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${renderRefBullets(familyText)}</div></div>`;
+  if (militaryText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield"></i> Military History</div><div class="ref-text">${renderRefBullets(militaryText)}</div></div>`;
   if (na.diagnosticsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
   if (na.labTrendsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
   refGridHtml += `</div></div></div>`;
@@ -9362,7 +9386,13 @@ const buildInRoomHtml = (doc, session) => {
 
   if (hasAnyLabs) {
     // ── Master table ──
-    labsHtml += `<table class="lab-tbl">`;
+    // Force fixed column widths so panel breakdowns below visually align.
+    const masterDateColCount = displayDates.length;
+    const masterFirstColWidth = "28%";
+    const masterDateColWidth = `${Math.floor(72 / masterDateColCount)}%`;
+    const masterColgroup = `<colgroup><col style="width:${masterFirstColWidth};" />${displayDates.map(() => `<col style="width:${masterDateColWidth};" />`).join("")}</colgroup>`;
+    labsHtml += `<table class="lab-tbl" style="table-layout:fixed;width:100%;">`;
+    labsHtml += masterColgroup;
     labsHtml += `<tr><th>Test</th>`;
     displayDates.forEach(d => { labsHtml += `<th>${esc(d)}</th>`; });
     labsHtml += `</tr>`;
@@ -9398,10 +9428,19 @@ const buildInRoomHtml = (doc, session) => {
     );
     if (panelsWithBreakdowns.length > 0) {
       labsHtml += `<div style="margin-top:14px;"><div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:6px;">Panel Breakdowns</div>`;
+      // Force consistent column widths across all panel breakdown tables:
+      // one wide first column for the analyte name, equal narrow columns for
+      // each date. Uses table-layout:fixed so browsers can't auto-size.
+      const dateColCount = displayDates.length;
+      const firstColWidth = "28%";
+      const dateColWidth = `${Math.floor(72 / dateColCount)}%`;
+      const colgroupHtml = `<colgroup><col style="width:${firstColWidth};" />${displayDates.map(() => `<col style="width:${dateColWidth};" />`).join("")}</colgroup>`;
+
       panelsWithBreakdowns.forEach(panel => {
         const analytes = analytesByPanel[panel];
         labsHtml += `<div style="margin-bottom:10px;">`;
-        labsHtml += `<table class="lab-tbl">`;
+        labsHtml += `<table class="lab-tbl" style="table-layout:fixed;width:100%;">`;
+        labsHtml += colgroupHtml;
         labsHtml += `<tr><th>${esc(panel)}</th>`;
         displayDates.forEach(d => { labsHtml += `<th>${esc(d)}</th>`; });
         labsHtml += `</tr>`;
