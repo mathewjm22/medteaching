@@ -9434,7 +9434,6 @@ const buildInRoomHtml = (doc, session) => {
       columns: t.columns || [],
       rows: t.rows || [],
     }));
-    console.log(`[buildInRoomHtml] Using AI-extracted lab tables: ${structuredTables.length}`);
   } else {
     // Fallback: use the deterministic parser's extracted tables from the DIAGNOSTICS section
     structuredTables = tablesFromDiagnostics;
