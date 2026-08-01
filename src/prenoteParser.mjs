@@ -821,18 +821,34 @@ function parseLabelValue(line) {
   };
 }
 
-// Real PMH problem headers in the prenote follow the exact form:
-//   DiagnosisName (Status)
-// where Status is one of the recognized status values (Active/Changing,
-// Stable/Chronic, Resolved, etc.). We enforce this strictly to prevent
-// fragments from bullet content, WHAT TO KNOW summaries, or wrapped
-// continuation lines from being misidentified as problems.
+// Real PMH problem headers in the prenote follow one of these forms:
+//   DiagnosisName (Status)          — e.g., "Hypertension (Active/Changing)"
+//   DiagnosisName (ICD-10)          — e.g., "Hypertension (I10.9)"
+//   DiagnosisName (ICD-10, ICD-10)  — e.g., "Left foot pain (M79.672, M77.42)"
+//   DiagnosisName (ICD-10 - Status) — combined format
+//
+// The parenthetical must contain EITHER a recognized status value OR at
+// least one ICD-10-style code (letter + 2 digits + optional decimal + more digits).
+// This filters out random inline parentheticals from bullet content while
+// accepting the variety of real-world prenote formats.
+const STATUS_ALTERNATION = STATUS_VALUES
+  .map((s) => s.replace(/[/]/g, "\\/"))
+  .join("|");
+const ICD10_PATTERN = "[A-TV-Z][0-9][0-9AB](?:\\.[0-9A-Z]{1,7})?";
+
 const PMH_PROBLEM_HEADER_RE = new RegExp(
-  `^([A-Z][^()\\n]{2,120})\\s*\\((` +
-    STATUS_VALUES
-      .map((s) => s.replace(/[/]/g, "\\/"))
-      .join("|") +
-    `)\\)\\s*$`,
+  `^([A-Z][^()\\n]{2,140})\\s*\\(` +
+    // The parenthetical must contain a status word OR an ICD-10 code
+    // (possibly multiple, comma-separated, possibly with a status appended)
+    `(?:` +
+      // Case 1: one or more ICD codes, optionally followed by status
+      `(?:${ICD10_PATTERN})(?:\\s*,\\s*${ICD10_PATTERN})*` +
+      `(?:\\s*[-,]\\s*(?:${STATUS_ALTERNATION}))?` +
+    `|` +
+      // Case 2: just a status word (no ICD)
+      `(?:${STATUS_ALTERNATION})` +
+    `)` +
+    `\\.?\\s*\\)\\s*$`,
   "i",
 );
 
