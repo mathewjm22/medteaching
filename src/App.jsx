@@ -9482,8 +9482,6 @@ const buildInRoomHtml = (doc, session) => {
   const tablesFromWhatToKnow = extractInlineLabTables(whatToKnowText);
   const structuredTables = [...tablesFromDiagnostics, ...tablesFromUpdates, ...tablesFromWhatToKnow];
 
-  console.log(`[buildInRoomHtml] lab tables found: diagnostics=${tablesFromDiagnostics.length} updates=${tablesFromUpdates.length} whatToKnow=${tablesFromWhatToKnow.length}`);
-
   // ── Canonical panel assignment ──
   // Uppercased analyte names → canonical panel.
   // Order of panels here = order in the master table.
