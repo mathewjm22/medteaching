@@ -2301,6 +2301,7 @@ const analyzeNote = async () => {
       let deterministicProblemNames = [];
       if (isPreVisit) {
         deterministicPrenote = parsePrenote(clinicalNote);
+        console.log("[analyzeNote DIAG] diagnostics section length:", (deterministicPrenote.sections?.diagnostics || "").length, "tables found:", deterministicPrenote.diagnostics?.tables?.length || 0);
         deterministicProblemNames = (deterministicPrenote.pmhProblems || [])
           .map((p) => p.rawHeader || p.name)
           .filter(Boolean);
