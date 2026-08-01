@@ -2272,8 +2272,129 @@ For each problem, generate ONE focused query prioritizing recent guidelines, lan
       }));
     }
   };
-  // ===== Analyze note with AI =====
 
+
+// ===== Single AI call that returns everything the doc needs, structured =====
+  // Replaces the fragile regex-based section/vitals/labs/social parsers.
+  // Given the raw prenote text, returns a JSON blob with:
+  //   - problems: [{name, status, icdCode, currentMeds, pastMeds, labTrends, recentControl, imaging, careTeam, currentStatus, statusNotes}]
+  //   - vitals: {bp, hr, temp, spo2, wt, bmi, resp, date}
+  //   - labTables: [{panel, columns, rows}]  ← each row is {date, valuesByAnalyte}
+  //   - socialTiles: [{label, text}]
+  //   - familyHistory: string
+  //   - surgicalHistory: [string]
+  //   - militaryHistory: string
+  //   - allergies: string
+  //   - preventiveItems: [{name, status, isDue}]
+  //   - timeline: [{date, event}]
+  //   - currentMeds: [{name, dose, freq, indication, start, notes, specialty}]
+  //   - discontinuedMeds: [{name, dose, indication, stopped, reason}]
+  //   - historicalMeds: [{name, timeframe, note}]
+  const extractStructuredPrenote = async (rawText) => {
+    if (!rawText?.trim()) return null;
+    if (!aiEnabled) return null;
+
+    const sys = `You are extracting structured clinical data from a prenote for a medical education document. The prenote may be in any format — flattened into one line, using divider boxes, using markdown headers, using colon-separated fields. Handle all formats.
+
+Return ONLY valid JSON matching this exact schema (no markdown fences, no commentary). Use empty arrays [] or empty strings "" for missing data. Never omit a top-level key.
+
+{
+  "problems": [
+    {
+      "name": "exact diagnosis name as it appears in PMH, e.g., 'Hypertension' or 'Nodular sclerosis Hodgkin lymphoma, intrathoracic lymph nodes'",
+      "status": "one of: active, stable, remission, resolved, controlled, registry, uncontrolled — normalize to lowercase from whatever the prenote says (e.g., 'Active/Changing' → 'active', 'stable/chronic' → 'stable', 'remission' → 'remission')",
+      "icdCode": "ICD-10 code if given in parens next to name, else empty string",
+      "currentMeds": "text from 'Medications - Current:' field, or empty",
+      "pastMeds": "text from 'Past:' field under this problem, or empty",
+      "labTrends": "text from 'Lab trends relevant:' field, or empty",
+      "recentControl": "text from 'Recent control/trends:' field, or empty",
+      "imaging": "text from 'Imaging/procedures:' field, or empty",
+      "careTeam": "text from 'Care team:' field, or empty",
+      "currentStatus": "text from 'Current status:' or opening paragraph of this problem block",
+      "statusNotes": "text from 'Status notes:' field, or empty",
+      "consult": "text from 'Consult:' field, or empty"
+    }
+  ],
+  "vitals": {
+    "bp": "e.g., '121/80' or empty",
+    "hr": "e.g., '70' or empty",
+    "temp": "e.g., '97.8°F' or empty",
+    "spo2": "e.g., '96%' or empty",
+    "wt": "e.g., '199 lb' or empty",
+    "bmi": "e.g., '27.2' or empty",
+    "resp": "e.g., '16' or empty",
+    "date": "date of most recent vital signs, e.g., '07/2026' or empty"
+  },
+  "labTables": [
+    {
+      "panel": "panel name if identifiable (e.g., 'CBC', 'Metabolic Panel', 'Lipid Panel', 'Inflammatory Markers') or 'Labs'",
+      "columns": ["Test", "07/2026", "04/2026"],
+      "rows": [
+        {"Test": "ESR", "07/2026": "10", "04/2026": "6"},
+        {"Test": "hs-CRP", "07/2026": "0.6", "04/2026": "0.3"}
+      ]
+    }
+  ],
+  "socialTiles": [
+    {"label": "Living status", "text": "Alone"},
+    {"label": "Marital status", "text": "Never married"},
+    {"label": "Alcohol", "text": "Rarely drinks"},
+    {"label": "Tobacco", "text": "No current use"}
+  ],
+  "familyHistory": "one-string family history summary, or empty",
+  "surgicalHistory": ["one item per surgery, e.g., 'Appendectomy - 2010'"],
+  "militaryHistory": "one-string military history summary, or empty",
+  "allergies": "one-string allergy list, or 'NKDA' if no known allergies",
+  "preventiveItems": [
+    {"name": "Influenza vaccine", "status": "Due 08/2026", "isDue": true},
+    {"name": "Colonoscopy", "status": "Up to date (09/2021)", "isDue": false}
+  ],
+  "timeline": [
+    {"date": "07/09/26", "event": "PCMHI individual session with Dr. Bergman; PHQ-9 18, GAD-7 10"},
+    {"date": "06/29/26", "event": "Sleep disorders PA f/u for OSA; recommended MAD, CBT-I"}
+  ],
+  "currentMeds": [
+    {"name": "Bupropion XL", "dose": "300 mg + 150 mg (total 450 mg) daily", "freq": "daily", "indication": "depression", "start": "07/2026", "notes": "titrated up from 300 mg", "specialty": "Psychiatry"}
+  ],
+  "discontinuedMeds": [
+    {"name": "Hydroxychloroquine", "dose": "200 mg BID", "indication": "chronic fatigue/possible RA", "stopped": "05/2026", "reason": "Severe GI side effects"}
+  ],
+  "historicalMeds": [
+    {"name": "Ferrous sulfate", "timeframe": "04/2026 - 07/2026", "note": "Completed short-term iron replacement"}
+  ]
+}
+
+RULES:
+1. LAB TABLES: Every lab table in the prenote goes into labTables. This includes tables in "Most recent labs" sections, DIAGNOSTICS sections, and anywhere pipe-delimited (|) data appears with dates as columns. Preserve original column headers. Include H/L flags in values (e.g., "82 L", "216 H").
+2. PROBLEMS: Extract EVERY problem in PAST MEDICAL HISTORY. Include problems in remission, stable chronic conditions, and resolved conditions.
+3. SOCIAL TILES: Split the SOCIAL section into individual tiles by label. Every "X: Y" pair becomes a tile.
+4. PREVENTIVE: Mark items as isDue=true if the status text says "due", "overdue", "not documented", or "declined". Mark as isDue=false if "up to date", "completed", specific date given, or "negative".
+5. TIMELINE: Extract dated events from UPDATES / RECENT VISITS. Format dates consistently (MM/DD/YY or MM/YYYY).
+6. MEDS: Split MED REC into current/discontinued/historical based on subsection headings.
+7. Handle both flattened single-line format AND multi-line format. Look for structural cues (COLLECTION headers, "Current status:", divider lines, ICD codes in parens, etc.).
+8. Do NOT include imaging as lab tables — imaging goes in the doc's diagnostics summary field, not labTables.`;
+
+    const user = `Extract structured data from this prenote:\n\n${rawText}`;
+
+    try {
+      const response = await callAi(sys, user, 12000);
+      const parsed = extractJson(response);
+      console.log("[extractStructuredPrenote] extracted:", {
+        problems: parsed.problems?.length || 0,
+        labTables: parsed.labTables?.length || 0,
+        socialTiles: parsed.socialTiles?.length || 0,
+        preventiveItems: parsed.preventiveItems?.length || 0,
+        timeline: parsed.timeline?.length || 0,
+        currentMeds: parsed.currentMeds?.length || 0,
+        vitalsPresent: !!parsed.vitals?.bp || !!parsed.vitals?.hr,
+      });
+      return parsed;
+    } catch (e) {
+      console.warn("[extractStructuredPrenote] failed:", e.message);
+      return null;
+    }
+  };
+  // ===== Analyze note with AI =====
 const analyzeNote = async () => {
     if (!clinicalNote.trim()) return;
     if (aiStatus.analyzing || aiStatus.generating) return;
@@ -2299,7 +2420,14 @@ const analyzeNote = async () => {
       // effort and discontinued 10/2025" from being misidentified as problems.
       let deterministicPrenote = null;
       let deterministicProblemNames = [];
+      let structuredData = null;
+
       if (isPreVisit) {
+        // First: AI-driven structured extraction (handles any prenote format)
+        setAiStatus(prev => ({ ...prev, progress: "Extracting structured data from prenote..." }));
+        structuredData = await extractStructuredPrenote(clinicalNote);
+        window.__lastStructuredData = structuredData;
+
         deterministicPrenote = parsePrenote(clinicalNote);
         console.log("[DEBUG] Full normalized text length:", deterministicPrenote?.normalizedText?.length);
 console.log("[DEBUG] Sections found:", Object.keys(deterministicPrenote?.sections || {}));
@@ -2307,9 +2435,20 @@ console.log("[DEBUG] PMH chars:", (deterministicPrenote?.sections?.pastMedicalHi
 console.log("[DEBUG] Search for 'PAST MEDICAL HISTORY' position:", deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY"));
 console.log("[DEBUG] Text right around PMH heading:", deterministicPrenote?.normalizedText?.slice(Math.max(0, (deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY") || 0) - 100), (deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY") || 0) + 500));
         console.log("[analyzeNote DIAG] diagnostics section length:", (deterministicPrenote.sections?.diagnostics || "").length, "tables found:", deterministicPrenote.diagnostics?.tables?.length || 0);
-        deterministicProblemNames = (deterministicPrenote.pmhProblems || [])
-          .map((p) => p.rawHeader || p.name)
-          .filter(Boolean);
+        // Prefer AI-extracted problems (handles any format); fall back to
+        // deterministic regex parser if AI extraction failed
+        if (structuredData?.problems?.length > 0) {
+          deterministicProblemNames = structuredData.problems.map(p => {
+            const statusLabel = p.status ? ` (${p.status})` : "";
+            return `${p.name}${statusLabel}`.trim();
+          });
+          console.log(`[analyzeNote] Using AI-extracted problems: ${deterministicProblemNames.length}`);
+        } else {
+          deterministicProblemNames = (deterministicPrenote.pmhProblems || [])
+            .map((p) => p.rawHeader || p.name)
+            .filter(Boolean);
+          console.log(`[analyzeNote] Fallback to regex parser: ${deterministicProblemNames.length}`);
+        }
           window.__lastParsedPrenote = deterministicPrenote;
         console.log("[DEBUG] Raw pmhProblems:", deterministicPrenote.pmhProblems);
         console.log("[DEBUG] Raw pmhProblems JSON:", JSON.stringify(deterministicPrenote.pmhProblems?.slice(0, 5), null, 2));
@@ -4683,6 +4822,7 @@ Formatting rules:
     const preview = {
       generated: new Date().toLocaleString(),
       generatedIso: new Date().toISOString(),
+      structuredData: window.__lastStructuredData || null,
       sessionId: `s-${new Date().toISOString().slice(0, 10)}-${Math.random().toString(36).slice(2, 6)}`,  // one-off ID for footer/filename
       sessionTitle: deriveDocTitle({
         workingDx,
@@ -8521,6 +8661,7 @@ const buildInRoomHtml = (doc, session) => {
 
   // Deterministic prenote parsing
   const parsedPrenote = parsePrenote(
+    const structured = doc.structuredData || {};
     doc.rawPrenote || doc.clinicalNote || "",
     na
   );
@@ -8835,7 +8976,7 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   const primaryLabel = na.patientDescriptor?.trim() || "Patient";
   const subtitle = doc.chiefConcern?.trim() || doc.workingDx?.trim() || "";
-  const allergiesShort = formatAllergiesShort(allergiesText);
+  const allergiesShort = structured.allergies || formatAllergiesShort(allergiesText);
   const isNKDA = allergiesShort === "NKDA";
 
   // Try to extract marital status from social text for header
@@ -8947,9 +9088,17 @@ const buildInRoomHtml = (doc, session) => {
     return `<ul style="margin:0;padding-left:1rem;">${items.map(i => `<li style="margin-bottom:2px;">${esc(i)}</li>`).join("")}</ul>`;
   };
 
-  if (surgicalText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${renderRefBullets(surgicalText)}</div></div>`;
-  if (familyText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${renderRefBullets(familyText)}</div></div>`;
-  if (militaryText) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield"></i> Military History</div><div class="ref-text">${renderRefBullets(militaryText)}</div></div>`;
+  // Prefer AI-structured versions when available
+  const surgList = structured.surgicalHistory?.length > 0 ? structured.surgicalHistory : null;
+  const finalSurgical = surgList
+    ? (surgList.length === 1 ? `<div>${esc(surgList[0])}</div>` : `<ul style="margin:0;padding-left:1rem;">${surgList.map(s => `<li style="margin-bottom:2px;">${esc(s)}</li>`).join("")}</ul>`)
+    : (surgicalText ? renderRefBullets(surgicalText) : "");
+  const finalFamily = structured.familyHistory ? esc(structured.familyHistory) : (familyText ? renderRefBullets(familyText) : "");
+  const finalMilitary = structured.militaryHistory ? esc(structured.militaryHistory) : (militaryText ? renderRefBullets(militaryText) : "");
+
+  if (finalSurgical) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${finalSurgical}</div></div>`;
+  if (finalFamily) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${finalFamily}</div></div>`;
+  if (finalMilitary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield"></i> Military History</div><div class="ref-text">${finalMilitary}</div></div>`;
   if (na.diagnosticsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
   if (na.labTrendsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
   refGridHtml += `</div></div></div>`;
@@ -8957,7 +9106,20 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // VITALS ROW
   // ──────────────────────────────────────────────────────────────
-  const vitals = parseVitals(vitalsText);
+  // Use AI-extracted vitals if available; fall back to regex parser
+  let vitals = [];
+  if (structured.vitals && Object.values(structured.vitals).some(v => v)) {
+    const v = structured.vitals;
+    if (v.bp) vitals.push({ label: "BP", val: v.bp });
+    if (v.hr) vitals.push({ label: "HR", val: v.hr });
+    if (v.temp) vitals.push({ label: "Temp", val: v.temp });
+    if (v.spo2) vitals.push({ label: "SpO2", val: v.spo2 });
+    if (v.wt) vitals.push({ label: "Wt", val: v.wt });
+    if (v.bmi) vitals.push({ label: "BMI", val: v.bmi });
+    if (v.resp) vitals.push({ label: "Resp", val: v.resp });
+  } else {
+    vitals = parseVitals(vitalsText);
+  }
   let vitalsHtml = "";
   if (vitals.length > 0) {
     vitalsHtml += `<div class="vitals-row">`;
@@ -8976,7 +9138,10 @@ const buildInRoomHtml = (doc, session) => {
   // to actual med names found, fall back to a bulleted list showing the
   // verbatim med text — always readable, no fake "—" cells to make the doc
   // look broken.
-  const medRows = parseMedRows(currentMedsText);
+  // Use AI-extracted meds if available; fall back to regex parser
+  const medRows = (structured.currentMeds?.length > 0)
+    ? structured.currentMeds
+    : parseMedRows(currentMedsText);
 
   // Measure parse quality: percentage of non-empty structured cells.
   const measureParseQuality = (rows) => {
@@ -9259,8 +9424,26 @@ const buildInRoomHtml = (doc, session) => {
   // "Most recent labs" within UPDATES / RECENT VISITS, sometimes both.
   // We scan the raw text of every relevant section for pipe-delimited lab
   // tables and combine everything.
-  const structuredDiagnostics = parsedPrenote.diagnostics || {};
-  const tablesFromDiagnostics = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
+  // Use AI-extracted lab tables if available; fall back to regex parsers
+  let structuredTables = [];
+  if (structured.labTables?.length > 0) {
+    // AI returns tables in shape: {panel, columns: ["Test", "date1", "date2"], rows: [{Test: "ESR", date1: val, date2: val}]}
+    // Convert to the shape my existing renderer expects
+    structuredTables = structured.labTables.map(t => ({
+      title: t.panel || "Labs",
+      columns: t.columns || [],
+      rows: t.rows || [],
+    }));
+    console.log(`[buildInRoomHtml] Using AI-extracted lab tables: ${structuredTables.length}`);
+  } else {
+    // Fallback to regex parsers
+    const structuredDiagnostics = parsedPrenote.diagnostics || {};
+    const tablesFromDiagnostics = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
+    const tablesFromUpdates = typeof extractInlineLabTables === "function" ? extractInlineLabTables(updatesText) : [];
+    const tablesFromWhatToKnow = typeof extractInlineLabTables === "function" ? extractInlineLabTables(whatToKnowText) : [];
+    structuredTables = [...tablesFromDiagnostics, ...tablesFromUpdates, ...tablesFromWhatToKnow];
+    console.log(`[buildInRoomHtml] Fallback lab tables: ${structuredTables.length}`);
+  }
 
   // Additionally scan UPDATES/RECENT VISITS and WHAT TO KNOW sections for
   // inline lab tables. Some prenotes put "Most recent labs" there.
@@ -9733,7 +9916,9 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // SOCIAL HISTORY GRID
   // ──────────────────────────────────────────────────────────────
-  const socialTiles = parseSocialTiles(socialText);
+  const socialTiles = (structured.socialTiles?.length > 0)
+    ? structured.socialTiles
+    : parseSocialTiles(socialText);
   let socialHtml = "";
   if (socialTiles.length > 0) {
     socialHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Social History</div><div class="sec-div-line"></div></div>`;
@@ -9748,7 +9933,9 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // RECENT TIMELINE
   // ──────────────────────────────────────────────────────────────
-  const timeline = parseTimeline(updatesText);
+  const timeline = (structured.timeline?.length > 0)
+    ? structured.timeline
+    : parseTimeline(updatesText);
   let timelineHtml = "";
   if (timeline.length > 0) {
     timelineHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Recent Timeline</div><div class="sec-div-line"></div></div>`;
@@ -9762,7 +9949,9 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // PREVENTIVE CARE
   // ──────────────────────────────────────────────────────────────
-  const preventiveItems = parsePreventive(preventiveText);
+  const preventiveItems = (structured.preventiveItems?.length > 0)
+    ? structured.preventiveItems
+    : parsePreventive(preventiveText);
   let preventiveHtml = "";
   if (preventiveItems.length > 0) {
     preventiveHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Preventive Care</div><div class="sec-div-line"></div></div>`;
