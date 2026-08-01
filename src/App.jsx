@@ -3370,7 +3370,7 @@ The keys in "medications" must EXACTLY match the medication names I provide (cas
     const user = `Provide brief descriptions for these medications:\n${medNames.map((m, i) => `${i + 1}. ${m}`).join("\n")}`;
 
     try {
-      const response = await callAi(sys, user, 1500);
+      const response = await callAi(sys, user, 4000);
       const parsed = extractJson(response);
       const result = {};
       // Normalize keys for reliable lookup

@@ -108,7 +108,12 @@ const SECTION_DEFINITIONS = [
   },
   {
     key: "diagnostics",
-    match: (value) => value === "DIAGNOSTICS",
+    match: (value) =>
+      value === "DIAGNOSTICS" ||
+      value === "DIAGNOSTICS LAB TRENDS" ||
+      value === "LAB TRENDS" ||
+      /^PART\s*\d+\s*[-:]?\s*DIAGNOSTICS/.test(value) ||
+      /^DIAGNOSTICS\s+LAB\s+TRENDS/.test(value),
   },
   {
     key: "activeMedicalProblems",
