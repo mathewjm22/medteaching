@@ -9424,7 +9424,7 @@ const buildInRoomHtml = (doc, session) => {
   // "Most recent labs" within UPDATES / RECENT VISITS, sometimes both.
   // We scan the raw text of every relevant section for pipe-delimited lab
   // tables and combine everything.
-  // Use AI-extracted lab tables if available; fall back to regex parsers
+  /// Use AI-extracted lab tables if available; fall back to regex parsers
   let structuredTables = [];
   if (structured.labTables?.length > 0) {
     // AI returns tables in shape: {panel, columns: ["Test", "date1", "date2"], rows: [{Test: "ESR", date1: val, date2: val}]}
@@ -9436,15 +9436,13 @@ const buildInRoomHtml = (doc, session) => {
     }));
     console.log(`[buildInRoomHtml] Using AI-extracted lab tables: ${structuredTables.length}`);
   } else {
-    // Fallback to regex parsers
+    // Fallback: use the deterministic parser's extracted tables from the DIAGNOSTICS section
     const structuredDiagnostics = parsedPrenote.diagnostics || {};
     const tablesFromDiagnostics = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
-    const tablesFromUpdates = typeof extractInlineLabTables === "function" ? extractInlineLabTables(updatesText) : [];
-    const tablesFromWhatToKnow = typeof extractInlineLabTables === "function" ? extractInlineLabTables(whatToKnowText) : [];
-    structuredTables = [...tablesFromDiagnostics, ...tablesFromUpdates, ...tablesFromWhatToKnow];
-    console.log(`[buildInRoomHtml] Fallback lab tables: ${structuredTables.length}`);
+    structuredTables = tablesFromDiagnostics;
+    console.log(`[buildInRoomHtml] Fallback lab tables from regex parser: ${structuredTables.length}`);
   }
-
+  
   // Additionally scan UPDATES/RECENT VISITS and WHAT TO KNOW sections for
   // inline lab tables. Some prenotes put "Most recent labs" there.
   const extractInlineLabTables = (text) => {
