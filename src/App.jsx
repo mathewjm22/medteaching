@@ -9437,12 +9437,9 @@ const buildInRoomHtml = (doc, session) => {
     console.log(`[buildInRoomHtml] Using AI-extracted lab tables: ${structuredTables.length}`);
   } else {
     // Fallback: use the deterministic parser's extracted tables from the DIAGNOSTICS section
-    const structuredDiagnostics = parsedPrenote.diagnostics || {};
-    const tablesFromDiagnostics = Array.isArray(structuredDiagnostics.tables) ? structuredDiagnostics.tables : [];
     structuredTables = tablesFromDiagnostics;
-    console.log(`[buildInRoomHtml] Fallback lab tables from regex parser: ${structuredTables.length}`);
   }
-  
+
   // Additionally scan UPDATES/RECENT VISITS and WHAT TO KNOW sections for
   // inline lab tables. Some prenotes put "Most recent labs" there.
   const extractInlineLabTables = (text) => {
