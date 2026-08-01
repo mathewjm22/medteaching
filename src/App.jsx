@@ -8328,6 +8328,18 @@ const buildInRoomHtml = (doc, session) => {
     doc.rawPrenote || doc.clinicalNote || "",
     na
   );
+
+  // TEMPORARY: diagnostic for forEach crash
+  console.log("[buildInRoomHtml DIAG] na keys:", Object.keys(na));
+  console.log("[buildInRoomHtml DIAG] na.scPercentages type:", typeof na.scPercentages, "isArray:", Array.isArray(na.scPercentages), "value:", na.scPercentages);
+  console.log("[buildInRoomHtml DIAG] na.patientBadges type:", typeof na.patientBadges, "isArray:", Array.isArray(na.patientBadges), "value:", na.patientBadges);
+  console.log("[buildInRoomHtml DIAG] na.visitPlan type:", typeof na.visitPlan, "isArray:", Array.isArray(na.visitPlan), "value:", na.visitPlan);
+  console.log("[buildInRoomHtml DIAG] na.priorityFocusAreas type:", typeof na.priorityFocusAreas, "isArray:", Array.isArray(na.priorityFocusAreas), "value:", na.priorityFocusAreas);
+  console.log("[buildInRoomHtml DIAG] na.complexPatientTeaching type:", typeof na.complexPatientTeaching, "isArray:", Array.isArray(na.complexPatientTeaching), "value:", na.complexPatientTeaching);
+  console.log("[buildInRoomHtml DIAG] na.redFlags type:", typeof na.redFlags, "isArray:", Array.isArray(na.redFlags), "value:", na.redFlags);
+  console.log("[buildInRoomHtml DIAG] na.perProblemRedFlags type:", typeof na.perProblemRedFlags, "isArray:", Array.isArray(na.perProblemRedFlags), "value:", na.perProblemRedFlags);
+  console.log("[buildInRoomHtml DIAG] enabledCases:", enabledCases.length);
+  
   const prenoteSections = parsedPrenote.sections;
 
   const whatToKnowText = prenoteSections.whatToKnow || "";
