@@ -2447,7 +2447,7 @@ ${extractedForAnalysis}
 Student is in month ${phase.monthsIn} of LIC (${phase.name} phase).
 Focus on: ${phase.focus}`;
 
-      const response = await callAi(sys, user, 8000);
+      const response = await callAi(sys, user, 16000);
       const parsed = extractJson(response);
 
       // ─── POST-PROCESS: enforce the deterministic problem list ──────────
