@@ -8735,13 +8735,67 @@ const buildInRoomHtml = (doc, session) => {
   }
 
   // ──────────────────────────────────────────────────────────────
-  // CURRENT MEDICATIONS TABLE
+  // CURRENT MEDICATIONS TABLE (with graceful fallback)
   // ──────────────────────────────────────────────────────────────
+  // Strategy: try the structural row parser first. If it produces rows but
+  // most cells are empty ("—"), or if parsing yielded very few rows compared
+  // to actual med names found, fall back to a bulleted list showing the
+  // verbatim med text — always readable, no fake "—" cells to make the doc
+  // look broken.
   const medRows = parseMedRows(currentMedsText);
+
+  // Measure parse quality: percentage of non-empty structured cells.
+  const measureParseQuality = (rows) => {
+    if (rows.length === 0) return 0;
+    let filled = 0;
+    let total = 0;
+    rows.forEach(r => {
+      // Count only the columns that carry real per-med info (name is always
+      // filled if the row exists, so we count dose/freq/indication/start).
+      const cells = [r.dose, r.freq, r.indication, r.start];
+      cells.forEach(c => {
+        total++;
+        if (c && c.trim()) filled++;
+      });
+    });
+    return total > 0 ? filled / total : 0;
+  };
+
+  const parseQuality = measureParseQuality(medRows);
+  const rowsCoverNames = currentMedNames.length === 0 || medRows.length >= currentMedNames.length * 0.6;
+  const useStructuredTable = medRows.length > 0 && parseQuality >= 0.4 && rowsCoverNames;
+
+  // Extract med bullets from the raw text, one per line, cleaned up.
+  // Used for both the "bullet list" fallback and any structured table.
+  const extractMedBullets = (text) => {
+    if (!text) return [];
+    const bullets = [];
+    const lines = text.split(/\r?\n/);
+    for (const rawLine of lines) {
+      let line = rawLine.trim();
+      if (!line) continue;
+      // Strip common bullet chars and specialty-group headings
+      line = line.replace(/^[\-\*•●○▪▫►◆·]+\s*/, "");
+      if (!line) continue;
+      // Skip lines that are just specialty group headings like "Cardiology:"
+      if (/^[A-Z][A-Za-z /&]+:\s*$/.test(line)) continue;
+      // Skip lines that don't look like meds (no dose, no drug-name pattern)
+      const looksLikeMed = /\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)/i.test(line) ||
+                          /^[A-Z][a-z]+(?:\s+[a-z]+)?\s+/.test(line);
+      if (!looksLikeMed) continue;
+      bullets.push(line);
+    }
+    return bullets;
+  };
+
   let medsSectionHtml = "";
-  if (medRows.length > 0 || currentMedNames.length > 0) {
+  const hasAnyMedContent = medRows.length > 0 || currentMedNames.length > 0 || currentMedsText.trim();
+
+  if (hasAnyMedContent) {
     medsSectionHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Current Medications</div><div class="sec-div-line"></div></div>`;
-    if (medRows.length > 0) {
+
+    if (useStructuredTable) {
+      // Full structured table — parsing was good enough
       medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Dose/Route</th><th>Freq</th><th>Indication</th><th>Start</th><th>Notes</th></tr></thead><tbody>`;
       medRows.forEach(m => {
         const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(m.name)}`;
@@ -8755,8 +8809,9 @@ const buildInRoomHtml = (doc, session) => {
         medsSectionHtml += `</tr>`;
       });
       medsSectionHtml += `</tbody></table>`;
-    } else {
-      // Fallback: simple name list with AI descriptions
+    } else if (currentMedNames.length > 0) {
+      // AI-descriptions table — clean and useful when structural parsing is weak
+      // but we know the med names (via parseMedNames which is more forgiving).
       medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
       currentMedNames.forEach(name => {
         const desc = medDesc[name.toLowerCase().trim()] || {};
@@ -8764,6 +8819,34 @@ const buildInRoomHtml = (doc, session) => {
         medsSectionHtml += `<tr><td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)}</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
       });
       medsSectionHtml += `</tbody></table>`;
+
+      // Also show the raw bullets below the AI-description table so the
+      // student sees the full prescribing detail (dose, route, frequency,
+      // indication, notes) that the AI table doesn't show.
+      const bullets = extractMedBullets(currentMedsText);
+      if (bullets.length > 0) {
+        medsSectionHtml += `<div style="margin-top:8px;font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:4px;">Full Prescribing Detail</div>`;
+        medsSectionHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;">`;
+        bullets.forEach(b => {
+          medsSectionHtml += `<li style="margin-bottom:3px;">${esc(b)}</li>`;
+        });
+        medsSectionHtml += `</ul>`;
+      }
+    } else {
+      // Last-ditch fallback: just show the med section verbatim as a bullet list.
+      // Parser couldn't structure anything, we don't have named meds — but the
+      // raw text is at least readable.
+      const bullets = extractMedBullets(currentMedsText);
+      if (bullets.length > 0) {
+        medsSectionHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;">`;
+        bullets.forEach(b => {
+          medsSectionHtml += `<li style="margin-bottom:4px;">${esc(b)}</li>`;
+        });
+        medsSectionHtml += `</ul>`;
+      } else {
+        // Absolute last resort: verbatim text as pre-block
+        medsSectionHtml += `<pre style="font-family:'DM Sans',sans-serif;font-size:9pt;white-space:pre-wrap;color:var(--fg-m);line-height:1.5;">${esc(currentMedsText)}</pre>`;
+      }
     }
   }
 
