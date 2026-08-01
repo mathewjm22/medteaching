@@ -250,6 +250,87 @@ function stripCcdaAppendix(text) {
   return text;
 }
 
+// Some LLM outputs collapse the entire prenote into one giant line separated
+// by spaces rather than newlines. Reintroduce structural newlines so downstream
+// parsers (which expect line-oriented input) work correctly.
+function reintroduceStructuralNewlines(text) {
+  let t = text;
+
+  // Convert triple-backtick fences to newlines
+  t = t.replace(/```[a-z0-9_-]*\s*/gi, "\n");
+  t = t.replace(/```/g, "\n");
+
+  // Break before markdown headers (## Foo, ### Bar) that appear inline
+  t = t.replace(/\s+(#{1,6}\s+[A-Z])/g, "\n$1");
+
+  // Break before bullet markers that appear inline: " - " or " * "
+  // Only trigger when preceded by 2+ spaces (avoids breaking natural
+  // hyphens like "hot-cold" or asterisks inside words)
+  t = t.replace(/\s{2,}([-*])\s+(?=[A-Z0-9])/g, "\n$1 ");
+
+  // Break before well-known section headers when they appear inline
+  const knownSectionHeaders = [
+    "PRENOTE", "WHAT TO KNOW ABOUT", "UPDATES / RECENT VISITS",
+    "PAST MEDICAL HISTORY", "SOCIAL HISTORY", "SOCIAL", "FAMILY HISTORY",
+    "ALLERGIES", "SURGICAL HISTORY", "MILITARY HISTORY",
+    "MED REC", "MEDICATION RECONCILIATION",
+    "CURRENT MEDICATIONS", "RECENTLY DISCONTINUED", "SIGNIFICANT HISTORICAL MEDICATIONS",
+    "PREVENTIVE MEDICINE", "VITAL SIGNS TRENDS", "VITAL SIGNS",
+    "DIAGNOSTICS", "LAB TRENDS", "IMAGING AND DIAGNOSTIC PROCEDURES",
+    "KEY DIAGNOSES", "FOLLOW-UP",
+  ];
+  for (const header of knownSectionHeaders) {
+    // Match " HEADER " when it's not already at line start
+    const re = new RegExp(`\\s+(${header.replace(/\//g, "\\/")})(?=\\s|:)`, "g");
+    t = t.replace(re, "\n$1");
+  }
+
+  // Break before pipe-delimited table rows (COLLECTION | ... or similar)
+  // when they appear inline
+  t = t.replace(/\s+(COLLECTION\s*\|)/gi, "\n$1");
+  // Also break before rows that start with a date like "07/2026 |"
+  t = t.replace(/\s+(\d{1,2}\/\d{4}\s*\|)/g, "\n$1");
+  t = t.replace(/\s+(\d{1,2}\/\d{1,2}\/\d{2,4}\s*\|)/g, "\n$1");
+
+  // Break before common PMH field labels that appear inline
+  const knownFieldLabels = [
+    "Current status", "Current status or brief chronological course",
+    "Medications - Current", "Medications - Past",
+    "Past:", "Lab trends relevant", "Recent control", "Recent control/trends",
+    "Imaging/procedures", "Complications checked", "Care team",
+    "What this means now", "Status notes", "Consult:",
+  ];
+  for (const label of knownFieldLabels) {
+    const re = new RegExp(`\\s+(${label.replace(/[-\/]/g, m => "\\" + m)})(?=\\s|:)`, "g");
+    t = t.replace(re, "\n$1");
+  }
+
+  // Break before "Living status:", "Marital status:", etc. in social section
+  const socialLabels = [
+    "Living status", "Marital status", "Religion", "Alcohol", "Tobacco",
+    "IVDA", "Employment", "Housing", "Support system",
+  ];
+  for (const label of socialLabels) {
+    const re = new RegExp(`\\s+(${label})(?=:)`, "g");
+    t = t.replace(re, "\n$1");
+  }
+
+  // Break before common vital-sign labels
+  const vitalLabels = ["BP:", "HR:", "Pulse:", "Temp:", "SpO2:", "Wt:", "Weight:", "BMI:", "Resp:"];
+  for (const label of vitalLabels) {
+    const re = new RegExp(`\\s+(${label.replace(/:/g, "")})(?=:)`, "g");
+    t = t.replace(re, "\n$1");
+  }
+
+  // Break before date-prefixed timeline entries: "07/13/26:" or "07/13/26 "
+  t = t.replace(/\s+(\d{1,2}\/\d{1,2}\/\d{2,4}:\s)/g, "\n$1");
+
+  // Collapse runs of 3+ newlines to 2
+  t = t.replace(/\n{3,}/g, "\n\n");
+
+  return t;
+}
+
 export function normalizePrenoteText(input) {
   const normalized = String(input ?? "")
     .replace(/^\uFEFF/, "")
@@ -258,7 +339,11 @@ export function normalizePrenoteText(input) {
     .map(normalizeSpaces)
     .join("\n");
 
-  return stripCcdaAppendix(normalized);
+  // Reintroduce structural newlines if the LLM collapsed the prenote into
+  // one giant line separated by spaces.
+  const structured = reintroduceStructuralNewlines(normalized);
+
+  return stripCcdaAppendix(structured);
 }
 
 function normalizeHeading(value) {
