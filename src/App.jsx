@@ -8339,7 +8339,7 @@ const buildInRoomHtml = (doc, session) => {
   console.log("[buildInRoomHtml DIAG] na.redFlags type:", typeof na.redFlags, "isArray:", Array.isArray(na.redFlags), "value:", na.redFlags);
   console.log("[buildInRoomHtml DIAG] na.perProblemRedFlags type:", typeof na.perProblemRedFlags, "isArray:", Array.isArray(na.perProblemRedFlags), "value:", na.perProblemRedFlags);
   console.log("[buildInRoomHtml DIAG] enabledCases:", enabledCases.length);
-  
+
   const prenoteSections = parsedPrenote.sections;
 
   const whatToKnowText = prenoteSections.whatToKnow || "";
@@ -8901,7 +8901,8 @@ const buildInRoomHtml = (doc, session) => {
     const shortSub = c.shortSubtitle || apMatch?.shortSubtitle || c.primaryDiagnosis?.name || "";
     const pill = statusPill[status] || statusPill.active;
     const chartBlock = findBlockFor(problemName) || findBlockFor(c.primaryDiagnosis?.name);
-    const perProbRedFlags = na.perProblemRedFlags?.[problemName] || [];
+    const perProbRedFlagsRaw = na.perProblemRedFlags?.[problemName];
+    const perProbRedFlags = Array.isArray(perProbRedFlagsRaw) ? perProbRedFlagsRaw : [];
 
     let html = `<div class="prob"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
     if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
@@ -8915,15 +8916,16 @@ const buildInRoomHtml = (doc, session) => {
     }
 
     // Medications subsection
-    if (chartBlock?.currentMeds || chartBlock?.pastMeds || c.treatmentApproach?.firstLine?.length > 0) {
+    const firstLine = Array.isArray(c.treatmentApproach?.firstLine) ? c.treatmentApproach.firstLine : [];
+    if (chartBlock?.currentMeds || chartBlock?.pastMeds || firstLine.length > 0) {
       html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-pills"></i> Medications</div>`;
       if (chartBlock?.currentMeds) html += `<p><b>Current:</b> ${esc(chartBlock.currentMeds)}</p>`;
       if (chartBlock?.pastMeds) html += `<p><b>Past:</b> ${esc(chartBlock.pastMeds)}</p>`;
-      if (!chartBlock?.currentMeds && c.treatmentApproach?.firstLine?.length > 0) {
+      if (!chartBlock?.currentMeds && firstLine.length > 0) {
         html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
-        c.treatmentApproach.firstLine.forEach(t => {
-          const treatment = stripTreatmentVerb(t.treatment || "");
-          html += `<li><b>${esc(treatment)}</b>${t.dosing ? ` — ${esc(t.dosing)}` : ""}</li>`;
+        firstLine.forEach(t => {
+          const treatment = stripTreatmentVerb(t?.treatment || "");
+          html += `<li><b>${esc(treatment)}</b>${t?.dosing ? ` — ${esc(t.dosing)}` : ""}</li>`;
         });
         html += `</ul>`;
       }
@@ -8939,11 +8941,13 @@ const buildInRoomHtml = (doc, session) => {
     }
 
     // Labs / Studies (from teaching case)
-    if (c.keyLabsAndImaging?.length > 0) {
+    const keyLabsAndImaging = Array.isArray(c.keyLabsAndImaging) ? c.keyLabsAndImaging : [];
+    if (keyLabsAndImaging.length > 0) {
       html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-flask"></i> Labs &amp; Studies</div>`;
       html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
-      c.keyLabsAndImaging.forEach(lab => {
-        html += `<li><b>${esc(lab.study)}</b>${lab.purpose ? ` — ${esc(lab.purpose)}` : ""}`;
+      keyLabsAndImaging.forEach(lab => {
+        if (!lab || typeof lab !== "object") return;
+        html += `<li><b>${esc(lab.study || "")}</b>${lab.purpose ? ` — ${esc(lab.purpose)}` : ""}`;
         if (lab.interpretation) html += `<div style="font-size:.85em;color:#6b7280;margin-top:1px;">${esc(lab.interpretation)}</div>`;
         html += `</li>`;
       });
@@ -8963,15 +8967,18 @@ const buildInRoomHtml = (doc, session) => {
     // Teaching content for selected problems
     if (isSelected) {
       // Suggested questions (ASK box)
-      if (c.suggestedQuestions?.length > 0) {
-        html += `<div class="ask"><div class="ask-label"><i class="fa-solid fa-comment-medical"></i> Suggested Questions</div><p>${c.suggestedQuestions.map(q => esc(q)).join(" | ")}</p></div>`;
+      const suggestedQuestions = Array.isArray(c.suggestedQuestions) ? c.suggestedQuestions : [];
+      if (suggestedQuestions.length > 0) {
+        html += `<div class="ask"><div class="ask-label"><i class="fa-solid fa-comment-medical"></i> Suggested Questions</div><p>${suggestedQuestions.map(q => esc(q)).join(" | ")}</p></div>`;
       }
 
       // Key learning points (TEACH box)
-      if (c.keyLearningPoints?.length > 0) {
+      const keyLearningPoints = Array.isArray(c.keyLearningPoints) ? c.keyLearningPoints : [];
+      if (keyLearningPoints.length > 0) {
         html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: ${esc(c.primaryDiagnosis?.name || problemName)}</div><ul>`;
-        c.keyLearningPoints.forEach(lp => {
-          html += `<li><b>${esc(lp.point)}:</b> ${esc(lp.explanation)}`;
+        keyLearningPoints.forEach(lp => {
+          if (!lp || typeof lp !== "object") return;
+          html += `<li><b>${esc(lp.point || "")}:</b> ${esc(lp.explanation || "")}`;
           if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
           html += `</li>`;
         });
@@ -8979,7 +8986,7 @@ const buildInRoomHtml = (doc, session) => {
       }
 
       // Don't miss (WARN box)
-      if (c.dontMiss?.trim()) {
+      if (c.dontMiss?.trim && c.dontMiss.trim()) {
         html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div><p>${esc(c.dontMiss)}</p></div>`;
       }
 
@@ -9008,7 +9015,7 @@ const buildInRoomHtml = (doc, session) => {
           html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Quick Background</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(lwt.theClassicPicture)}</p></div>`;
         }
         if (lwt.oneKeyLearningPoint) {
-          html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;"><b>${esc(lwt.oneKeyLearningPoint.point)}:</b> ${esc(lwt.oneKeyLearningPoint.explanation)}`;
+          html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;"><b>${esc(lwt.oneKeyLearningPoint.point || "")}:</b> ${esc(lwt.oneKeyLearningPoint.explanation || "")}`;
           if (lwt.oneKeyLearningPoint.citation) html += ` <em style="opacity:.75;">(${esc(lwt.oneKeyLearningPoint.citation)})</em>`;
           html += `</p></div>`;
         }
