@@ -715,6 +715,15 @@ const extractPrenoteSections = (rawText) => {
       regex: /^LAB(?:ORATORY)?\s+TREND\s+TABLES?/i,
     },
     {
+      title: "DATED SINGLE-RESULT BLOCKS",
+      regex: /^DATED\s+SINGLE[- ]RESULT\s+BLOCKS?/i,
+    },
+    {
+      title: "RECENT LABS",
+      regex:
+        /^(?:MOST\s+)?RECENT\s+(?:LABS?|LABORATORY\s+RESULTS?)(?:\s*\([^)]*\))?/i,
+    },
+    {
       title: "LABORATORY DATA",
       regex:
         /^LABORATORY\s+(?:DATA|STUDIES|RESULTS|TRENDS)/i,
@@ -9337,8 +9346,10 @@ const buildInRoomHtml = (doc, session) => {
   const labText = joinUniqueSections([
     ...importedLabSections,
     fallbackSection("RECENT LABS SUMMARY MOST RECENT FIRST"),
+    fallbackSection("RECENT LABS"),
     fallbackSection("LABORATORY TRENDS KEY ABNORMALITIES"),
     fallbackSection("LAB TREND TABLES"),
+    fallbackSection("DATED SINGLE-RESULT BLOCKS"),
     fallbackSection("LABORATORY DATA")
   ]);
 
@@ -9372,7 +9383,7 @@ const buildInRoomHtml = (doc, session) => {
     fallbackSection("PREVENTIVE MEDICINE")
   );
 
-  const updatesText = cleanStandaloneNarrative(
+  const updatesTextWithEmbeddedLabs = cleanStandaloneNarrative(
     trimNarrativeAtHeading(
       firstNonEmptyText(
         directlyExtractedUpdates,
@@ -9384,6 +9395,56 @@ const buildInRoomHtml = (doc, session) => {
       ]
     )
   );
+
+  // Some prenotes place compact lab tables at the end of UPDATES / RECENT
+  // VISITS instead of creating a separate laboratory section. Split that
+  // block once: the narrative stays in the Updates box and the lab portion is
+  // sent to the deterministic table parser below.
+  const splitUpdatesFromEmbeddedLabs = (value) => {
+    const source = String(value || "").trim();
+    if (!source) {
+      return {
+        updatesNarrativeText: "",
+        embeddedLabsText: "",
+      };
+    }
+
+    const marker = /(?:^|\s)[-*•]?\s*(?:Most\s+recent|Recent)\s+(?:labs?|laboratory\s+results?)\s*(?:\([^)]{0,120}\))?\s*:\s*/i.exec(
+      source
+    );
+
+    if (!marker) {
+      return {
+        updatesNarrativeText: source,
+        embeddedLabsText: "",
+      };
+    }
+
+    return {
+      updatesNarrativeText: source
+        .slice(0, marker.index)
+        .replace(/\s*[-*•]\s*$/, "")
+        .trim(),
+      embeddedLabsText: source
+        .slice(marker.index + marker[0].length)
+        .trim(),
+    };
+  };
+
+  const {
+    updatesNarrativeText: updatesText,
+    embeddedLabsText: embeddedUpdateLabsText,
+  } = splitUpdatesFromEmbeddedLabs(
+    updatesTextWithEmbeddedLabs
+  );
+
+  // This is the complete lab-only source used for table parsing and for the
+  // raw fallback. It deliberately excludes the non-lab Updates narrative and
+  // all imaging/diagnostic prose.
+  const labSourceText = joinUniqueSections([
+    labText,
+    embeddedUpdateLabsText,
+  ]);
 
   const pmhText = firstNonEmptyText(
     prenoteSections.pastMedicalHistory,
@@ -10537,22 +10598,95 @@ const buildInRoomHtml = (doc, session) => {
     });
   }
 
-  // Parse any ordinary pipe-delimited table, including Markdown tables and
-  // both common orientations: dates as rows or dates as columns.
-  const extractInlineLabTables = (text) => {
+  // Universal deterministic lab parsing.
+  //
+  // Supported source shapes:
+  //   1. Standard pipe tables with dates as rows.
+  //   2. Transposed pipe tables with dates as columns.
+  //   3. Tables collapsed into one physical line.
+  //   4. Date-first bullet lists such as:
+  //        - 02/2025:
+  //          * Glucose: 100 mg/dL
+  //   5. Dated single-result blocks such as:
+  //        Urine Drug Screen (07/2020)
+  //        - Cannabinoids: Positive H
+  //
+  // Everything is converted to the same {columns, rows} table shape before
+  // the pivot renderer runs. No AI call is needed for laboratory formatting.
+  const LAB_DATE_TOKEN_SOURCE = [
+    "(?:\\d{1,2}\\/\\d{1,2}\\/(?:\\d{2}|\\d{4}))",
+    "(?:\\d{1,2}\\/(?:19|20)\\d{2})",
+    "(?:(?:19|20)\\d{2}[-\\/]\\d{1,2})",
+    "(?:(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+(?:19|20)\\d{2})",
+  ].join("|");
+
+  const labDateTokenRegex = new RegExp(
+    `\\b(?:${LAB_DATE_TOKEN_SOURCE})\\b`,
+    "i"
+  );
+
+  const cleanExtractedLabValue = (value) => {
+    const normalized = String(value || "")
+      .replace(/\u00a0/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    if (
+      !normalized ||
+      /^(?:--|—|n\/?a|not available|not documented)$/i.test(
+        normalized
+      )
+    ) {
+      return "";
+    }
+
+    // Numeric, semiquantitative, and range results. Keep optional units and
+    // abnormal flags, but stop before any explanatory prose after the value.
+    const numeric = normalized.match(
+      /^(?:[<>]=?\s*)?(?:[-+]?\d+(?:\.\d+)?(?:\s*-\s*[-+]?\d+(?:\.\d+)?)?|\d+\+)(?:\s*(?:HIGH|LOW|CRITICAL|H|L)\b)?(?:\s*(?:%|mg\/?dL|g\/?dL|mg\/?L|mmol\/?L|mEq\/?L|ng\/?mL|pg\/?mL|mcg\/?mL|IU\/?L|U\/?L|mL\/?min(?:\/1\.73m2)?|x?10\^?\d+\/?(?:uL|mL)|cfu\/?mL))?/i
+    );
+
+    if (numeric) return numeric[0].trim();
+
+    // Common textual and categorical lab results, including abbreviated EHR
+    // values. Preserve an attached H/L flag when present.
+    const textual = normalized.match(
+      /^(?:not\s+det(?:ected)?|undetectable|non\s*reactive|nonreactive|reactive|negative|positive|normal|abnormal|present|absent|trace|canc(?:eled)?|abund(?:ant)?|neg|pos|nonr|all\s+other\s+classes\s+negative)(?:\s*[HL])?\b/i
+    );
+
+    if (textual) return textual[0].trim();
+
+    // Short categorical values are safe to keep. Longer strings are usually
+    // prose interpretations attached to the end of a compact table row.
+    if (
+      normalized.length <= 36 &&
+      !/[.;:]\s+[A-Z]/.test(normalized)
+    ) {
+      return normalized;
+    }
+
+    return "";
+  };
+
+  const splitPipeLabRow = (line) =>
+    String(line || "")
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim());
+
+  const isPipeSeparatorRow = (cells) =>
+    cells.length > 0 &&
+    cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+
+  const looksLikeLabSignal = (value) =>
+    /\b(?:COLLECTION|DATE|TEST|LAB|ANALYTE|WBC|RBC|HGB|HEMOGLOBIN|HCT|HEMATOCRIT|PLT|PLATELETS?|MCV|MCH|MCHC|RDW|SODIUM|POTASSIUM|CHLORIDE|CALCIUM|MAGNESIUM|PHOSPHORUS|CREATININE|CREAT|BUN|GFR|EGFR|GLUCOSE|GLU|GLUC|A1C|AST|ALT|ALKP|ALP|ALKALINE\s+PHOSPHATASE|BILIRUBIN|ALBUMIN|PROTEIN|TSH|FT4|FT3|T4|T3|LDL|HDL|TRIG|TRIGLYCERIDES|CHOL|CHOLESTEROL|CRP|ESR|FERRITIN|FERR|IRON|TIBC|TRANSFERRIN|SATURATION|B12|FOLATE|VITAMIN\s+D|PSA|HIV|HCV|RPR|PCR|UACR|UALB|UCR|UPRO|ULEU|URBC|UWBC|UBACT|USQEP|SPG|URINE|TROPONIN|BNP|INR|PTT|D-?DIMER|LACTATE|PROCALCITONIN)\b/i.test(
+      String(value || "")
+    );
+
+  const extractPipeLabTables = (text) => {
     if (!text) return [];
-
-    const splitPipeRow = (line) =>
-      String(line)
-        .trim()
-        .replace(/^\|/, "")
-        .replace(/\|$/, "")
-        .split("|")
-        .map((cell) => cell.trim());
-
-    const isSeparatorRow = (cells) =>
-      cells.length > 0 &&
-      cells.every((cell) => /^:?-{3,}:?$/.test(cell));
 
     const tables = [];
     const lines = String(text).split(/\r?\n/);
@@ -10575,75 +10709,415 @@ const buildInRoomHtml = (doc, session) => {
         cursor += 1;
       }
 
+      const priorTitle = lines
+        .slice(Math.max(0, index - 2), index)
+        .map((line) => line.trim())
+        .reverse()
+        .find(
+          (line) =>
+            line &&
+            !line.includes("|") &&
+            line.length <= 80 &&
+            !/^[-=_]{5,}$/.test(line)
+        );
+
       index = cursor;
 
       if (block.length < 2) continue;
 
       const parsedRows = block
-        .map(splitPipeRow)
+        .map(splitPipeLabRow)
         .filter((cells) => cells.length >= 2);
 
       if (parsedRows.length < 2) continue;
 
-      const columns = parsedRows[0];
+      let columns = parsedRows[0]
+        .map((column, columnIndex) =>
+          column || (columnIndex === 0 ? "Test" : `Column ${columnIndex + 1}`)
+        );
+
+      // Drop completely empty trailing columns created by a final pipe.
+      while (
+        columns.length > 1 &&
+        parsedRows.every(
+          (cells) => !String(cells[columns.length - 1] || "").trim()
+        )
+      ) {
+        columns = columns.slice(0, -1);
+      }
+
       let dataRows = parsedRows.slice(1);
 
       if (
         dataRows.length > 0 &&
-        isSeparatorRow(dataRows[0])
+        isPipeSeparatorRow(dataRows[0])
       ) {
         dataRows = dataRows.slice(1);
       }
 
-      dataRows = dataRows.filter(
-        (cells) =>
-          cells.length === columns.length &&
-          !isSeparatorRow(cells)
-      );
+      dataRows = dataRows
+        .filter((cells) => !isPipeSeparatorRow(cells))
+        .map((cells) => {
+          const normalized = cells.slice(0, columns.length);
+          while (normalized.length < columns.length) {
+            normalized.push("");
+          }
+          return normalized;
+        })
+        .filter((cells) =>
+          cells.some((cell) => String(cell || "").trim())
+        );
 
       if (dataRows.length === 0) continue;
 
       const labSignalText = [
         ...columns,
-        ...dataRows.map((cells) => cells[0])
-      ]
-        .join(" ")
-        .toUpperCase();
+        ...dataRows.flat(),
+      ].join(" ");
 
-      const looksLikeLabTable =
-        /\b(?:COLLECTION|DATE|TEST|WBC|RBC|HGB|HEMOGLOBIN|HCT|PLT|PLATELET|SODIUM|POTASSIUM|CREATININE|BUN|GLUCOSE|A1C|AST|ALT|TSH|LDL|HDL|CRP|ESR)\b/.test(
-          labSignalText
-        );
+      const hasDate = dataRows.some((cells) =>
+        cells.some((cell) => labDateTokenRegex.test(String(cell || "")))
+      ) || columns.some((column) =>
+        labDateTokenRegex.test(String(column || ""))
+      );
 
-      if (!looksLikeLabTable) continue;
+      if (!hasDate || !looksLikeLabSignal(labSignalText)) {
+        continue;
+      }
 
       const rows = dataRows.map((cells) => {
         const row = {};
-
         columns.forEach((column, cellIndex) => {
           row[column] = cells[cellIndex] || "";
         });
-
         return row;
       });
 
       tables.push({
-        title: "Labs",
+        title: priorTitle || "Labs",
         columns,
-        rows
+        rows,
       });
     }
 
     return tables;
   };
 
-  structuredTables.push(
-    ...extractInlineLabTables(labText),
-    ...extractInlineLabTables(updatesText),
-    ...extractInlineLabTables(whatToKnowText),
-    ...extractInlineLabTables(mixedLabsImagingText),
-    ...extractInlineLabTables(diagnosticsText)
-  );
+  // Recover valid pipe tables whose line breaks were lost during copying or
+  // export. The first date tells us where the header ends; the number of
+  // header analytes tells us how many values belong to each date row.
+  const extractCompactInlineLabTables = (text) => {
+    if (!text) return [];
+
+    const source = String(text)
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u00a0/g, " ");
+
+    const tableStartRegex = /\b(?:COLLECTION|DATE)\s*\|/gi;
+    const tableStarts = Array.from(source.matchAll(tableStartRegex));
+
+    if (tableStarts.length === 0) return [];
+
+    const dateBeforePipeRegex = new RegExp(
+      `\\b(?:${LAB_DATE_TOKEN_SOURCE})\\b(?=\\s*\\|)`,
+      "gi"
+    );
+
+    const tables = [];
+
+    tableStarts.forEach((tableStart, tableIndex) => {
+      const segmentStart = tableStart.index;
+      const segmentEnd =
+        tableIndex + 1 < tableStarts.length
+          ? tableStarts[tableIndex + 1].index
+          : source.length;
+
+      const segment = source.slice(segmentStart, segmentEnd);
+      const dateMatches = Array.from(
+        segment.matchAll(dateBeforePipeRegex)
+      );
+
+      if (dateMatches.length === 0) return;
+
+      // Normal multiline tables are handled by extractPipeLabTables. Only run
+      // this recovery path when the header and first date share one line.
+      const headerToFirstDate = segment.slice(0, dateMatches[0].index);
+      if (headerToFirstDate.includes("\n")) return;
+
+      const firstColumnLabel = String(tableStart[0])
+        .split("|")[0]
+        .trim()
+        .toUpperCase();
+
+      const headerCells = headerToFirstDate
+        .replace(/^\s*(?:COLLECTION|DATE)\s*\|/i, "")
+        .split("|")
+        .map((cell) => cell.trim())
+        .filter(Boolean);
+
+      if (headerCells.length === 0) return;
+
+      const columns = [
+        firstColumnLabel === "DATE" ? "DATE" : "COLLECTION",
+        ...headerCells,
+      ];
+      const rows = [];
+
+      dateMatches.forEach((dateMatch, dateIndex) => {
+        const rowStart = dateMatch.index + dateMatch[0].length;
+        const rowEnd =
+          dateIndex + 1 < dateMatches.length
+            ? dateMatches[dateIndex + 1].index
+            : segment.length;
+
+        const rawValues = segment
+          .slice(rowStart, rowEnd)
+          .split("|")
+          .map((cell) => cell.trim());
+
+        while (rawValues[0] === "") rawValues.shift();
+
+        const row = {
+          [columns[0]]: dateMatch[0],
+        };
+
+        let populated = 0;
+
+        headerCells.forEach((analyte, valueIndex) => {
+          const value = cleanExtractedLabValue(
+            rawValues[valueIndex] || ""
+          );
+          row[analyte] = value;
+          if (value) populated += 1;
+        });
+
+        if (populated > 0) rows.push(row);
+      });
+
+      if (rows.length > 0) {
+        tables.push({
+          title: "Labs",
+          columns,
+          rows,
+        });
+      }
+    });
+
+    return tables;
+  };
+
+  const isLikelyLabAnalyte = (label, value) => {
+    const cleanedLabel = String(label || "")
+      .replace(/\([^)]*\)\s*$/, "")
+      .trim();
+    const cleanedValue = String(value || "").trim();
+
+    if (!cleanedLabel || !cleanedValue) return false;
+
+    if (
+      /^(?:findings?|impression|history|comparison|technique|exam|diagnosis|status|reason|context|care team|plan|notes?|date|collection|patient|screening|recommendation|follow[- ]?up|appointment(?: date\/time)?|clinic|provider)$/i.test(
+        cleanedLabel
+      )
+    ) {
+      return false;
+    }
+
+    if (looksLikeLabSignal(cleanedLabel)) return true;
+
+    if (
+      /\b(?:amphetamines?|barbiturates?|benzodiazepines?|cannabinoids?|cocaine|opiates?|oxycodone|phencyclidine|methadone|propoxyphene|ethanol|drug\s+screen|pH)\b/i.test(
+        cleanedLabel
+      )
+    ) {
+      return true;
+    }
+
+    return /\b(?:mg\/?dL|g\/?dL|mg\/?L|mmol\/?L|mEq\/?L|ng\/?mL|pg\/?mL|mcg\/?mL|IU\/?L|U\/?L|cfu\/?mL|x?10\^?\d+\/?(?:uL|mL)|positive|negative|reactive|not\s+det(?:ected)?|trace)\b/i.test(
+      cleanedValue
+    );
+  };
+
+  const cleanBulletLabValue = (value) => {
+    const withoutReferenceRange = String(value || "")
+      .replace(
+        /\s*\((?:cutoff\s*=|ref(?:erence)?(?:\s+range)?\s*:?|normal\s+range\s*:?|\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?)[^)]*\)\s*$/i,
+        ""
+      )
+      .trim();
+
+    return (
+      cleanExtractedLabValue(withoutReferenceRange) ||
+      (withoutReferenceRange.length <= 36
+        ? withoutReferenceRange
+        : "")
+    );
+  };
+
+  // Parse non-table laboratory sections where each date owns a bullet list of
+  // analyte/value pairs, and dated single-result blocks.
+  const extractDatedKeyValueLabTables = (text) => {
+    if (!text) return [];
+
+    let source = String(text)
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u00a0/g, " ")
+      .replace(/^[ \t]*[-=_]{8,}[ \t]*$/gm, "\n");
+
+    // Repair the common collapsed bullet form:
+    //   - 02/2025: * Glucose: 100 * BUN: 12
+    source = source
+      .replace(
+        new RegExp(
+          `([^\\n])\\s+(?=[-*•]\\s*(?:${LAB_DATE_TOKEN_SOURCE})\\s*:)`,
+          "gi"
+        ),
+        "$1\n"
+      )
+      .replace(
+        /([^\n])\s+(?=[*•]\s*[A-Za-z][^:\n]{0,70}:)/g,
+        "$1\n"
+      );
+
+    const lines = source.split("\n");
+    const tables = [];
+    let pendingTitle = "Labs";
+    let activeDate = "";
+    let activeTitle = "Labs";
+    let activeValues = {};
+
+    const flush = () => {
+      const analytes = Object.keys(activeValues);
+      if (!activeDate || analytes.length === 0) {
+        activeValues = {};
+        return;
+      }
+
+      tables.push({
+        title: activeTitle || "Labs",
+        columns: ["COLLECTION", ...analytes],
+        rows: [
+          {
+            COLLECTION: activeDate,
+            ...activeValues,
+          },
+        ],
+      });
+
+      activeValues = {};
+    };
+
+    const dateOnlyRegex = new RegExp(
+      `^[ \\t*•-]*(?:(${LAB_DATE_TOKEN_SOURCE}))[ \\t]*:?[ \\t]*$`,
+      "i"
+    );
+
+    const titledDateRegex = new RegExp(
+      `^[ \\t*•-]*([^|:\\n]{2,80}?)\\s*\\((${LAB_DATE_TOKEN_SOURCE})\\)[ \\t]*:?[ \\t]*$`,
+      "i"
+    );
+
+    for (const rawLine of lines) {
+      const trimmed = String(rawLine || "").trim();
+      if (!trimmed) continue;
+      if (trimmed.includes("|")) continue;
+
+      const titledDateMatch = trimmed.match(titledDateRegex);
+      if (titledDateMatch) {
+        flush();
+        activeTitle = titledDateMatch[1].trim();
+        pendingTitle = activeTitle;
+        activeDate = titledDateMatch[2].trim();
+        continue;
+      }
+
+      const dateOnlyMatch = trimmed.match(dateOnlyRegex);
+      if (dateOnlyMatch) {
+        flush();
+        activeDate = dateOnlyMatch[1].trim();
+        activeTitle = pendingTitle || "Labs";
+        continue;
+      }
+
+      const headingCandidate = trimmed
+        .replace(/^[#*•-]+\s*/, "")
+        .replace(/:\s*$/, "")
+        .trim();
+
+      const looksLikePanelHeading =
+        headingCandidate.length >= 2 &&
+        headingCandidate.length <= 80 &&
+        !headingCandidate.includes(":") &&
+        !/[.!?]$/.test(headingCandidate) &&
+        !/^(?:significance|interpretation|diagnostics|laboratory|recent labs|lab trend tables|dated single-result blocks)$/i.test(
+          headingCandidate
+        ) &&
+        !labDateTokenRegex.test(headingCandidate) &&
+        !isLikelyLabAnalyte(
+          headingCandidate,
+          ""
+        );
+
+      if (looksLikePanelHeading) {
+        // A new panel heading closes the prior date block. The next date line
+        // belongs to this panel (for example, CHEMISTRY then 02/2025).
+        flush();
+        activeDate = "";
+        pendingTitle = headingCandidate;
+        activeTitle = headingCandidate;
+        continue;
+      }
+
+      if (!activeDate) continue;
+
+      const keyValueMatch = trimmed
+        .replace(/^[*•-]+\s*/, "")
+        .match(/^([^:]{1,90}):\s*(.+)$/);
+
+      if (!keyValueMatch) continue;
+
+      const label = keyValueMatch[1].trim();
+      const rawValue = keyValueMatch[2].trim();
+
+      if (!isLikelyLabAnalyte(label, rawValue)) continue;
+
+      const cleanedValue = cleanBulletLabValue(rawValue);
+      if (!cleanedValue) continue;
+
+      const cleanedLabel = label
+        .replace(/,?\s*Ur\([^)]*\)\s*$/i, "")
+        .replace(/\s*\([^)]*\)\s*$/, "")
+        .trim();
+
+      if (cleanedLabel) {
+        activeValues[cleanedLabel] = cleanedValue;
+      }
+    }
+
+    flush();
+    return tables;
+  };
+
+  const extractInlineLabTables = (text) => [
+    ...extractPipeLabTables(text),
+    ...extractCompactInlineLabTables(text),
+    ...extractDatedKeyValueLabTables(text),
+  ];
+
+  const parsedLabSources = [
+    { label: "lab sections", text: labSourceText },
+    { label: "mixed labs/imaging", text: mixedLabsImagingText },
+    { label: "diagnostics", text: diagnosticsText },
+  ];
+
+  parsedLabSources.forEach(({ label, text: sourceText }) => {
+    const parsedTables = extractInlineLabTables(sourceText);
+    if (parsedTables.length > 0) {
+      console.log(
+        `[labParser] ${label}: ${parsedTables.length} table(s)`
+      );
+      structuredTables.push(...parsedTables);
+    }
+  });
 
   // Remove duplicate copies of the same table collected from overlapping
   // sections or parser outputs.
@@ -10669,10 +11143,110 @@ const buildInRoomHtml = (doc, session) => {
     return true;
   });
 
+  // Merge aliases before pivoting so the same laboratory test does not appear
+  // as separate rows merely because one section says "CREAT", another says
+  // "Cr", and another says "Creatinine".
+  const canonicalizeLabAnalyte = (value) => {
+    const raw = String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const key = raw
+      .toUpperCase()
+      .replace(/[._]/g, " ")
+      .replace(/\s*\/\s*/g, "/")
+      .replace(/[^A-Z0-9+\-/ ]+/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const aliases = {
+      "GLU": "Glucose",
+      "GLUC": "Glucose",
+      "GLUCOSE": "Glucose",
+      "HGB A1C": "A1c",
+      "HBA1C": "A1c",
+      "HEMOGLOBIN A1C": "A1c",
+      "A1C": "A1c",
+      "CREAT": "Creatinine",
+      "CR": "Creatinine",
+      "CREATININE": "Creatinine",
+      "GFR": "eGFR",
+      "EGFR": "eGFR",
+      "NA": "Sodium",
+      "K": "Potassium",
+      "CL": "Chloride",
+      "CA": "Calcium",
+      "CHOL": "Total Cholesterol",
+      "CHOLESTEROL": "Total Cholesterol",
+      "TOTAL CHOL": "Total Cholesterol",
+      "TOTAL CHOLESTEROL": "Total Cholesterol",
+      "TG": "Triglycerides",
+      "TRIG": "Triglycerides",
+      "TRIGLYCERIDE": "Triglycerides",
+      "TRIGLYCERIDES": "Triglycerides",
+      "ALKP": "Alk Phos",
+      "ALP": "Alk Phos",
+      "ALK PHOS": "Alk Phos",
+      "TBIL": "Total Bilirubin",
+      "T BILI": "Total Bilirubin",
+      "TBILI": "Total Bilirubin",
+      "ALB": "Albumin",
+      "PROT": "Total Protein",
+      "TP": "Total Protein",
+      "HGB": "Hgb",
+      "HEMOGLOBIN": "Hgb",
+      "HCT": "Hct",
+      "HEMATOCRIT": "Hct",
+      "PLT": "Platelets",
+      "PLATELET": "Platelets",
+      "PLATELET COUNT": "Platelets",
+      "CRP HS": "hs-CRP",
+      "HS CRP": "hs-CRP",
+      "HS-CRP": "hs-CRP",
+      "CRP-HS": "hs-CRP",
+      "FERR": "Ferritin",
+      "VIT D": "Vitamin D",
+      "VITD": "Vitamin D",
+      "UR ALB": "Urine Albumin",
+      "UALB": "Urine Albumin",
+      "URINE ALBUMIN": "Urine Albumin",
+      "UCR": "Urine Creatinine",
+      "URINE CREATININE": "Urine Creatinine",
+      "UACR": "Urine ACR",
+      "ACR": "Urine ACR",
+      "CT-PCR": "Chlamydia PCR",
+      "CT PCR": "Chlamydia PCR",
+      "CHLAM PCR": "Chlamydia PCR",
+      "GC-PCR": "Gonorrhea PCR",
+      "GC PCR": "Gonorrhea PCR",
+      "TRICH-PCR": "Trichomonas PCR",
+      "TRICH PCR": "Trichomonas PCR",
+      "T BILI": "Total Bilirubin",
+      "T BIL": "Total Bilirubin",
+    };
+
+    return aliases[key] || raw;
+  };
+
   // ── Canonical panel assignment ──
   // Uppercased analyte names → canonical panel.
   // Order of panels here = order in the master table.
-  const PANEL_ORDER = ["Glucose & Renal", "Electrolytes", "Liver Function", "Lipids", "CBC", "Endocrine", "Cardiac Markers", "Inflammatory / Sepsis", "Other"];
+  const PANEL_ORDER = [
+    "Glucose & Renal",
+    "Electrolytes",
+    "Liver Function",
+    "Lipids",
+    "CBC",
+    "Iron / Nutrition",
+    "Endocrine",
+    "Urine / Kidney Risk",
+    "Infectious / Serology",
+    "Coagulation",
+    "Cardiac Markers",
+    "Inflammatory / Sepsis",
+    "Toxicology",
+    "Other",
+  ];
   const ANALYTE_TO_PANEL = {
     // Glucose & Renal
     "GLUCOSE": "Glucose & Renal", "GLUCOSE LEVEL": "Glucose & Renal", "GLUC": "Glucose & Renal", "GLU": "Glucose & Renal",
@@ -10730,6 +11304,25 @@ const buildInRoomHtml = (doc, session) => {
     "FSH": "Endocrine", "LH": "Endocrine", "ESTRADIOL": "Endocrine", "PROGESTERONE": "Endocrine",
     "PROLACTIN": "Endocrine", "IGF-1": "Endocrine",
     "PTH": "Endocrine", "INSULIN": "Endocrine",
+    // Iron / Nutrition
+    "IRON": "Iron / Nutrition", "FE": "Iron / Nutrition", "FERRITIN": "Iron / Nutrition", "FERR": "Iron / Nutrition",
+    "TIBC": "Iron / Nutrition", "TRANSFERRIN": "Iron / Nutrition", "SAT": "Iron / Nutrition", "IRON SATURATION": "Iron / Nutrition",
+    "B12": "Iron / Nutrition", "VITAMIN B12": "Iron / Nutrition", "FOLATE": "Iron / Nutrition",
+    // Urine / Kidney Risk
+    "URINE ALBUMIN": "Urine / Kidney Risk", "URINE CREATININE": "Urine / Kidney Risk", "URINE ACR": "Urine / Kidney Risk",
+    "UACR": "Urine / Kidney Risk", "UALB": "Urine / Kidney Risk", "UCR": "Urine / Kidney Risk",
+    "UPRO": "Urine / Kidney Risk", "UBL": "Urine / Kidney Risk", "ULEU": "Urine / Kidney Risk", "URBC": "Urine / Kidney Risk",
+    "UWBC": "Urine / Kidney Risk", "UBACT": "Urine / Kidney Risk", "USQEP": "Urine / Kidney Risk", "SPG": "Urine / Kidney Risk",
+    // Infectious / Serology
+    "HIV": "Infectious / Serology", "HCV": "Infectious / Serology", "RPR": "Infectious / Serology",
+    "CHLAMYDIA PCR": "Infectious / Serology", "GONORRHEA PCR": "Infectious / Serology", "TRICHOMONAS PCR": "Infectious / Serology",
+    "TTG IGA": "Infectious / Serology",
+    // Coagulation
+    "PT": "Coagulation", "INR": "Coagulation", "PT/INR": "Coagulation", "PTT": "Coagulation", "APTT": "Coagulation",
+    // Toxicology
+    "AMPHETAMINES": "Toxicology", "BARBITURATES": "Toxicology", "BENZODIAZEPINES": "Toxicology",
+    "CANNABINOIDS": "Toxicology", "COCAINE": "Toxicology", "OPIATES": "Toxicology", "OXYCODONE/OXYMORPHONE": "Toxicology",
+    "PHENCYCLIDINE": "Toxicology", "METHADONE": "Toxicology", "PROPOXYPHENE": "Toxicology", "ETHANOL": "Toxicology",
     // Cardiac Markers
     "TROPONIN": "Cardiac Markers", "TROPONIN I": "Cardiac Markers", "TROPONIN T": "Cardiac Markers",
     "HS TROPONIN": "Cardiac Markers", "HS TROPONIN-I": "Cardiac Markers", "HS TROPONIN T": "Cardiac Markers",
@@ -10797,6 +11390,16 @@ const buildInRoomHtml = (doc, session) => {
     [/VITAMIN\s*D|VIT\s*D/i, "Endocrine"],
     [/PSA/i, "Endocrine"],
     [/INSULIN/i, "Endocrine"],
+    // Iron / nutrition
+    [/FERRITIN|\bFERR\b|\bIRON\b|\bFE\b|TIBC|TRANSFERRIN|IRON\s+SAT|\bSAT\b|FOLATE|VITAMIN\s*B12|\bB12\b/i, "Iron / Nutrition"],
+    // Urine / kidney risk
+    [/URINE\s+(?:ALBUMIN|CREATININE)|\bUACR\b|\bUALB\b|\bUCR\b|\bUPRO\b|\bULEU\b|\bURBC\b|\bUWBC\b|\bUBACT\b|\bUSQEP\b|\bSPG\b/i, "Urine / Kidney Risk"],
+    // Infectious / serology
+    [/\bHIV\b|\bHCV\b|\bRPR\b|CHLAM|GONORR|TRICH|PCR|TTG\s*IGA/i, "Infectious / Serology"],
+    // Coagulation
+    [/\bPT\b|\bINR\b|\bA?PTT\b/i, "Coagulation"],
+    // Toxicology
+    [/AMPHET|BARBIT|BENZODIAZ|CANNAB|COCAINE|OPIATE|OXYCODONE|PHENCYCLIDINE|METHADONE|PROPOXYPHENE|ETHANOL|DRUG\s+SCREEN/i, "Toxicology"],
     // Cardiac
     [/TROPONIN/i, "Cardiac Markers"],
     [/BNP|PROBNP/i, "Cardiac Markers"],
@@ -10825,38 +11428,75 @@ const buildInRoomHtml = (doc, session) => {
 
   // ── Parse a lab value cell — extract number + H/L flag ──
   const parseLabCell = (raw) => {
-    if (!raw || raw === "--" || raw === "—") return null;
-    const val = String(raw).trim();
-    const isHigh = /(?:^|[^A-Z])H(?:$|[^A-Z])/i.test(val) || / HIGH\b/i.test(val);
-    const isLow = /(?:^|[^A-Z])L(?:$|[^A-Z])/i.test(val) || / LOW\b/i.test(val);
-    const isCritical = /critical/i.test(val);
-    return { display: val, isHigh, isLow, isCritical };
+    if (
+      raw === null ||
+      raw === undefined ||
+      /^(?:\s*|--|—|n\/?a)$/i.test(String(raw))
+    ) {
+      return null;
+    }
+
+    const display = String(raw).trim();
+    const isHigh =
+      /(?:^|[^A-Z])H(?:$|[^A-Z])/i.test(display) ||
+      /\bHIGH\b/i.test(display) ||
+      /(?:\d|\+|positive)\s*H$/i.test(display);
+    const isLow =
+      /(?:^|[^A-Z])L(?:$|[^A-Z])/i.test(display) ||
+      /\bLOW\b/i.test(display) ||
+      /(?:\d|\+|positive)\s*L$/i.test(display);
+    const isCritical = /\bcritical\b/i.test(display);
+
+    return { display, isHigh, isLow, isCritical };
   };
 
-  // ── Detect if a "column header" is actually a date ──
-  const looksLikeDate = (s) => {
-    const v = String(s || "").trim();
-    return /^\d{1,2}\/\d{2,4}$/.test(v) || /^\d{1,2}\/\d{1,2}\/\d{2,4}$/.test(v) || /^\d{4}-\d{2}$/.test(v);
-  };
+  const looksLikeDate = (value) =>
+    labDateTokenRegex.test(String(value || "").trim());
 
-  // ── Normalize date to MM/YYYY for comparison + display ──
-  const normalizeDate = (s) => {
-    const v = String(s || "").trim();
-    // MM/DD/YYYY → MM/YYYY
-    let m = v.match(/^(\d{1,2})\/\d{1,2}\/(\d{4})$/);
-    if (m) return `${m[1].padStart(2, "0")}/${m[2]}`;
-    // MM/DD/YY → MM/20YY
-    m = v.match(/^(\d{1,2})\/\d{1,2}\/(\d{2})$/);
-    if (m) return `${m[1].padStart(2, "0")}/20${m[2]}`;
-    // MM/YYYY → MM/YYYY
-    m = v.match(/^(\d{1,2})\/(\d{4})$/);
-    if (m) return `${m[1].padStart(2, "0")}/${m[2]}`;
-    // MM/YY → MM/20YY
-    m = v.match(/^(\d{1,2})\/(\d{2})$/);
-    if (m) return `${m[1].padStart(2, "0")}/20${m[2]}`;
-    // YYYY-MM → MM/YYYY
-    m = v.match(/^(\d{4})-(\d{2})$/);
-    if (m) return `${m[2]}/${m[1]}`;
+  // ── Normalize dates for comparison + display ──
+  const normalizeDate = (value) => {
+    const v = String(value || "").trim();
+
+    let match = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+    if (match) {
+      return `${match[1].padStart(2, "0")}/${match[3]}`;
+    }
+
+    match = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/);
+    if (match) {
+      return `${match[1].padStart(2, "0")}/20${match[3]}`;
+    }
+
+    match = v.match(/^(\d{1,2})\/(\d{4})$/);
+    if (match) {
+      return `${match[1].padStart(2, "0")}/${match[2]}`;
+    }
+
+    match = v.match(/^(\d{4})[-/](\d{1,2})$/);
+    if (match) {
+      return `${match[2].padStart(2, "0")}/${match[1]}`;
+    }
+
+    const monthMap = {
+      jan: "01", january: "01",
+      feb: "02", february: "02",
+      mar: "03", march: "03",
+      apr: "04", april: "04",
+      may: "05",
+      jun: "06", june: "06",
+      jul: "07", july: "07",
+      aug: "08", august: "08",
+      sep: "09", sept: "09", september: "09",
+      oct: "10", october: "10",
+      nov: "11", november: "11",
+      dec: "12", december: "12",
+    };
+
+    match = v.match(/^([A-Za-z]+)\s+((?:19|20)\d{2})$/);
+    if (match && monthMap[match[1].toLowerCase()]) {
+      return `${monthMap[match[1].toLowerCase()]}/${match[2]}`;
+    }
+
     return v;
   };
 
@@ -10867,79 +11507,154 @@ const buildInRoomHtml = (doc, session) => {
   };
 
   // ── Flatten all parser tables into a list of observations ──
-  // Each source table can be shaped two ways depending on the parser:
-  //   Shape A: columns = [dates...], rows = [{date: "MM/YYYY", ANALYTE_A: val, ANALYTE_B: val}, ...]
-  //            (Dates are ROWS, analytes are the object keys — this is the shape we see.)
-  //   Shape B: columns = ["Test", DATE1, DATE2], rows = [{Test: "AnalyteName", DATE1: val, DATE2: val}, ...]
-  //            (Test names are rows, dates are columns — less common.)
-  // We handle both by inspecting whether columns[0] is a date-like string.
-  const observations = []; // {analyte, date (MM/YYYY), cell: {display, isHigh, isLow}}
+  // Shape A: dates are rows, analytes are columns.
+  // Shape B: analytes are rows, dates are columns.
+  const observations = [];
 
-  structuredTables.forEach(t => {
-    if (!Array.isArray(t.columns) || !Array.isArray(t.rows)) return;
-    const cols = t.columns;
+  structuredTables.forEach((table) => {
+    if (
+      !Array.isArray(table?.columns) ||
+      !Array.isArray(table?.rows) ||
+      table.columns.length < 2
+    ) {
+      return;
+    }
 
-    // Determine shape
-    const firstColHeader = String(cols[0] || "").trim().toUpperCase();
-    const otherColsLookLikeDates = cols.slice(1).filter(c => looksLikeDate(c)).length >= Math.max(1, cols.slice(1).length - 1);
-    const isShapeB = /^TEST$/i.test(firstColHeader) && otherColsLookLikeDates;
+    const columns = table.columns.map((column) =>
+      String(column || "").trim()
+    );
+
+    const firstHeader = columns[0].toUpperCase();
+    const dateColumns = columns.slice(1).filter(looksLikeDate);
+    const firstColumnLooksLikeAnalyteLabel =
+      /^(?:TEST|LAB|ANALYTE|PARAMETER|MARKER|STUDY)?$/i.test(
+        firstHeader
+      );
+
+    const isShapeB =
+      dateColumns.length > 0 &&
+      (
+        firstColumnLooksLikeAnalyteLabel ||
+        dateColumns.length >= Math.max(1, columns.length - 2)
+      );
 
     if (isShapeB) {
-      // Shape B: rows are analytes, columns 1..N are dates
-      t.rows.forEach(row => {
-        const analyte = String(row[cols[0]] || "").trim();
+      table.rows.forEach((row) => {
+        const analyte = canonicalizeLabAnalyte(
+          row[table.columns[0]] ?? row[columns[0]]
+        );
+
         if (!analyte) return;
-        cols.slice(1).forEach(dateCol => {
-          const cell = parseLabCell(row[dateCol]);
+
+        columns.slice(1).forEach((dateColumn, index) => {
+          if (!looksLikeDate(dateColumn)) return;
+
+          const originalColumn = table.columns[index + 1];
+          const cell = parseLabCell(
+            row[originalColumn] ?? row[dateColumn]
+          );
+
           if (!cell) return;
+
           observations.push({
             analyte,
-            date: normalizeDate(dateCol),
+            date: normalizeDate(dateColumn),
             cell,
           });
         });
       });
-    } else {
-      // Shape A: rows are date-collections, keys are analytes
-      // The first column is typically "COLLECTION" and contains dates like "07/2026"
-      t.rows.forEach(row => {
-        // Find the date for this row
-        let dateStr = "";
-        for (const c of cols) {
-          const v = row[c];
-          if (v && looksLikeDate(v)) { dateStr = v; break; }
-        }
-        // Also check if firstCol value is a date
-        if (!dateStr && row[cols[0]] && looksLikeDate(row[cols[0]])) dateStr = row[cols[0]];
-        if (!dateStr) return;
-        const normalizedDate = normalizeDate(dateStr);
 
-        // Every other column is an analyte
-        cols.forEach(c => {
-          if (c === cols[0]) return; // skip date column
-          const cellValue = row[c];
-          const cell = parseLabCell(cellValue);
-          if (!cell) return;
-          // Don't treat date-like values as analyte values
-          if (looksLikeDate(cellValue)) return;
-          observations.push({
-            analyte: c,
-            date: normalizedDate,
-            cell,
-          });
+      return;
+    }
+
+    // Shape A. Determine the date-bearing column from actual row values rather
+    // than assuming it is always the first column.
+    const dateColumn = table.columns.find((column) =>
+      table.rows.some((row) =>
+        looksLikeDate(row[column])
+      )
+    ) || table.columns[0];
+
+    table.rows.forEach((row) => {
+      const rawDate = row[dateColumn];
+      if (!looksLikeDate(rawDate)) return;
+
+      const normalizedDate = normalizeDate(rawDate);
+
+      table.columns.forEach((column) => {
+        if (column === dateColumn) return;
+
+        const columnLabel = String(column || "").trim();
+        if (
+          /^(?:COLLECTION|DATE|RESULT|FLAG|REFERENCE\s+RANGE|UNITS?)$/i.test(
+            columnLabel
+          )
+        ) {
+          return;
+        }
+
+        const rawValue = row[column];
+        if (looksLikeDate(rawValue)) return;
+
+        const cell = parseLabCell(rawValue);
+        if (!cell) return;
+
+        const analyte = canonicalizeLabAnalyte(columnLabel);
+        if (!analyte) return;
+
+        observations.push({
+          analyte,
+          date: normalizedDate,
+          cell,
         });
       });
-    }
+    });
   });
 
+  const labCellQuality = (cell) => {
+    if (!cell?.display) return 0;
+
+    let score = 1;
+    if (cell.isHigh || cell.isLow || cell.isCritical) score += 3;
+    if (/\d/.test(cell.display)) score += 2;
+    if (/\b(?:mg|g|mmol|mEq|ng|pg|mcg|IU|U|mL|%)/i.test(cell.display)) {
+      score += 1;
+    }
+    score += Math.min(2, cell.display.length / 20);
+    return score;
+  };
+
   // ── Build the pivot: analyte → { date → cell } ──
-  const analyteMap = {}; // { analyteName: { date: cell } }
+  const analyteMap = {};
   const dateSet = new Set();
-  observations.forEach(obs => {
-    if (!analyteMap[obs.analyte]) analyteMap[obs.analyte] = {};
-    // If the same analyte+date appears twice, keep the last (assume that's most complete)
-    analyteMap[obs.analyte][obs.date] = obs.cell;
-    dateSet.add(obs.date);
+
+  observations.forEach((observation) => {
+    if (!observation.analyte || !observation.date) return;
+
+    if (!analyteMap[observation.analyte]) {
+      analyteMap[observation.analyte] = {};
+    }
+
+    const existing =
+      analyteMap[observation.analyte][observation.date];
+
+    if (
+      !existing ||
+      labCellQuality(observation.cell) >=
+        labCellQuality(existing)
+    ) {
+      analyteMap[observation.analyte][observation.date] =
+        observation.cell;
+    }
+
+    dateSet.add(observation.date);
+  });
+
+  console.log("[labParser] observations:", {
+    tables: structuredTables.length,
+    observations: observations.length,
+    analytes: Object.keys(analyteMap).length,
+    dates: Array.from(dateSet),
   });
 
   // ── Pick the 4 most recent unique dates as column headers ──
@@ -10963,7 +11678,11 @@ const buildInRoomHtml = (doc, session) => {
     "Liver Function": ["AST", "SGOT", "ALT", "SGPT", "Alk Phos", "ALKP", "ALP", "T.Bili", "TBILI", "Total Bilirubin", "Bilirubin Total", "Albumin", "ALB", "Total Protein", "Protein Total", "TP", "GGT"],
     "Lipids": ["Total Cholesterol", "CHOL", "Cholesterol", "Total Chol", "Triglycerides", "TRIG", "TG", "HDL", "LDL", "Non-HDL", "ApoB"],
     "CBC": ["WBC", "RBC", "Hgb", "Hemoglobin", "Hct", "Hematocrit", "MCV", "MCH", "MCHC", "RDW-CV", "Platelets", "PLT", "MPV", "Neutrophil", "Lymphocyte", "Monocyte", "Eosinophil", "Basophil"],
-    "Endocrine": ["TSH", "Free T4", "FT4", "Free T3", "FT3", "T3", "T4", "PSA", "Cortisol", "Testosterone", "Vit D", "Vitamin D"],
+    "Iron / Nutrition": ["Iron", "Ferritin", "TIBC", "Transferrin", "Iron Saturation", "B12", "Folate"],
+    "Endocrine": ["TSH", "Free T4", "FT4", "Free T3", "FT3", "T3", "T4", "PSA", "Cortisol", "Testosterone", "Vitamin D"],
+    "Urine / Kidney Risk": ["Urine ACR", "Urine Albumin", "Urine Creatinine", "UPRO", "UBL", "ULEU", "URBC", "UWBC", "UBACT", "USQEP", "SPG"],
+    "Infectious / Serology": ["HIV", "HCV", "RPR", "Chlamydia PCR", "Gonorrhea PCR", "Trichomonas PCR", "TTG IgA"],
+    "Coagulation": ["PT", "INR", "PTT", "aPTT"],
     "Cardiac Markers": ["Troponin", "hs Troponin-I", "hs Troponin", "BNP", "NT-proBNP", "D-Dimer", "CK", "CK-MB"],
     "Inflammatory / Sepsis": ["CRP", "C-Reactive Protein", "hs-CRP", "Procalcitonin", "PCT", "Lactic Acid", "Lactate", "ESR", "Ferritin"],
   };
@@ -11088,9 +11807,9 @@ const buildInRoomHtml = (doc, session) => {
 
   // Fallback: when table parsing is unavailable, show only the raw
   // lab-specific section. Never place imaging narrative in Laboratory Results.
-  if (!hasAnyLabs && !na.labTrendsSummary && labText) {
+  if (!hasAnyLabs && !na.labTrendsSummary && labSourceText) {
     labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
-    labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(labText)}</pre>`;
+    labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(labSourceText)}</pre>`;
   }
 
   // ──────────────────────────────────────────────────────────────
