@@ -9374,10 +9374,26 @@ const buildInRoomHtml = (doc, session) => {
     fallbackSection("MILITARY HISTORY")
   );
 
-  const preventiveText = firstNonEmptyText(
+  const rawPreventiveText = firstNonEmptyText(
     prenoteSections.preventiveMedicine,
     fallbackSection("PREVENTIVE MEDICINE")
   );
+
+  // Some source formats glue the next top-level section onto PREVENTIVE
+  // MEDICINE. Trim only at explicit line-level headings so imaging reports,
+  // diagnostic procedures, and laboratory blocks cannot leak into the
+  // Preventive Care box.
+  const preventiveText = trimNarrativeAtHeading(
+    rawPreventiveText,
+    [
+      /(?:^|\n)\s*(?:#{1,6}\s*)?VITAL\s+SIGNS?(?:\s+TRENDS?)?\b/im,
+      /(?:^|\n)\s*(?:#{1,6}\s*)?IMAGING\s+AND\s+DIAGNOSTIC\s+PROCEDURES\b/im,
+      /(?:^|\n)\s*(?:#{1,6}\s*)?DIAGNOSTICS\b/im,
+      /(?:^|\n)\s*(?:#{1,6}\s*)?(?:RECENT\s+LABS?|LABORATORY\s+(?:DATA|RESULTS|TRENDS)|LAB\s+TREND\s+TABLES?)\b/im,
+      /(?:^|\n)\s*(?:#{1,6}\s*)?KEY\s+DIAGNOSES\b/im,
+      /(?:^|\n)\s*(?:#{1,6}\s*)?FOLLOW[- ]?UP\b/im,
+    ]
+  ).trim();
 
   const updatesTextWithEmbeddedLabs = cleanStandaloneNarrative(
     trimNarrativeAtHeading(
@@ -9650,30 +9666,59 @@ const buildInRoomHtml = (doc, session) => {
     return entries;
   };
 
-  // Parse PREVENTIVE MEDICINE into structured items with status
+  // Parse PREVENTIVE MEDICINE into structured items with status.
+  // Report-style imaging fields are explicitly rejected so a malformed source
+  // boundary cannot turn CT/MRI findings into preventive-care rows.
   const parsePreventive = (text) => {
     if (!text) return [];
+
     const items = [];
     const lines = text.split(/\r?\n/);
     let currentGroup = null;
+
+    const diagnosticFieldRegex = /^(?:EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE|FINDINGS|IMPRESSION|CONCLUSION|LOWER\s+CHEST|LIVER|GALLBLADDER\/?BILIARY|PANCREAS|SPLEEN|ADRENALS?|KIDNEYS?\/?URETERS?|BOWEL\/?MESENTERY|VASCULATURE|LYMPHATICS|BLADDER|MUSCULOSKELETAL|ADDITIONAL\s+FINDINGS)\s*:/i;
+    const diagnosticTitleRegex = /^(?:CT|MRI|PET(?:\/CT)?|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY)\b/i;
+    const preventiveStatusRegex = /\((?:due|overdue|up\s+to\s+date|completed|negative|declined|not\s+documented|not\s+due|current|done|recommended)\)\s*$/i;
+
+    const looksLikeDiagnosticReportLine = (value) => {
+      const candidate = String(value || "").trim();
+      if (!candidate) return false;
+      if (diagnosticFieldRegex.test(candidate)) return true;
+      return diagnosticTitleRegex.test(candidate) &&
+        !preventiveStatusRegex.test(candidate);
+    };
+
     for (const line of lines) {
       const trimmed = line.trim();
       if (!trimmed) continue;
+
+      if (looksLikeDiagnosticReportLine(trimmed)) {
+        currentGroup = null;
+        continue;
+      }
+
       // Group headers (Immunizations, Cancer screening that is up to date, etc.)
-      if (/^[A-Z]/.test(trimmed) && !trimmed.startsWith("*") && !trimmed.startsWith("-") && trimmed.endsWith(":")) {
+      if (
+        /^[A-Z]/.test(trimmed) &&
+        !trimmed.startsWith("*") &&
+        !trimmed.startsWith("-") &&
+        trimmed.endsWith(":")
+      ) {
         currentGroup = trimmed.replace(/:$/, "");
         continue;
       }
+
       const bulletMatch = trimmed.match(/^[\*\-•]\s*(.+)$/);
       if (!bulletMatch) continue;
+
       const content = bulletMatch[1].trim();
-      // Split on last " (" to separate name from status
+      if (looksLikeDiagnosticReportLine(content)) continue;
+
+      // Split on last " (" to separate name from status.
       const parenMatch = content.match(/^(.+?)\s*\((.+)\)\s*$/);
       if (parenMatch) {
         const name = parenMatch[1].trim();
         const rawStatus = parenMatch[2].trim();
-        // Classify: "Due", "DUE", "Overdue", "Not documented" = due-ish (red)
-        // "Up to Date", "Negative", "Stable", dates = done (green)
         const statusLower = rawStatus.toLowerCase();
         const isDue = /^(due|overdue|not documented|not up)/i.test(statusLower) ||
                       (currentGroup && /unclear/i.test(currentGroup));
@@ -9684,16 +9729,18 @@ const buildInRoomHtml = (doc, session) => {
           group: currentGroup,
         });
       } else {
-        // No parenthetical — infer status from group
         const isDue = currentGroup && /unclear|due/i.test(currentGroup);
         items.push({
           name: content,
-          status: currentGroup && /up to date/i.test(currentGroup) ? "Up to Date" : (currentGroup || ""),
+          status: currentGroup && /up to date/i.test(currentGroup)
+            ? "Up to Date"
+            : (currentGroup || ""),
           isDue,
           group: currentGroup,
         });
       }
     }
+
     return items;
   };
 
@@ -10591,17 +10638,17 @@ const buildInRoomHtml = (doc, session) => {
 
     if (patientResults.length > 0) {
       html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-flask"></i> Chart Results: Labs, Imaging &amp; Procedures</div>`;
-      html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
+      html += `<ul class="result-list">`;
 
       patientResults.forEach((item) => {
         const dateLabel = item.date
           ? ` (${esc(item.date)})`
           : "";
 
-        html += `<li><b>${esc(item.study)}${dateLabel}</b> — ${esc(item.result)}`;
+        html += `<li class="result-item"><div class="result-main"><span class="result-study">${esc(item.study)}${dateLabel}</span> — ${esc(item.result)}</div>`;
 
         if (item.explanation) {
-          html += `<div style="font-size:.85em;color:#6b7280;margin-top:2px;line-height:1.4;">${esc(item.explanation)}</div>`;
+          html += `<div class="result-detail">${esc(item.explanation)}</div>`;
         }
 
         html += `</li>`;
@@ -10747,6 +10794,126 @@ const buildInRoomHtml = (doc, session) => {
       .trim();
   };
 
+  const stripDiagnosticMarker = (value) =>
+    String(value || "")
+      .trim()
+      .replace(/^(?:[-*•]\s*)+/, "")
+      .trim();
+
+  const isDiagnosticStudyTitle = (value) => {
+    const candidate = stripDiagnosticMarker(value);
+    if (!candidate || candidate.length > 150 || /:\s*$/.test(candidate)) {
+      return false;
+    }
+
+    if (/^(?:EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE|FINDINGS|IMPRESSION|RESULTS?|CONCLUSION|INDICATIONS?)\s*:/i.test(candidate)) {
+      return false;
+    }
+
+    const hasStudyTerm = /\b(?:CT|MRI|PET(?:\/CT)?|SCAN|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP\s+APNEA\s+TEST|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY|BIOPSY|PATHOLOGY)\b/i.test(candidate);
+    if (!hasStudyTerm) return false;
+
+    const letters = candidate.match(/[A-Za-z]/g) || [];
+    const capitals = candidate.match(/[A-Z]/g) || [];
+    const mostlyUppercase = letters.length > 0 && capitals.length / letters.length >= 0.65;
+
+    return mostlyUppercase || !/[.!?]$/.test(candidate);
+  };
+
+  const renderDiagnosticNarrative = (text) => {
+    const lines = String(text || "")
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    if (lines.length === 0) return "";
+
+    const blocks = [];
+    let current = {
+      title: "Diagnostic Result",
+      lines: [],
+    };
+
+    const flushBlock = () => {
+      if (!current.title && current.lines.length === 0) return;
+      if (current.lines.length === 0 && current.title === "Diagnostic Result") return;
+      blocks.push(current);
+    };
+
+    lines.forEach((rawLine) => {
+      const candidate = stripDiagnosticMarker(rawLine);
+      if (!candidate) return;
+
+      if (isDiagnosticStudyTitle(candidate)) {
+        flushBlock();
+        current = {
+          title: candidate,
+          lines: [],
+        };
+        return;
+      }
+
+      current.lines.push(candidate);
+    });
+
+    flushBlock();
+
+    const dateOnlyRegex = /^(\d{1,2}\/\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})\s*:?$/i;
+    const majorHeadingRegex = /^(FINDINGS|IMPRESSION|RESULTS?|CONCLUSION|INDICATIONS?)\s*:\s*(.*)$/i;
+    const metadataRegex = /^(EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE)\s*:\s*(.*)$/i;
+    const numberedRegex = /^(\d+)[.)]\s*(.+)$/;
+    const labeledFindingRegex = /^([^:]{2,45})\s*:\s*(.+)$/;
+
+    const renderedBlocks = blocks.map((block) => {
+      const bodyLines = [...block.lines];
+      let dateLabel = "";
+
+      const standaloneDateIndex = bodyLines.findIndex((line) =>
+        dateOnlyRegex.test(line)
+      );
+
+      if (standaloneDateIndex >= 0) {
+        dateLabel = bodyLines[standaloneDateIndex]
+          .replace(/:\s*$/, "")
+          .trim();
+        bodyLines.splice(standaloneDateIndex, 1);
+      }
+
+      const bodyHtml = bodyLines.map((line) => {
+        const majorHeading = line.match(majorHeadingRegex);
+        if (majorHeading) {
+          const trailingText = majorHeading[2].trim();
+          return `<div class="diag-section-title">${esc(majorHeading[1])}</div>${trailingText ? `<div class="diag-text">${esc(trailingText)}</div>` : ""}`;
+        }
+
+        const metadata = line.match(metadataRegex);
+        if (metadata) {
+          if (metadata[1].toUpperCase() === "DATE" && metadata[2].trim()) {
+            dateLabel = metadata[2].trim();
+          }
+          return `<div class="diag-row diag-meta-row"><div class="diag-key">${esc(metadata[1])}</div><div class="diag-value">${esc(metadata[2])}</div></div>`;
+        }
+
+        const numbered = line.match(numberedRegex);
+        if (numbered) {
+          return `<div class="diag-numbered"><span class="diag-number">${esc(numbered[1])}.</span><span>${esc(numbered[2])}</span></div>`;
+        }
+
+        const labeledFinding = line.match(labeledFindingRegex);
+        if (labeledFinding) {
+          return `<div class="diag-row"><div class="diag-key">${esc(labeledFinding[1])}</div><div class="diag-value">${esc(labeledFinding[2])}</div></div>`;
+        }
+
+        return `<div class="diag-text">${esc(line)}</div>`;
+      }).join("");
+
+      return `<article class="diag-card"><div class="diag-card-head"><div class="diag-card-title">${esc(block.title || "Diagnostic Result")}</div>${dateLabel ? `<span class="diag-date">${esc(dateLabel)}</span>` : ""}</div><div class="diag-card-body">${bodyHtml}</div></article>`;
+    }).join("");
+
+    return `<div class="diag-stack">${renderedBlocks}</div>`;
+  };
+
   const diagnosticNarrative =
     cleanDiagnosticsForDisplay(diagnosticsText);
 
@@ -10756,7 +10923,9 @@ const buildInRoomHtml = (doc, session) => {
     diagnosticsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Imaging / Diagnostics</div><div class="sec-div-line"></div></div>`;
 
     if (diagnosticNarrative) {
-      diagnosticsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(diagnosticNarrative)}</pre>`;
+      diagnosticsHtml += renderDiagnosticNarrative(
+        diagnosticNarrative
+      );
     }
 
     if (
@@ -11217,10 +11386,20 @@ const buildInRoomHtml = (doc, session) => {
       "i"
     );
 
+    const diagnosticReportBoundaryRegex = /^(?:CT|MRI|PET(?:\/CT)?|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY|EXAM\s*:|HISTORY\s*:|COMPARISON\s*:|TECHNIQUE\s*:|FINDINGS\s*:|IMPRESSION\s*:)/i;
+
     for (const rawLine of lines) {
       const trimmed = String(rawLine || "").trim();
       if (!trimmed) continue;
       if (trimmed.includes("|")) continue;
+
+      const unbulleted = trimmed.replace(/^[#*•-]+\s*/, "").trim();
+      if (diagnosticReportBoundaryRegex.test(unbulleted)) {
+        flush();
+        activeDate = "";
+        activeValues = {};
+        continue;
+      }
 
       const titledDateMatch = trimmed.match(titledDateRegex);
       if (titledDateMatch) {
@@ -11319,6 +11498,145 @@ const buildInRoomHtml = (doc, session) => {
       structuredTables.push(...parsedTables);
     }
   });
+
+  // Parser outputs can occasionally represent a narrative CT/MRI report as a
+  // table. Keep only tables with genuine laboratory signals before pivoting.
+  // Toxicology panels remain valid laboratory data even when their values are
+  // categorical rather than numeric.
+  const diagnosticReportFieldRegex = /^(?:EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE|FINDINGS|IMPRESSION|CONCLUSION|LOWER\s+CHEST|LIVER|GALLBLADDER\/?BILIARY|PANCREAS|SPLEEN|ADRENALS?|KIDNEYS?\/?URETERS?|BOWEL\/?MESENTERY|VASCULATURE|LYMPHATICS|BLADDER|MUSCULOSKELETAL|ADDITIONAL\s+FINDINGS)$/i;
+  const diagnosticStudyTitleRegex = /\b(?:CT|MRI|PET(?:\/CT)?|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY)\b/i;
+  const toxicologySignalRegex = /\b(?:AMPHETAMINES?|BARBITURATES?|BENZODIAZEPINES?|CANNABINOIDS?|COCAINE|OPIATES?|OXYCODONE|OXYMORPHONE|METHADONE|PHENCYCLIDINE|PROPOXYPHENE|ETHANOL)\b/i;
+
+  const isDiagnosticReportRowLabel = (value) => {
+    const candidate = String(value || "")
+      .replace(/^[*•-]+\s*/, "")
+      .replace(/:\s*$/, "")
+      .trim();
+
+    if (!candidate) return false;
+    if (diagnosticReportFieldRegex.test(candidate)) return true;
+    if (diagnosticStudyTitleRegex.test(candidate)) return true;
+    if (/^\d+[.)]\s+/.test(candidate)) return true;
+    return candidate.length > 100;
+  };
+
+  const sanitizeLaboratoryTable = (table) => {
+    if (!table || !Array.isArray(table.columns) || !Array.isArray(table.rows)) {
+      return table;
+    }
+
+    const columns = table.columns.filter((column, index) =>
+      index === 0 || !isDiagnosticReportRowLabel(column)
+    );
+    const firstColumn = columns[0] || table.columns[0];
+
+    const rows = table.rows.filter((row) => {
+      let rowLabel = "";
+      let otherValues = [];
+
+      if (Array.isArray(row)) {
+        rowLabel = String(row[0] || "").trim();
+        otherValues = row.slice(1);
+      } else if (row && typeof row === "object") {
+        rowLabel = String(row[firstColumn] ?? row[table.columns[0]] ?? "").trim();
+        otherValues = Object.entries(row)
+          .filter(([key]) => key !== firstColumn && key !== table.columns[0])
+          .map(([, value]) => value);
+      }
+
+      if (isDiagnosticReportRowLabel(rowLabel)) return false;
+
+      // A standalone report date often becomes a row whose remaining cells are
+      // all empty. Keep genuine date-as-row laboratory tables, which have at
+      // least one populated result cell.
+      if (labDateTokenRegex.test(rowLabel)) {
+        const hasResult = otherValues.some((value) =>
+          !/^(?:|--|—|-|n\/?a)$/i.test(String(value || "").trim())
+        );
+        if (!hasResult) return false;
+      }
+
+      return true;
+    }).map((row) => {
+      if (Array.isArray(row)) {
+        return row.filter((_, index) => index === 0 || columns.includes(table.columns[index]));
+      }
+
+      if (row && typeof row === "object") {
+        return Object.fromEntries(
+          Object.entries(row).filter(([key]) => columns.includes(key))
+        );
+      }
+
+      return row;
+    });
+
+    return {
+      ...table,
+      columns,
+      rows,
+    };
+  };
+
+  const isLikelyLaboratoryTable = (table) => {
+    if (!table || !Array.isArray(table.columns) || !Array.isArray(table.rows)) {
+      return false;
+    }
+
+    const title = String(table.title || table.panel || "").trim();
+    const tokens = [title, ...table.columns.map((value) => String(value || ""))];
+    const rowLabels = [];
+    const rowValues = [];
+
+    table.rows.forEach((row) => {
+      if (Array.isArray(row)) {
+        row.forEach((value, index) => {
+          const token = String(value || "").trim();
+          rowValues.push(token);
+          if (index === 0) rowLabels.push(token);
+        });
+        return;
+      }
+
+      if (row && typeof row === "object") {
+        Object.entries(row).forEach(([key, value]) => {
+          rowLabels.push(String(key || "").trim());
+          rowValues.push(String(value || "").trim());
+        });
+      }
+    });
+
+    const combined = [...tokens, ...rowLabels, ...rowValues]
+      .filter(Boolean)
+      .join(" ");
+
+    const reportFieldCount = new Set(
+      [...tokens, ...rowLabels]
+        .map((value) => String(value || "").replace(/:\s*$/, "").trim())
+        .filter((value) => diagnosticReportFieldRegex.test(value))
+        .map((value) => value.toUpperCase())
+    ).size;
+
+    if (reportFieldCount >= 2) return false;
+
+    const titleLooksDiagnostic = diagnosticStudyTitleRegex.test(title) &&
+      !/\b(?:LAB|LABORATORY|CHEMISTRY|HEMATOLOGY|TOXICOLOGY|URINALYSIS|SEROLOGY)\b/i.test(title);
+
+    if (titleLooksDiagnostic) return false;
+
+    const hasLabSignal = looksLikeLabSignal(combined) ||
+      toxicologySignalRegex.test(combined);
+    if (!hasLabSignal) return false;
+
+    const hasDate = new RegExp(`\\b(?:${LAB_DATE_TOKEN_SOURCE})\\b`, "i").test(combined);
+    const titleDeclaresLabPanel = /\b(?:LAB|LABORATORY|CHEMISTRY|HEMATOLOGY|TOXICOLOGY|URINALYSIS|SEROLOGY|CBC|CMP|BMP|LIPID|THYROID|RENAL|LIVER)\b/i.test(title);
+
+    return hasDate || titleDeclaresLabPanel;
+  };
+
+  structuredTables = structuredTables
+    .map(sanitizeLaboratoryTable)
+    .filter(isLikelyLaboratoryTable);
 
   // Remove duplicate copies of the same table collected from overlapping
   // sections or parser outputs.
@@ -12490,12 +12808,12 @@ body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-col
 .ref-item { margin-bottom: 8px; }
 .ref-item:last-child { margin-bottom: 0; }
 .ref-label {
-  font-size: 7pt;
+  font-size: 7.5pt;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .06em;
   color: var(--fg-d);
-  margin-bottom: 2px;
+  margin-bottom: 3px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -12586,7 +12904,7 @@ body.dark .drug-n { color: #c084fc; }
   gap: 10px;
   page-break-after: avoid;
 }
-.prob-title { font-size: 10pt; font-weight: 700; color: var(--fg); line-height: 1.3; }
+.prob-title { font-size: 11pt; font-weight: 700; color: var(--fg); line-height: 1.3; }
 .prob-sub { font-size: 8pt; color: var(--fg-d); font-weight: 400; margin-top: 2px; }
 .prob-pill {
   font-size: 7pt;
@@ -12616,15 +12934,42 @@ body.dark .pill-reg { background: rgba(245,158,11,.15); color: #fcd34d; border-c
 }
 .prob-subsec:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .prob-subsec-label {
-  font-size: 7pt;
+  font-size: 7.5pt;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .06em;
   color: var(--fg-d);
-  margin-bottom: 3px;
+  margin-bottom: 4px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+.result-list {
+  margin: 4px 0 0;
+  padding-left: 1.1rem;
+}
+.result-item {
+  margin-bottom: 5px;
+  color: var(--fg-m);
+  font-size: 8.25pt;
+  line-height: 1.42;
+}
+.result-item:last-child { margin-bottom: 0; }
+.result-main {
+  color: var(--fg-m);
+  font-size: 8.25pt;
+  font-weight: 400;
+}
+.result-study {
+  color: var(--fg);
+  font-weight: 600;
+}
+.result-detail {
+  margin-top: 2px;
+  color: var(--fg-d);
+  font-size: 7.75pt;
+  font-weight: 400;
+  line-height: 1.42;
 }
 
 /* Callout boxes */
@@ -12754,6 +13099,109 @@ body.dark .lab-ok { color: #86efac !important; }
   margin-top: 6px;
   line-height: 1.45;
   margin-bottom: 8px;
+}
+
+
+/* Imaging / diagnostics cards */
+.diag-stack {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.diag-card {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg);
+  page-break-inside: avoid;
+}
+.diag-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 6px 9px;
+  background: var(--panel-h);
+  border-bottom: 1px solid var(--border);
+}
+.diag-card-title {
+  color: var(--fg);
+  font-size: 9pt;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.diag-date {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 7pt;
+  font-weight: 700;
+  white-space: nowrap;
+}
+body.dark .diag-date {
+  border-color: rgba(96,165,250,.35);
+  background: rgba(59,130,246,.14);
+  color: #93c5fd;
+}
+.diag-card-body { padding: 7px 9px; }
+.diag-row {
+  display: grid;
+  grid-template-columns: minmax(105px, 18%) minmax(0, 1fr);
+  gap: 8px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-vl);
+  line-height: 1.4;
+}
+.diag-row:last-child { border-bottom: 0; }
+.diag-meta-row { background: var(--panel); }
+.diag-key {
+  color: var(--fg-d);
+  font-size: 7.25pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .035em;
+}
+.diag-value,
+.diag-text,
+.diag-numbered {
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.45;
+}
+.diag-value { min-width: 0; overflow-wrap: anywhere; }
+.diag-text { padding: 3px 0; }
+.diag-section-title {
+  margin: 7px 0 2px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-l);
+  color: var(--fg-d);
+  font-size: 7.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.diag-section-title:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.diag-numbered {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 4px;
+  padding: 3px 0;
+}
+.diag-number {
+  color: var(--fg-d);
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+}
+@media (max-width: 640px) {
+  .diag-row { grid-template-columns: 1fr; gap: 2px; }
 }
 
 /* Social grid */
@@ -12932,7 +13380,11 @@ body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
 .wrn ol li {
   font-size: 8pt;
 }
-.prob-title, .vital-chip-val { font-size: 10pt; }
+.prob-title { font-size: 11pt; }
+.vital-chip-val { font-size: 10pt; }
+.prob-subsec-label { font-size: 7.5pt; }
+.result-main { font-size: 8.25pt; }
+.result-detail { font-size: 7.75pt; }
 .doc-footer { font-size: 8pt; }
 }
 `;
@@ -13083,15 +13535,81 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  // Print handler — sends the iframe (not the whole app) to print so we get
-  // the pre-visit doc's own print CSS
+  // Print the generated document itself rather than the surrounding React app.
+  // A dedicated window is the most reliable path across Chrome, Edge, Safari,
+  // and Firefox. If a popup blocker intervenes, fall back to the sandboxed
+  // iframe, which explicitly allows the print modal.
   const printDoc = () => {
-    if (iframeRef.current?.contentWindow) {
-      iframeRef.current.contentWindow.focus();
-      iframeRef.current.contentWindow.print();
-    } else {
-      window.print();
+    let html = srcDoc;
+
+    if (!html) {
+      try {
+        html = buildInRoomHtml(doc, session);
+      } catch (error) {
+        console.error("Failed to prepare printable document:", error);
+      }
     }
+
+    const printWindow = window.open(
+      "",
+      "_blank",
+      "width=1100,height=850"
+    );
+
+    if (printWindow && html) {
+      try {
+        printWindow.opener = null;
+        printWindow.document.open();
+        printWindow.document.write(html);
+        printWindow.document.close();
+
+        const triggerPrint = async () => {
+          try {
+            if (printWindow.document.fonts?.ready) {
+              await printWindow.document.fonts.ready;
+            }
+          } catch {}
+
+          setTimeout(() => {
+            try {
+              printWindow.focus();
+              printWindow.print();
+              printWindow.addEventListener(
+                "afterprint",
+                () => printWindow.close(),
+                { once: true }
+              );
+            } catch (error) {
+              console.error("Print window failed:", error);
+            }
+          }, 150);
+        };
+
+        if (printWindow.document.readyState === "complete") {
+          triggerPrint();
+        } else {
+          printWindow.addEventListener(
+            "load",
+            triggerPrint,
+            { once: true }
+          );
+        }
+
+        return;
+      } catch (error) {
+        console.error("Could not open print window:", error);
+        try { printWindow.close(); } catch {}
+      }
+    }
+
+    const frameWindow = iframeRef.current?.contentWindow;
+    if (frameWindow) {
+      frameWindow.focus();
+      setTimeout(() => frameWindow.print(), 50);
+      return;
+    }
+
+    window.print();
   };
 
   if (!doc) return null;
@@ -13161,7 +13679,7 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
           ref={iframeRef}
           srcDoc={srcDoc}
           title="Pre-visit reference sheet"
-          sandbox="allow-same-origin allow-scripts allow-popups"
+          sandbox="allow-same-origin allow-scripts allow-popups allow-modals"
         />
       </div>
     </>
