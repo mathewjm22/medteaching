@@ -9200,6 +9200,75 @@ const buildInRoomHtml = (doc, session) => {
       )
     );
 
+  // WHAT TO KNOW ABOUT and UPDATES / RECENT VISITS often arrive as one
+  // extremely long line separated only by divider runs. Extract them directly
+  // from the full prenote with explicit start/stop headings before consulting
+  // either parser. This prevents either narrative section from leaking into a
+  // neighboring field such as Last Primary Care Visit.
+  const rawPrenoteForNarratives =
+    doc.rawPrenote || doc.clinicalNote || "";
+
+  const cleanStandaloneNarrative = (value) =>
+    String(value || "")
+      .replace(/```[a-z0-9_-]*\s*/gi, "\n")
+      .replace(/```/g, "\n")
+      .replace(
+        /[ \t]*(?:[-=_]{10,}|[─━═—–]{10,})[ \t]*/g,
+        "\n"
+      )
+      // De-identification can produce "Mr. The patient". Remove the
+      // redundant title in these display-only narrative sections.
+      .replace(
+        /\b(?:Mr|Ms|Mrs|Mx)\.?\s+The patient\b/gi,
+        "The patient"
+      )
+      .replace(/^\s*[-*•]\s*/, "")
+      .trim();
+
+  const trimNarrativeAtHeading = (
+    value,
+    stopHeadings
+  ) => {
+    const source = String(value || "");
+    let endIndex = source.length;
+
+    stopHeadings.forEach((pattern) => {
+      const match = findTextRegexMatch(
+        source,
+        pattern
+      );
+
+      if (match && match.index < endIndex) {
+        endIndex = match.index;
+      }
+    });
+
+    return source.slice(0, endIndex);
+  };
+
+  const directlyExtractedWhatToKnow =
+    cleanStandaloneNarrative(
+      extractTextBetweenHeaders(
+        rawPrenoteForNarratives,
+        /WHAT\s+TO\s+KNOW\s+ABOUT(?:\s+the\s+patient)?/i,
+        [
+          /UPDATES?\s*\/\s*RECENT\s+VISITS?/i,
+          /PAST\s+MEDICAL\s+HISTORY/i,
+        ]
+      )
+    );
+
+  const directlyExtractedUpdates =
+    cleanStandaloneNarrative(
+      extractTextBetweenHeaders(
+        rawPrenoteForNarratives,
+        /UPDATES?\s*\/\s*RECENT\s+VISITS?/i,
+        [
+          /PAST\s+MEDICAL\s+HISTORY/i,
+        ]
+      )
+    );
+
   const joinUniqueSections = (values) => {
     const seen = new Set();
     const output = [];
@@ -9220,9 +9289,18 @@ const buildInRoomHtml = (doc, session) => {
     return output.join("\n\n");
   };
 
-  const whatToKnowText = firstNonEmptyText(
-    prenoteSections.whatToKnow,
-    fallbackSection("WHAT TO KNOW ABOUT")
+  const whatToKnowText = cleanStandaloneNarrative(
+    trimNarrativeAtHeading(
+      firstNonEmptyText(
+        directlyExtractedWhatToKnow,
+        prenoteSections.whatToKnow,
+        fallbackSection("WHAT TO KNOW ABOUT")
+      ),
+      [
+        /UPDATES?\s*\/\s*RECENT\s+VISITS?/i,
+        /PAST\s+MEDICAL\s+HISTORY/i,
+      ]
+    )
   );
 
   const vitalsText = firstNonEmptyText(
@@ -9294,9 +9372,17 @@ const buildInRoomHtml = (doc, session) => {
     fallbackSection("PREVENTIVE MEDICINE")
   );
 
-  const updatesText = firstNonEmptyText(
-    prenoteSections.recentVisits,
-    fallbackSection("UPDATES / RECENT VISITS")
+  const updatesText = cleanStandaloneNarrative(
+    trimNarrativeAtHeading(
+      firstNonEmptyText(
+        directlyExtractedUpdates,
+        prenoteSections.recentVisits,
+        fallbackSection("UPDATES / RECENT VISITS")
+      ),
+      [
+        /PAST\s+MEDICAL\s+HISTORY/i,
+      ]
+    )
   );
 
   const pmhText = firstNonEmptyText(
@@ -9659,9 +9745,57 @@ const buildInRoomHtml = (doc, session) => {
   const dobMatch = rawFullPrenote.match(/DOB:\s*([^\n]+)/i);
   const dob = dobMatch ? dobMatch[1].trim() : "";
 
-  // Extract PCP name/last visit from prenote
-  const lastPcpMatch = rawFullPrenote.match(/Last Primary Care Visit Date:\s*([^\n]+)/i);
-  const lastPcpDate = lastPcpMatch ? lastPcpMatch[1].trim() : "";
+  // Extract only the documented PCP visit date. The previous [^\n]+ match
+  // consumed the remainder of a one-line prenote, placing WHAT TO KNOW ABOUT
+  // and every following section inside the Last Primary Care Visit field.
+  const normalizeMonthYear = (value) => {
+    const source = String(value || "").trim();
+    if (!source) return "";
+
+    const fullNumeric = source.match(
+      /\b(\d{1,2})[\/-](\d{1,2})[\/-]((?:19|20)\d{2})\b/
+    );
+
+    if (fullNumeric) {
+      return `${fullNumeric[1].padStart(2, "0")}/${fullNumeric[3]}`;
+    }
+
+    const monthYear = source.match(
+      /\b(0?[1-9]|1[0-2])\/((?:19|20)\d{2})\b/
+    );
+
+    if (monthYear) {
+      return `${monthYear[1].padStart(2, "0")}/${monthYear[2]}`;
+    }
+
+    const namedMonth = source.match(
+      /\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+(?:19|20)\d{2}\b/i
+    );
+
+    return namedMonth ? namedMonth[0] : "";
+  };
+
+  const structuredLastPcp = firstNonEmptyText(
+    typeof structured.lastPrimaryCareVisitDate === "string"
+      ? structured.lastPrimaryCareVisitDate
+      : "",
+    typeof structured.lastPcpDate === "string"
+      ? structured.lastPcpDate
+      : "",
+    typeof structured.lastPrimaryCareVisit === "string"
+      ? structured.lastPrimaryCareVisit
+      : ""
+  );
+
+  const lastPcpLabelMatch = rawFullPrenote.match(
+    /Last\s+Primary\s+Care\s+Visit(?:\s+Date)?\s*:\s*([^\n]{0,40})/i
+  );
+
+  const lastPcpDate =
+    normalizeMonthYear(structuredLastPcp) ||
+    normalizeMonthYear(
+      lastPcpLabelMatch?.[1] || ""
+    );
 
   // Header — patient identity line on top, 2-sentence clinical assessment
   // as the subtitle (matches attending-style opening), then badges and SC%.
@@ -9698,12 +9832,10 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // ONE-LINER
   // ──────────────────────────────────────────────────────────────
-  // One-liner is now rendered inline within the header (as .pt-assessment).
-  // Fall back to a separate box only when there's no AI oneLiner and we have
-  // WHAT TO KNOW prose from the prenote worth showing.
-  const oneLinerHtml = !na.oneLiner && whatToKnowText
-    ? `<div class="oneliner">${esc(whatToKnowText.slice(0, 800))}</div>`
-    : "";
+  // The AI-generated assessment remains inline in the header. The source
+  // WHAT TO KNOW ABOUT narrative now has its own full-width box below the
+  // allergy bar, so it must never be duplicated or truncated here.
+  const oneLinerHtml = "";
 
   // ──────────────────────────────────────────────────────────────
   // ALLERGY BAR (only when NKDA — otherwise allergies are in header)
@@ -9711,6 +9843,93 @@ const buildInRoomHtml = (doc, session) => {
   const allergyBarHtml = isNKDA
     ? `<span class="allergy"><i class="fa-solid fa-check-circle"></i> No Known Drug Allergies</span>`
     : `<span class="allergy allergy-warn"><i class="fa-solid fa-triangle-exclamation"></i> Allergies: ${esc(allergiesShort)}</span>`;
+
+  // ──────────────────────────────────────────────────────────────
+  // FULL-WIDTH PATIENT NARRATIVE BOXES
+  // ──────────────────────────────────────────────────────────────
+  const narrativeChunks = (value) => {
+    let normalized = cleanStandaloneNarrative(value);
+    if (!normalized) return [];
+
+    // Generated prenotes frequently collapse bullets, visit dates, and compact
+    // lab blocks onto one line. Restore only high-confidence boundaries so the
+    // source content remains complete but readable.
+    normalized = normalized
+      .replace(
+        /\s+[-*•]\s+(?=(?:The patient\b|In the past year\b|Prior visits\b|Most recent labs\b))/gi,
+        "\n"
+      )
+      .replace(
+        /\s+(?=\d{1,2}\/\d{1,2}\/\d{2,4}:\s)/g,
+        "\n"
+      )
+      .replace(
+        /\s+(?=COLLECTION\s*\|)/gi,
+        "\n"
+      )
+      .replace(
+        /\s+(?=(?:Inflammatory markers|CBC normal|CKD-EPI|Hepatic function)\b)/g,
+        "\n"
+      );
+
+    return normalized
+      .split(/\n+/)
+      .map((line) =>
+        line
+          .replace(/^\s*[-*•]\s*/, "")
+          .replace(/\s+/g, " ")
+          .trim()
+      )
+      .filter(Boolean);
+  };
+
+  const renderNarrativeBody = (
+    value,
+    variant
+  ) => {
+    const chunks = narrativeChunks(value);
+    if (chunks.length === 0) return "";
+
+    return chunks
+      .map((chunk) => {
+        if (
+          variant === "updates" &&
+          /^(?:Prior visits|Most recent labs)\b.*:$/i.test(chunk)
+        ) {
+          return `<div class="narrative-subhead">${esc(chunk.replace(/:$/, ""))}</div>`;
+        }
+
+        if (variant === "updates") {
+          const visitMatch = chunk.match(
+            /^(\d{1,2}\/\d{1,2}\/\d{2,4}):\s*(.+)$/
+          );
+
+          if (visitMatch) {
+            return `<div class="narrative-row"><span class="narrative-date">${esc(visitMatch[1])}</span><span>${esc(visitMatch[2])}</span></div>`;
+          }
+
+          if (/^COLLECTION\s*\|/i.test(chunk)) {
+            return `<div class="narrative-data">${esc(chunk)}</div>`;
+          }
+        }
+
+        return `<p class="narrative-p">${esc(chunk)}</p>`;
+      })
+      .join("");
+  };
+
+  const aboutPatientHtml = whatToKnowText
+    ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-address-card"></i> ABOUT The Patient</div><div class="narrative-body">${renderNarrativeBody(whatToKnowText, "about")}</div></div>`
+    : "";
+
+  const updatesRecentVisitsHtml = updatesText
+    ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-clock-rotate-left"></i> UPDATES / RECENT VISITS</div><div class="narrative-body">${renderNarrativeBody(updatesText, "updates")}</div></div>`
+    : "";
+
+  const topNarrativeHtml =
+    aboutPatientHtml || updatesRecentVisitsHtml
+      ? `<div class="narrative-stack">${aboutPatientHtml}${updatesRecentVisitsHtml}</div>`
+      : "";
 
   // ──────────────────────────────────────────────────────────────
   // PMH LIST + CLINICAL REFERENCE (two-column)
@@ -9840,19 +10059,9 @@ const buildInRoomHtml = (doc, session) => {
     );
   }
 
-  // Avoid a visually broken empty panel. When no dedicated reference section
-  // exists, show a concise source-note context instead.
-  if (
-    clinicalReferenceItems.length === 0 &&
-    whatToKnowText
-  ) {
-    addClinicalReference(
-      "fa-file-waveform",
-      "Chart Context",
-      `<div>${esc(whatToKnowText.slice(0, 900))}</div>`
-    );
-  }
-
+  // WHAT TO KNOW ABOUT has its own full-width box above this grid. Never use
+  // it as fallback content here; that was the source of duplicated and badly
+  // misfiled patient narrative in Clinical Reference Data.
   if (clinicalReferenceItems.length === 0) {
     addClinicalReference(
       "fa-circle-info",
@@ -10908,7 +11117,10 @@ const buildInRoomHtml = (doc, session) => {
     ? structured.timeline
     : parseTimeline(updatesText);
   let timelineHtml = "";
-  if (timeline.length > 0) {
+  // When the source contains UPDATES / RECENT VISITS, it is already shown in
+  // the full-width box near the top. Keep the old timeline only as a fallback
+  // for structured data that has no source narrative section.
+  if (timeline.length > 0 && !updatesRecentVisitsHtml) {
     timelineHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Recent Timeline</div><div class="sec-div-line"></div></div>`;
     timelineHtml += `<ul class="tl-compact">`;
     timeline.forEach(t => {
@@ -11206,6 +11418,76 @@ body.dark .oneliner strong { color: #93c5fd; }
 }
 body.dark .allergy { background: rgba(52,211,153,.15); color: #6ee7b7; border-color: rgba(52,211,153,.3); }
 body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca5a5; border-color: rgba(248,113,113,.3); }
+
+/* Full-width patient narrative boxes */
+.narrative-stack {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.narrative-box {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.narrative-head {
+  background: var(--panel-h);
+  font-size: 7.5pt;
+  font-weight: 700;
+  letter-spacing: .06em;
+  color: var(--fg-d);
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.narrative-body {
+  padding: 9px 11px;
+  font-size: 9pt;
+  line-height: 1.55;
+  color: var(--fg-m);
+}
+.narrative-p { margin: 0 0 7px; }
+.narrative-p:last-child { margin-bottom: 0; }
+.narrative-subhead {
+  margin: 8px 0 3px;
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  color: var(--fg-d);
+}
+.narrative-subhead:first-child { margin-top: 0; }
+.narrative-row {
+  display: flex;
+  gap: 10px;
+  padding: 3px 0;
+  border-bottom: 1px solid var(--border-vl);
+  line-height: 1.45;
+}
+.narrative-date {
+  min-width: 70px;
+  flex: 0 0 auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8pt;
+  font-weight: 600;
+  color: var(--accent);
+}
+.narrative-data {
+  margin: 3px 0;
+  padding: 5px 7px;
+  border: 1px solid var(--border-l);
+  border-radius: 3px;
+  background: var(--panel);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 7.5pt;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
 
 /* Reference grid */
 .ref-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
@@ -11677,6 +11959,8 @@ body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
   /* Force light-theme colors for print */
   body.dark { --bg: #ffffff; --fg: #1a1f2e; --fg-m: #374151; --fg-d: #6b7280; --border: #d1d5db; --border-l: #e5e7eb; --border-vl: #f3f4f6; --panel: #f9fafb; --panel-h: #f3f4f6; --accent: #2563eb; }
   body.dark .oneliner, body.dark .allergy, body.dark .pt-b-v, body.dark .pt-b-sc, body.dark .pt-b-a, body.dark .pt-sc-c, body.dark .pmh-sc, body.dark .pill-active, body.dark .pill-stable, body.dark .pill-resolved, body.dark .pill-reg, body.dark .tch, body.dark .ask, body.dark .wrn, body.dark .prev-due, body.dark .prev-done { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+  .narrative-head { page-break-after: avoid; break-after: avoid; }
+  .narrative-row, .narrative-data { break-inside: avoid; page-break-inside: avoid; }
   .prob { break-inside: avoid; page-break-inside: avoid; }
   .tch, .ask, .wrn { break-inside: avoid; page-break-inside: avoid; }
   h1, h2, h3, h4, h5, h6, .sec-div, .prob-head { page-break-after: avoid; break-after: avoid; }
@@ -11685,6 +11969,9 @@ body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
   /* Consistency overrides — enforce the 4-size hierarchy */
 .oneliner,
 .allergy,
+.narrative-body,
+.narrative-p,
+.narrative-row,
 .pmh-list li,
 .ref-text,
 .med-tbl,
@@ -11762,6 +12049,7 @@ function printDoc(){ window.print(); }
 ${headerHtml}
 ${oneLinerHtml}
 ${allergyBarHtml}
+${topNarrativeHtml}
 ${refGridHtml}
 ${vitalsHtml}
 ${medsSectionHtml}
