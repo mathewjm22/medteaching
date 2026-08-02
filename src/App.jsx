@@ -2884,7 +2884,7 @@ Focus on: ${phase.focus}`;
         user,
         analysisMaxTokens
       );
-      
+
       const parsed = extractJson(response);
 
       // ─── POST-PROCESS: enforce the deterministic problem list ──────────
@@ -9718,18 +9718,25 @@ const buildInRoomHtml = (doc, session) => {
   // We scan the raw text of every relevant section for pipe-delimited lab
   // tables and combine everything.
   /// Use AI-extracted lab tables if available; fall back to regex parsers
-  let structuredTables = [];
+    let structuredTables = [];
+
   if (structured.labTables?.length > 0) {
-    // AI returns tables in shape: {panel, columns: ["Test", "date1", "date2"], rows: [{Test: "ESR", date1: val, date2: val}]}
-    // Convert to the shape my existing renderer expects
-    structuredTables = structured.labTables.map(t => ({
-      title: t.panel || "Labs",
-      columns: t.columns || [],
-      rows: t.rows || [],
-    }));
+    // AI returns tables in shape:
+    // { panel, columns, rows }
+    structuredTables = structured.labTables.map(
+      (t) => ({
+        title: t.panel || "Labs",
+        columns: t.columns || [],
+        rows: t.rows || [],
+      })
+    );
   } else {
-    // Fallback: use the deterministic parser's extracted tables from the DIAGNOSTICS section
-    structuredTables = tablesFromDiagnostics;
+    // Use tables extracted by the deterministic prenote parser.
+    structuredTables = Array.isArray(
+      parsedPrenote.diagnostics?.tables
+    )
+      ? parsedPrenote.diagnostics.tables
+      : [];
   }
 
   // Additionally scan UPDATES/RECENT VISITS and WHAT TO KNOW sections for
