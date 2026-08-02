@@ -9401,7 +9401,12 @@ const buildInRoomHtml = (doc, session) => {
   // block once: the narrative stays in the Updates box and the lab portion is
   // sent to the deterministic table parser below.
   const splitUpdatesFromEmbeddedLabs = (value) => {
-    const source = String(value || "").trim();
+    const source = String(value || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+      .replace(/\u00a0/g, " ")
+      .trim();
+
     if (!source) {
       return {
         updatesNarrativeText: "",
@@ -9409,24 +9414,74 @@ const buildInRoomHtml = (doc, session) => {
       };
     }
 
-    const marker = /(?:^|\s)[-*•]?\s*(?:Most\s+recent|Recent)\s+(?:labs?|laboratory\s+results?)\s*(?:\([^)]{0,120}\))?\s*:\s*/i.exec(
-      source
+    // Lab content can begin with an explicit label or directly with a
+    // COLLECTION table. Find the earliest high-confidence boundary so the
+    // Updates box can never render lab rows, even when the prenote is one long
+    // physical line.
+    const boundaries = [];
+
+    const addBoundary = (
+      regex,
+      includeMatchedText = false,
+      captureIndex = null
+    ) => {
+      const match = regex.exec(source);
+      if (!match) return;
+
+      let contentStart = match.index + match[0].length;
+
+      if (
+        includeMatchedText &&
+        Number.isInteger(captureIndex) &&
+        match[captureIndex]
+      ) {
+        contentStart =
+          match.index +
+          match[0].indexOf(match[captureIndex]);
+      } else if (includeMatchedText) {
+        contentStart = match.index;
+      }
+
+      boundaries.push({
+        narrativeEnd: match.index,
+        labStart: contentStart,
+      });
+    };
+
+    addBoundary(
+      /(?:^|\n|\s[-*•]\s*)(?:(?:Most\s+recent|Recent)\s+(?:labs?|laboratory\s+(?:results?|data))|Recent\s+Labs?\s+Summary)(?:\s*\([^)]{0,160}\))?\s*:\s*/i
     );
 
-    if (!marker) {
+    addBoundary(
+      /(?:^|\n|\s[-*•]\s*)(?:LAB(?:ORATORY)?\s+(?:TRENDS|RESULTS|DATA|STUDIES)|LAB\s+TREND\s+TABLES|DATED\s+SINGLE-RESULT\s+BLOCKS)\s*:?\s*/i
+    );
+
+    addBoundary(
+      /(?:^|\n|\s)(COLLECTION\s*\|)/i,
+      true,
+      1
+    );
+
+    if (boundaries.length === 0) {
       return {
         updatesNarrativeText: source,
         embeddedLabsText: "",
       };
     }
 
+    boundaries.sort(
+      (a, b) => a.narrativeEnd - b.narrativeEnd
+    );
+
+    const boundary = boundaries[0];
+
     return {
       updatesNarrativeText: source
-        .slice(0, marker.index)
+        .slice(0, boundary.narrativeEnd)
         .replace(/\s*[-*•]\s*$/, "")
         .trim(),
       embeddedLabsText: source
-        .slice(marker.index + marker[0].length)
+        .slice(boundary.labStart)
         .trim(),
     };
   };
@@ -9908,73 +9963,223 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // FULL-WIDTH PATIENT NARRATIVE BOXES
   // ──────────────────────────────────────────────────────────────
-  const narrativeChunks = (value) => {
-    let normalized = cleanStandaloneNarrative(value);
-    if (!normalized) return [];
+  const narrativeDateSource =
+    "(?:\\d{1,2}\\/\\d{1,2}\\/(?:\\d{2}|\\d{4})|\\d{1,2}\\/\\d{4}|(?:19|20)\\d{2}-\\d{1,2}-\\d{1,2})";
 
-    // Generated prenotes frequently collapse bullets, visit dates, and compact
-    // lab blocks onto one line. Restore only high-confidence boundaries so the
-    // source content remains complete but readable.
+  const renderNarrativeText = (value) => {
+    const escaped = esc(value);
+
+    return escaped.replace(
+      new RegExp(`\\b(${narrativeDateSource})\\b`, "g"),
+      '<span class="narrative-inline-date">$1</span>'
+    );
+  };
+
+  // Convert source hard-wraps into logical paragraphs. A wrapped clinical
+  // sentence should use the full width of the box; only real bullets, blank
+  // lines, subheads, and dated entries create new visual rows.
+  const parseNarrativeBlocks = (
+    value,
+    variant
+  ) => {
+    let normalized = cleanStandaloneNarrative(value)
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+      .replace(/\u00a0/g, " ");
+
+    if (variant === "updates") {
+      // Defense in depth: the earlier split supplies the lab parser, while
+      // this second pass guarantees that no lab marker/table can reach the
+      // Updates renderer if a future prenote format bypasses the first pass.
+      normalized = splitUpdatesFromEmbeddedLabs(
+        normalized
+      ).updatesNarrativeText;
+    }
+
+    if (!normalized.trim()) return [];
+
+    // Restore high-confidence structure in one-line prenotes. Consume
+    // bullet markers that introduce a dated visit or the visits subheading so
+    // they cannot be left behind as stray "-" or "*" paragraphs.
+    const visitsSubheadSource =
+      "(?:Prior|Recent)\\s+visits?(?:\\s+in\\s+(?:the\\s+)?past\\s+[^:\\n]{1,50})?\\s*:";
+
     normalized = normalized
       .replace(
-        /\s+[-*•]\s+(?=(?:The patient\b|In the past year\b|Prior visits\b|Most recent labs\b))/gi,
+        new RegExp(
+          `\\s+[-*•]\\s+(?=${visitsSubheadSource})`,
+          "gi"
+        ),
         "\n"
       )
       .replace(
-        /\s+(?=\d{1,2}\/\d{1,2}\/\d{2,4}:\s)/g,
+        new RegExp(
+          `\\s+[-*•]\\s+(?=(?:${narrativeDateSource})[ \\t]*(?::|[-–—]))`,
+          "g"
+        ),
         "\n"
       )
       .replace(
-        /\s+(?=COLLECTION\s*\|)/gi,
-        "\n"
+        /[ \t]+[-*•][ \t]+(?=[A-Z0-9])/g,
+        "\n- "
       )
       .replace(
-        /\s+(?=(?:Inflammatory markers|CBC normal|CKD-EPI|Hepatic function)\b)/g,
-        "\n"
+        new RegExp(
+          `([^\\n*•-])\\s+(?=${visitsSubheadSource})`,
+          "gi"
+        ),
+        "$1\n"
+      )
+      .replace(
+        new RegExp(
+          `([^\\n*•-])\\s+(?=(?:${narrativeDateSource})[ \\t]*(?::|[-–—]))`,
+          "g"
+        ),
+        "$1\n"
       );
 
-    return normalized
-      .split(/\n+/)
-      .map((line) =>
-        line
-          .replace(/^\s*[-*•]\s*/, "")
+    const blocks = [];
+    let current = null;
+
+    const flush = () => {
+      if (!current) return;
+
+      if (current.type === "visit") {
+        current.text = current.text
           .replace(/\s+/g, " ")
-          .trim()
-      )
-      .filter(Boolean);
+          .trim();
+
+        if (current.text) blocks.push(current);
+      } else if (current.type === "paragraph") {
+        current.text = current.text
+          .replace(/\s+/g, " ")
+          .trim();
+
+        if (current.text) blocks.push(current);
+      } else {
+        blocks.push(current);
+      }
+
+      current = null;
+    };
+
+    for (const rawLine of normalized.split("\n")) {
+      const trimmed = rawLine.trim();
+
+      if (!trimmed) {
+        flush();
+        continue;
+      }
+
+      const isBullet = /^[*•-]\s+/.test(trimmed);
+      const line = trimmed
+        .replace(/^[*•-]\s+/, "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!line) continue;
+
+      if (
+        variant === "updates" &&
+        /^(?:(?:Most\s+recent|Recent)\s+(?:labs?|laboratory\s+(?:results?|data))|Recent\s+Labs?\s+Summary|COLLECTION\s*\||LAB(?:ORATORY)?\s+(?:TRENDS|RESULTS|DATA|STUDIES)|LAB\s+TREND\s+TABLES|DATED\s+SINGLE-RESULT\s+BLOCKS)\b/i.test(
+          line
+        )
+      ) {
+        break;
+      }
+
+      const subheadMatch = line.match(
+        /^(?:(?:Prior|Recent)\s+visits?(?:\s+in\s+(?:the\s+)?past\s+[^:]{1,50})?|Visits?\s+in\s+(?:the\s+)?past\s+[^:]{1,50})\s*:?$/i
+      );
+
+      if (variant === "updates" && subheadMatch) {
+        flush();
+        blocks.push({
+          type: "subhead",
+          text: line.replace(/:\s*$/, ""),
+        });
+        continue;
+      }
+
+      const visitMatch = variant === "updates"
+        ? line.match(
+            new RegExp(
+              `^(${narrativeDateSource})[ \\t]*(?::|[-–—])?[ \\t]+(.+)$`,
+              "i"
+            )
+          )
+        : null;
+
+      if (visitMatch) {
+        flush();
+        current = {
+          type: "visit",
+          date: visitMatch[1],
+          text: visitMatch[2],
+        };
+        continue;
+      }
+
+      if (isBullet) {
+        flush();
+        current = {
+          type: "paragraph",
+          text: line,
+        };
+        continue;
+      }
+
+      if (
+        current &&
+        (current.type === "paragraph" ||
+          current.type === "visit")
+      ) {
+        current.text += ` ${line}`;
+      } else {
+        current = {
+          type: "paragraph",
+          text: line,
+        };
+      }
+    }
+
+    flush();
+    return blocks;
   };
 
   const renderNarrativeBody = (
     value,
     variant
   ) => {
-    const chunks = narrativeChunks(value);
-    if (chunks.length === 0) return "";
+    const blocks = parseNarrativeBlocks(
+      value,
+      variant
+    );
 
-    return chunks
-      .map((chunk) => {
-        if (
-          variant === "updates" &&
-          /^(?:Prior visits|Most recent labs)\b.*:$/i.test(chunk)
-        ) {
-          return `<div class="narrative-subhead">${esc(chunk.replace(/:$/, ""))}</div>`;
+    if (blocks.length === 0) return "";
+
+    return blocks
+      .map((block) => {
+        if (block.type === "subhead") {
+          return `<div class="narrative-subhead">${esc(block.text)}</div>`;
         }
 
-        if (variant === "updates") {
-          const visitMatch = chunk.match(
-            /^(\d{1,2}\/\d{1,2}\/\d{2,4}):\s*(.+)$/
-          );
-
-          if (visitMatch) {
-            return `<div class="narrative-row"><span class="narrative-date">${esc(visitMatch[1])}</span><span>${esc(visitMatch[2])}</span></div>`;
-          }
-
-          if (/^COLLECTION\s*\|/i.test(chunk)) {
-            return `<div class="narrative-data">${esc(chunk)}</div>`;
-          }
+        if (block.type === "visit") {
+          return `<div class="narrative-row"><span class="narrative-date">${esc(block.date)}</span><span class="narrative-event">${renderNarrativeText(block.text)}</span></div>`;
         }
 
-        return `<p class="narrative-p">${esc(chunk)}</p>`;
+        const summaryMatch =
+          variant === "updates"
+            ? block.text.match(
+                /^((?:Major\s+interval\s+changes|Interval\s+updates?|Recent\s+updates?|No\s+visits?\s+in\s+past\s+[^:]{1,30})[^:]{0,40}:)\s*(.+)$/i
+              )
+            : null;
+
+        if (summaryMatch) {
+          return `<p class="narrative-p"><span class="narrative-summary-label">${esc(summaryMatch[1])}</span> ${renderNarrativeText(summaryMatch[2])}</p>`;
+        }
+
+        return `<p class="narrative-p">${renderNarrativeText(block.text)}</p>`;
       })
       .join("");
   };
@@ -12141,11 +12346,14 @@ body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca
 /* Full-width patient narrative boxes */
 .narrative-stack {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
   gap: 10px;
   margin-bottom: 10px;
 }
 .narrative-box {
+  width: 100%;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
@@ -12164,48 +12372,95 @@ body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca
   gap: 6px;
 }
 .narrative-body {
-  padding: 9px 11px;
+  width: 100%;
+  max-width: none;
+  min-width: 0;
+  padding: 8px 11px;
   font-size: 9pt;
-  line-height: 1.55;
+  line-height: 1.48;
   color: var(--fg-m);
 }
-.narrative-p { margin: 0 0 7px; }
+.narrative-p {
+  width: 100%;
+  max-width: none;
+  margin: 0 0 6px;
+  overflow-wrap: anywhere;
+}
 .narrative-p:last-child { margin-bottom: 0; }
+.narrative-summary-label {
+  font-weight: 700;
+  color: var(--fg);
+}
 .narrative-subhead {
-  margin: 8px 0 3px;
+  margin: 8px 0 4px;
+  padding-top: 5px;
+  border-top: 1px solid var(--border-vl);
   font-size: 7pt;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .06em;
   color: var(--fg-d);
 }
-.narrative-subhead:first-child { margin-top: 0; }
+.narrative-subhead:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
 .narrative-row {
-  display: flex;
+  display: grid;
+  grid-template-columns: 82px minmax(0, 1fr);
+  align-items: start;
   gap: 10px;
-  padding: 3px 0;
+  padding: 5px 0;
   border-bottom: 1px solid var(--border-vl);
-  line-height: 1.45;
+  line-height: 1.42;
 }
+.narrative-row:last-child { border-bottom: 0; }
 .narrative-date {
-  min-width: 70px;
-  flex: 0 0 auto;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 8pt;
-  font-weight: 600;
-  color: var(--accent);
-}
-.narrative-data {
-  margin: 3px 0;
-  padding: 5px 7px;
-  border: 1px solid var(--border-l);
-  border-radius: 3px;
-  background: var(--panel);
+  justify-self: start;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 72px;
+  padding: 2px 6px;
+  border: 1px solid #bfdbfe;
+  border-radius: 999px;
+  background: #eff6ff;
   font-family: 'JetBrains Mono', monospace;
   font-size: 7.5pt;
-  line-height: 1.45;
-  white-space: pre-wrap;
+  font-weight: 700;
+  color: #1d4ed8;
+  white-space: nowrap;
+}
+.narrative-event {
+  min-width: 0;
   overflow-wrap: anywhere;
+}
+.narrative-inline-date {
+  display: inline-block;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: .92em;
+  font-weight: 650;
+  white-space: nowrap;
+}
+body.dark .narrative-date {
+  border-color: rgba(96,165,250,.35);
+  background: rgba(59,130,246,.14);
+  color: #93c5fd;
+}
+body.dark .narrative-inline-date {
+  background: rgba(59,130,246,.14);
+  color: #93c5fd;
+}
+@media (max-width: 640px) {
+  .narrative-row {
+    grid-template-columns: 1fr;
+    gap: 3px;
+  }
 }
 
 /* Reference grid */
