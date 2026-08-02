@@ -2976,9 +2976,6 @@ Return ONLY valid JSON (no markdown fences):
   ],
   "labTrendsSummary": "one-paragraph AI summary of key lab trends across the chart",
   "diagnosticsSummary": "one-paragraph AI summary of imaging, endoscopy, and other diagnostic procedures visible in the chart",
-  "visitPlan": [
-    "checklist items for today's visit — 10-15 items"
-  ],
   "priorityFocusAreas": [
     {
       "title": "2-4 word priority label — e.g., 'Mental health safety net', 'Alcohol and anger', 'Legal documentation awareness'",
@@ -9133,7 +9130,7 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
 //   - doc.sessionTitle, doc.student, doc.phase, doc.selectedProblems
 //   - doc.noteAnalysis (oneLiner, patientDescriptor, patientBadges, scPercentages,
 //     activeProblems with category/status/shortSubtitle, labTrendsSummary,
-//     diagnosticsSummary, visitPlan, perProblemRedFlags)
+//     diagnosticsSummary, priorityFocusAreas, perProblemRedFlags)
 //   - doc.sections.teachingCases (with new suggestedQuestions + dontMiss fields)
 //   - doc.medDescriptions, doc.lightweightTeaching, doc.rawPrenote
 // ============================================================================
@@ -9177,7 +9174,6 @@ const buildInRoomHtml = (doc, session) => {
   console.log("[buildInRoomHtml DIAG] na keys:", Object.keys(na));
   console.log("[buildInRoomHtml DIAG] na.scPercentages type:", typeof na.scPercentages, "isArray:", Array.isArray(na.scPercentages), "value:", na.scPercentages);
   console.log("[buildInRoomHtml DIAG] na.patientBadges type:", typeof na.patientBadges, "isArray:", Array.isArray(na.patientBadges), "value:", na.patientBadges);
-  console.log("[buildInRoomHtml DIAG] na.visitPlan type:", typeof na.visitPlan, "isArray:", Array.isArray(na.visitPlan), "value:", na.visitPlan);
   console.log("[buildInRoomHtml DIAG] na.priorityFocusAreas type:", typeof na.priorityFocusAreas, "isArray:", Array.isArray(na.priorityFocusAreas), "value:", na.priorityFocusAreas);
   console.log("[buildInRoomHtml DIAG] na.complexPatientTeaching type:", typeof na.complexPatientTeaching, "isArray:", Array.isArray(na.complexPatientTeaching), "value:", na.complexPatientTeaching);
   console.log("[buildInRoomHtml DIAG] na.redFlags type:", typeof na.redFlags, "isArray:", Array.isArray(na.redFlags), "value:", na.redFlags);
@@ -12070,19 +12066,6 @@ const buildInRoomHtml = (doc, session) => {
     preventiveHtml += `</ul>`;
   }
 
-  // ──────────────────────────────────────────────────────────────
-  // TODAY'S VISIT PLAN
-  // ──────────────────────────────────────────────────────────────
-  let visitPlanHtml = "";
-  if (Array.isArray(na.visitPlan) && na.visitPlan.length > 0) {
-    visitPlanHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Today's Visit Plan</div><div class="sec-div-line"></div></div>`;
-    visitPlanHtml += `<ul class="ck-list">`;
-    na.visitPlan.forEach(item => {
-      visitPlanHtml += `<li><span class="ck-box"></span><span>${esc(item)}</span></li>`;
-    });
-    visitPlanHtml += `</ul>`;
-  }
-
   // Priority Focus Areas — the top things the student should ACTUALLY DO
   // in the visit today, from the AI's synthesis. Falls back to red flags
   // if the AI didn't produce this field for some reason.
@@ -12841,29 +12824,6 @@ body.dark .lab-ok { color: #86efac !important; }
 body.dark .prev-due { background: rgba(239,68,68,.15); color: #fca5a5; }
 body.dark .prev-done { background: rgba(52,211,153,.15); color: #6ee7b7; }
 
-/* Visit plan checklist */
-.ck-list { list-style: none; }
-.ck-list li {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  font-size: 9pt;
-  color: var(--fg-m);
-  padding: 4px 0;
-  border-bottom: 1px solid var(--border-vl);
-  line-height: 1.45;
-  page-break-inside: avoid;
-}
-.ck-list li:last-child { border-bottom: none; }
-.ck-box {
-  width: 12px;
-  height: 12px;
-  border: 1.5px solid var(--fg-d);
-  border-radius: 2px;
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
 /* Practice questions */
 .pq-sep {
   border-top: 2px dashed var(--fg-d);
@@ -12960,7 +12920,6 @@ body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
 .soc-text,
 .tl-compact li,
 .prev-list li,
-.ck-list li,
 .pq-q,
 .pq-opts li,
 .pq-exp,
@@ -13023,19 +12982,18 @@ function printDoc(){ window.print(); }
 ${headerHtml}
 ${oneLinerHtml}
 ${allergyBarHtml}
+${complexTeachingHtml}
+${priorityFocusHtml}
 ${topNarrativeHtml}
 ${refGridHtml}
 ${vitalsHtml}
 ${medsSectionHtml}
-${problemsHtml}
-${diagnosticsHtml}
-${labsHtml}
 ${socialHtml}
-${timelineHtml}
+${labsHtml}
+${diagnosticsHtml}
 ${preventiveHtml}
-${visitPlanHtml}
-${priorityFocusHtml}
-${complexTeachingHtml}
+${problemsHtml}
+${timelineHtml}
 ${practiceHtml}
 <div class="doc-footer">Prenote for ${esc(primaryLabel)} — Generated for clinical education use — Session ${esc(sessionId)}</div>
 </div>
