@@ -2884,7 +2884,7 @@ Focus on: ${phase.focus}`;
         user,
         analysisMaxTokens
       );
-
+      
       const parsed = extractJson(response);
 
       // ─── POST-PROCESS: enforce the deterministic problem list ──────────
@@ -8970,20 +8970,139 @@ const buildInRoomHtml = (doc, session) => {
   console.log("[buildInRoomHtml DIAG] na.perProblemRedFlags type:", typeof na.perProblemRedFlags, "isArray:", Array.isArray(na.perProblemRedFlags), "value:", na.perProblemRedFlags);
   console.log("[buildInRoomHtml DIAG] enabledCases:", enabledCases.length);
 
-  const prenoteSections = parsedPrenote.sections;
+  const prenoteSections = parsedPrenote?.sections || {};
 
-  const whatToKnowText = prenoteSections.whatToKnow || "";
-  const vitalsText = prenoteSections.vitalSigns || "";
-  const diagnosticsText = prenoteSections.diagnostics || "";
-  const socialText = prenoteSections.social || "";
-  const familyText = prenoteSections.familyHistory || "";
-  const surgicalText = prenoteSections.surgicalHistory || "";
-  const allergiesText = prenoteSections.allergies || "";
-  const militaryText = prenoteSections.militaryHistory || "";
-  const preventiveText = prenoteSections.preventiveMedicine || "";
-  const updatesText = prenoteSections.recentVisits || "";
-  const pmhText = prenoteSections.pastMedicalHistory || "";
-  const medRecText = prenoteSections.medRec || "";
+  // The dedicated prenote parser is the primary source. The local section
+  // extractor is a deterministic backup for headings that the dedicated parser
+  // does not recognize in a particular prenote format.
+  const fallbackPrenoteSections = extractPrenoteSections(
+    doc.rawPrenote || doc.clinicalNote || ""
+  );
+
+  const firstNonEmptyText = (...values) => {
+    for (const value of values) {
+      if (typeof value === "string" && value.trim()) {
+        return value.trim();
+      }
+    }
+    return "";
+  };
+
+  const fallbackSection = (...titles) =>
+    firstNonEmptyText(
+      ...titles.map((title) =>
+        getSection(fallbackPrenoteSections, title)
+      )
+    );
+
+  const joinUniqueSections = (values) => {
+    const seen = new Set();
+    const output = [];
+
+    values.forEach((value) => {
+      if (typeof value !== "string" || !value.trim()) return;
+
+      const cleaned = value.trim();
+      const signature = cleaned
+        .toLowerCase()
+        .replace(/\s+/g, " ");
+
+      if (seen.has(signature)) return;
+      seen.add(signature);
+      output.push(cleaned);
+    });
+
+    return output.join("\n\n");
+  };
+
+  const whatToKnowText = firstNonEmptyText(
+    prenoteSections.whatToKnow,
+    fallbackSection("WHAT TO KNOW ABOUT")
+  );
+
+  const vitalsText = firstNonEmptyText(
+    prenoteSections.vitalSigns,
+    prenoteSections.vitalSignsTrends,
+    fallbackSection("VITAL SIGNS TRENDS")
+  );
+
+  // Keep imaging/diagnostic narrative separate from laboratory content.
+  const diagnosticsText = firstNonEmptyText(
+    prenoteSections.imagingAndDiagnosticProcedures,
+    prenoteSections.imagingDiagnostics,
+    prenoteSections.imaging,
+    fallbackSection("IMAGING AND DIAGNOSTIC PROCEDURES"),
+    prenoteSections.diagnostics,
+    fallbackSection("DIAGNOSTICS")
+  );
+
+  // Collect only lab-specific sections. Do not use the generic DIAGNOSTICS
+  // narrative as a raw laboratory fallback.
+  const importedLabSections = Object.entries(prenoteSections)
+    .filter(([key, value]) =>
+      typeof value === "string" &&
+      value.trim() &&
+      /lab|laboratory/i.test(key) &&
+      !/diagnostic|imaging/i.test(key)
+    )
+    .map(([, value]) => value);
+
+  const mixedLabsImagingText = fallbackSection(
+    "KEY LABS IMAGING RESULTS WITH TRENDS"
+  );
+
+  const labText = joinUniqueSections([
+    ...importedLabSections,
+    fallbackSection("RECENT LABS SUMMARY MOST RECENT FIRST"),
+    fallbackSection("LABORATORY TRENDS KEY ABNORMALITIES"),
+    fallbackSection("LAB TREND TABLES"),
+    fallbackSection("LABORATORY DATA")
+  ]);
+
+  const socialText = firstNonEmptyText(
+    prenoteSections.social,
+    fallbackSection("SOCIAL", "SOCIAL HISTORY")
+  );
+
+  const familyText = firstNonEmptyText(
+    prenoteSections.familyHistory,
+    fallbackSection("FAMILY HISTORY")
+  );
+
+  const surgicalText = firstNonEmptyText(
+    prenoteSections.surgicalHistory,
+    fallbackSection("SURGICAL HISTORY")
+  );
+
+  const allergiesText = firstNonEmptyText(
+    prenoteSections.allergies,
+    fallbackSection("ALLERGIES")
+  );
+
+  const militaryText = firstNonEmptyText(
+    prenoteSections.militaryHistory,
+    fallbackSection("MILITARY HISTORY")
+  );
+
+  const preventiveText = firstNonEmptyText(
+    prenoteSections.preventiveMedicine,
+    fallbackSection("PREVENTIVE MEDICINE")
+  );
+
+  const updatesText = firstNonEmptyText(
+    prenoteSections.recentVisits,
+    fallbackSection("UPDATES / RECENT VISITS")
+  );
+
+  const pmhText = firstNonEmptyText(
+    prenoteSections.pastMedicalHistory,
+    fallbackSection("PAST MEDICAL HISTORY")
+  );
+
+  const medRecText = firstNonEmptyText(
+    prenoteSections.medRec,
+    fallbackSection("MED REC")
+  );
 
   // Medication extraction (unchanged logic from prior version)
   const stripCcdaForFallback = (text) => {
@@ -9175,23 +9294,78 @@ const buildInRoomHtml = (doc, session) => {
     return items;
   };
 
-  // Parse vitals text into structured chips
+  // Parse both current and prior-average vitals into structured chips.
   const parseVitals = (text) => {
     if (!text) return [];
+
     const chips = [];
-    // Try to find common vitals with regex — pick most recent value if multiple
-    const grab = (pattern, label) => {
-      const m = pattern.exec(text);
-      if (m) chips.push({ label, val: m[1].trim() });
+    const seen = new Set();
+
+    const add = (label, value) => {
+      const cleaned = String(value || "")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      if (!cleaned) return;
+
+      const key = label.toLowerCase();
+      if (seen.has(key)) return;
+
+      seen.add(key);
+      chips.push({ label, val: cleaned });
     };
-    grab(/BP[:\s]+([\d]{2,3}\/[\d]{2,3})/i, "BP");
-    grab(/HR[:\s]+([\d]{2,3})/i, "HR");
-    grab(/Pulse[:\s]+([\d]{2,3})/i, "HR");
-    grab(/Temp[:\s]+([\d.]+\s*°?[FC]?)/i, "Temp");
-    grab(/S[pP]O2[:\s]+([\d]{1,3}%?)/i, "SpO2");
-    grab(/W[tT][:\s]+([\d.]+\s*(?:lb|kg))/i, "Wt");
-    grab(/Weight[:\s]+([\d.]+\s*(?:lb|kg))/i, "Wt");
-    grab(/BMI[:\s]+([\d.]+)/i, "BMI");
+
+    const lines = String(text)
+      .replace(/\r\n?/g, "\n")
+      .split("\n")
+      .map((line) =>
+        line.replace(/^[\s*•-]+/, "").trim()
+      )
+      .filter(Boolean);
+
+    lines.forEach((line) => {
+      const isAverage =
+        /\b(?:prior|previous|historical|baseline)\b[^\n]{0,30}\b(?:avg|average)\b/i.test(line) ||
+        /\b(?:avg|average)\b/i.test(line);
+
+      const prefix = isAverage ? "Avg " : "";
+
+      const bp = line.match(
+        /\b(?:BP|blood pressure)\b[^0-9]{0,50}(\d{2,3}\s*\/\s*\d{2,3})/i
+      );
+      if (bp) add(`${prefix}BP`, bp[1].replace(/\s+/g, ""));
+
+      const hr = line.match(
+        /\b(?:HR|heart rate|pulse)\b[^0-9]{0,50}(\d{2,3})(?:\s*bpm)?\b/i
+      );
+      if (hr) add(`${prefix}HR`, hr[1]);
+
+      const resp = line.match(
+        /\b(?:RR|resp(?:iratory)?(?: rate)?)\b[^0-9]{0,50}(\d{1,2})\b/i
+      );
+      if (resp) add(`${prefix}Resp`, resp[1]);
+
+      const temp = line.match(
+        /\b(?:Temp|temperature)\b[^0-9]{0,50}(\d{2,3}(?:\.\d+)?\s*°?\s*[FC]?)/i
+      );
+      if (temp) add(`${prefix}Temp`, temp[1]);
+
+      const spo2 = line.match(
+        /\b(?:SpO2|O2\s*sat(?:uration)?)\b[^0-9]{0,50}(\d{1,3}\s*%?)/i
+      );
+      if (spo2) add(`${prefix}SpO2`, spo2[1]);
+
+      const weight = line.match(
+        /\b(?:Wt|weight)\b[^0-9]{0,50}(\d+(?:\.\d+)?\s*(?:lb|lbs|kg))\b/i
+      );
+      if (weight) add(`${prefix}Wt`, weight[1]);
+
+      const bmi = line.match(
+        /\bBMI\b[^0-9]{0,30}(\d+(?:\.\d+)?)/i
+      );
+      if (bmi) add(`${prefix}BMI`, bmi[1]);
+    });
+
     return chips;
   };
 
@@ -9357,62 +9531,207 @@ const buildInRoomHtml = (doc, session) => {
 
   // Right: Clinical Reference Data
   refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="ref-body">`;
-  // Helper: split reference-text on inline separators (" - ", " * ", "*", newlines)
-  // into a bullet list. Used for Surgical, Family, Military — which the prenote
-  // often formats as dash-separated inline items instead of proper newlines.
+
+  // Helper: split reference text on inline separators and newlines.
   const renderRefBullets = (text) => {
     if (!text) return "";
-    // First split on newlines
-    let items = text.split(/\r?\n/).flatMap(line => {
+
+    let items = text.split(/\r?\n/).flatMap((line) => {
       const trimmed = line.trim();
       if (!trimmed) return [];
-      // Further split on " - " (with spaces around to avoid breaking hyphenated words)
-      // AND on " * " (asterisk separator)
+
       return trimmed
         .split(/\s+[-*•]\s+/)
-        .map(s => s.trim())
-        .filter(s => s.length > 0);
+        .map((item) => item.trim())
+        .filter(Boolean);
     });
-    // Strip leading bullet chars each item may still carry
-    items = items.map(i => i.replace(/^[\-\*•●○]+\s*/, "").trim()).filter(Boolean);
+
+    items = items
+      .map((item) =>
+        item.replace(/^[\-*•●○]+\s*/, "").trim()
+      )
+      .filter(Boolean);
+
     if (items.length === 0) return "";
-    // Single-item case → just render as paragraph
-    if (items.length === 1) return `<div>${esc(items[0])}</div>`;
-    return `<ul style="margin:0;padding-left:1rem;">${items.map(i => `<li style="margin-bottom:2px;">${esc(i)}</li>`).join("")}</ul>`;
+    if (items.length === 1) {
+      return `<div>${esc(items[0])}</div>`;
+    }
+
+    return `<ul style="margin:0;padding-left:1rem;">${items
+      .map(
+        (item) =>
+          `<li style="margin-bottom:2px;">${esc(item)}</li>`
+      )
+      .join("")}</ul>`;
   };
 
-  // Prefer AI-structured versions when available
-  const surgList = structured.surgicalHistory?.length > 0 ? structured.surgicalHistory : null;
-  const finalSurgical = surgList
-    ? (surgList.length === 1 ? `<div>${esc(surgList[0])}</div>` : `<ul style="margin:0;padding-left:1rem;">${surgList.map(s => `<li style="margin-bottom:2px;">${esc(s)}</li>`).join("")}</ul>`)
-    : (surgicalText ? renderRefBullets(surgicalText) : "");
-  const finalFamily = structured.familyHistory ? esc(structured.familyHistory) : (familyText ? renderRefBullets(familyText) : "");
-  const finalMilitary = structured.militaryHistory ? esc(structured.militaryHistory) : (militaryText ? renderRefBullets(militaryText) : "");
+  const surgList =
+    structured.surgicalHistory?.length > 0
+      ? structured.surgicalHistory
+      : null;
 
-  if (finalSurgical) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-scalpel"></i> Surgical History</div><div class="ref-text">${finalSurgical}</div></div>`;
-  if (finalFamily) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-people-roof"></i> Family History</div><div class="ref-text">${finalFamily}</div></div>`;
-  if (finalMilitary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-shield"></i> Military History</div><div class="ref-text">${finalMilitary}</div></div>`;
-  if (na.diagnosticsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-microscope"></i> Diagnostics</div><div class="ref-text">${esc(na.diagnosticsSummary)}</div></div>`;
-  if (na.labTrendsSummary) refGridHtml += `<div class="ref-item"><div class="ref-label"><i class="fa-solid fa-chart-line"></i> Lab Trends</div><div class="ref-text">${esc(na.labTrendsSummary)}</div></div>`;
+  const finalSurgical = surgList
+    ? surgList.length === 1
+      ? `<div>${esc(surgList[0])}</div>`
+      : `<ul style="margin:0;padding-left:1rem;">${surgList
+          .map(
+            (item) =>
+              `<li style="margin-bottom:2px;">${esc(item)}</li>`
+          )
+          .join("")}</ul>`
+    : surgicalText
+      ? renderRefBullets(surgicalText)
+      : "";
+
+  const finalFamily = structured.familyHistory
+    ? esc(structured.familyHistory)
+    : familyText
+      ? renderRefBullets(familyText)
+      : "";
+
+  const finalMilitary = structured.militaryHistory
+    ? esc(structured.militaryHistory)
+    : militaryText
+      ? renderRefBullets(militaryText)
+      : "";
+
+  const clinicalReferenceItems = [];
+
+  const addClinicalReference = (
+    icon,
+    label,
+    html
+  ) => {
+    if (!html) return;
+
+    clinicalReferenceItems.push(
+      `<div class="ref-item"><div class="ref-label"><i class="fa-solid ${icon}"></i> ${esc(label)}</div><div class="ref-text">${html}</div></div>`
+    );
+  };
+
+  addClinicalReference(
+    "fa-scalpel",
+    "Surgical History",
+    finalSurgical
+  );
+
+  addClinicalReference(
+    "fa-people-roof",
+    "Family History",
+    finalFamily
+  );
+
+  addClinicalReference(
+    "fa-shield",
+    "Military History",
+    finalMilitary
+  );
+
+  if (lastPcpDate) {
+    addClinicalReference(
+      "fa-user-doctor",
+      "Last Primary Care Visit",
+      `<div>${esc(lastPcpDate)}</div>`
+    );
+  }
+
+  // Avoid a visually broken empty panel. When no dedicated reference section
+  // exists, show a concise source-note context instead.
+  if (
+    clinicalReferenceItems.length === 0 &&
+    whatToKnowText
+  ) {
+    addClinicalReference(
+      "fa-file-waveform",
+      "Chart Context",
+      `<div>${esc(whatToKnowText.slice(0, 900))}</div>`
+    );
+  }
+
+  if (clinicalReferenceItems.length === 0) {
+    addClinicalReference(
+      "fa-circle-info",
+      "Source Note",
+      "<div>No additional family, surgical, military, or primary-care reference data were documented.</div>"
+    );
+  }
+
+  refGridHtml += clinicalReferenceItems.join("");
   refGridHtml += `</div></div></div>`;
 
   // ──────────────────────────────────────────────────────────────
   // VITALS ROW
   // ──────────────────────────────────────────────────────────────
-  // Use AI-extracted vitals if available; fall back to regex parser
-  let vitals = [];
-  if (structured.vitals && Object.values(structured.vitals).some(v => v)) {
-    const v = structured.vitals;
-    if (v.bp) vitals.push({ label: "BP", val: v.bp });
-    if (v.hr) vitals.push({ label: "HR", val: v.hr });
-    if (v.temp) vitals.push({ label: "Temp", val: v.temp });
-    if (v.spo2) vitals.push({ label: "SpO2", val: v.spo2 });
-    if (v.wt) vitals.push({ label: "Wt", val: v.wt });
-    if (v.bmi) vitals.push({ label: "BMI", val: v.bmi });
-    if (v.resp) vitals.push({ label: "Resp", val: v.resp });
-  } else {
-    vitals = parseVitals(vitalsText);
-  }
+  // Merge deterministic vitals with any AI-structured values. Previously a
+  // single structured value such as BMI caused the entire raw vitals section,
+  // including prior averages, to be ignored.
+  const vitalMap = new Map();
+
+  const addVital = (label, value, prefer = false) => {
+    if (value === null || value === undefined) return;
+
+    const cleaned = String(value).trim();
+    if (!cleaned) return;
+
+    const key = label.toLowerCase();
+    if (!vitalMap.has(key) || prefer) {
+      vitalMap.set(key, { label, val: cleaned });
+    }
+  };
+
+  parseVitals(vitalsText).forEach((item) =>
+    addVital(item.label, item.val)
+  );
+
+  const v = structured.vitals || {};
+  addVital("BP", v.bp, true);
+  addVital(
+    "Avg BP",
+    v.avgBp || v.averageBp || v.priorAverageBp,
+    true
+  );
+  addVital("HR", v.hr, true);
+  addVital(
+    "Avg HR",
+    v.avgHr || v.averageHr || v.priorAverageHr,
+    true
+  );
+  addVital("Temp", v.temp, true);
+  addVital("SpO2", v.spo2, true);
+  addVital("Wt", v.wt, true);
+  addVital(
+    "Avg Wt",
+    v.avgWt || v.averageWt || v.priorAverageWt,
+    true
+  );
+  addVital("BMI", v.bmi, true);
+  addVital("Resp", v.resp, true);
+
+  const vitalOrder = [
+    "bp",
+    "avg bp",
+    "hr",
+    "avg hr",
+    "resp",
+    "avg resp",
+    "temp",
+    "avg temp",
+    "spo2",
+    "avg spo2",
+    "wt",
+    "avg wt",
+    "bmi",
+    "avg bmi"
+  ];
+
+  const vitals = [
+    ...vitalOrder
+      .map((key) => vitalMap.get(key))
+      .filter(Boolean),
+    ...Array.from(vitalMap.entries())
+      .filter(([key]) => !vitalOrder.includes(key))
+      .map(([, value]) => value)
+  ];
   let vitalsHtml = "";
   if (vitals.length > 0) {
     vitalsHtml += `<div class="vitals-row">`;
@@ -9711,72 +10030,222 @@ const buildInRoomHtml = (doc, session) => {
   // 4. Render one master table (analytes as rows, dates as columns, panels as
   //    section-row headers within the table).
   // 5. Below the master, render smaller per-panel tables for focused review.
-  let labsHtml = "";
-  // Lab tables can appear in multiple sections depending on how the source LLM
-  // organized the prenote — sometimes under DIAGNOSTICS, sometimes under
-  // "Most recent labs" within UPDATES / RECENT VISITS, sometimes both.
-  // We scan the raw text of every relevant section for pipe-delimited lab
-  // tables and combine everything.
-  /// Use AI-extracted lab tables if available; fall back to regex parsers
-    let structuredTables = [];
+  // ──────────────────────────────────────────────────────────────
+  // IMAGING / DIAGNOSTICS
+  // ──────────────────────────────────────────────────────────────
+  const cleanDiagnosticsForDisplay = (text) => {
+    let output = String(text || "")
+      .replace(/\r\n?/g, "\n")
+      .trim();
 
-  if (structured.labTables?.length > 0) {
-    // AI returns tables in shape:
-    // { panel, columns, rows }
-    structuredTables = structured.labTables.map(
-      (t) => ({
-        title: t.panel || "Labs",
-        columns: t.columns || [],
-        rows: t.rows || [],
-      })
-    );
-  } else {
-    // Use tables extracted by the deterministic prenote parser.
-    structuredTables = Array.isArray(
-      parsedPrenote.diagnostics?.tables
-    )
-      ? parsedPrenote.diagnostics.tables
-      : [];
+    if (!output) return "";
+
+    const stopPatterns = [
+      /^\s*#{0,6}\s*DIAGNOSTICS\s+self[- ]?check\b/im,
+      /^\s*Notes:\s*$/im,
+      /^\s*Now I(?:'|’)ll compile\b/im
+    ];
+
+    const stopIndexes = stopPatterns
+      .map((pattern) => output.search(pattern))
+      .filter((index) => index >= 0);
+
+    if (stopIndexes.length > 0) {
+      output = output.slice(0, Math.min(...stopIndexes));
+    }
+
+    return output
+      .replace(
+        /^\s*Imaging\s+and\s+Diagnostic\s+Procedures\s*/i,
+        ""
+      )
+      .replace(/^[=_-]{5,}\s*$/gm, "")
+      .trim();
+  };
+
+  const diagnosticNarrative =
+    cleanDiagnosticsForDisplay(diagnosticsText);
+
+  let diagnosticsHtml = "";
+
+  if (diagnosticNarrative || na.diagnosticsSummary) {
+    diagnosticsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Imaging / Diagnostics</div><div class="sec-div-line"></div></div>`;
+
+    if (diagnosticNarrative) {
+      diagnosticsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(diagnosticNarrative)}</pre>`;
+    }
+
+    if (
+      na.diagnosticsSummary &&
+      !diagnosticNarrative
+        .toLowerCase()
+        .includes(
+          String(na.diagnosticsSummary)
+            .toLowerCase()
+            .slice(0, 80)
+        )
+    ) {
+      diagnosticsHtml += `<div class="lab-note">${esc(na.diagnosticsSummary)}</div>`;
+    }
   }
 
-  // Additionally scan UPDATES/RECENT VISITS and WHAT TO KNOW sections for
-  // inline lab tables. Some prenotes put "Most recent labs" there.
+  let labsHtml = "";
+
+  // Use AI-extracted tables when available, then combine them with tables
+  // found deterministically in lab-specific sections.
+  let structuredTables = [];
+
+  if (structured.labTables?.length > 0) {
+    structuredTables = structured.labTables.map((table) => ({
+      title: table.panel || "Labs",
+      columns: table.columns || [],
+      rows: table.rows || []
+    }));
+  } else {
+    const deterministicTableSources = [
+      parsedPrenote?.diagnostics?.tables,
+      parsedPrenote?.labs?.tables,
+      parsedPrenote?.labTables
+    ];
+
+    deterministicTableSources.forEach((tables) => {
+      if (Array.isArray(tables)) {
+        structuredTables.push(...tables);
+      }
+    });
+  }
+
+  // Parse any ordinary pipe-delimited table, including Markdown tables and
+  // both common orientations: dates as rows or dates as columns.
   const extractInlineLabTables = (text) => {
     if (!text) return [];
+
+    const splitPipeRow = (line) =>
+      String(line)
+        .trim()
+        .replace(/^\|/, "")
+        .replace(/\|$/, "")
+        .split("|")
+        .map((cell) => cell.trim());
+
+    const isSeparatorRow = (cells) =>
+      cells.length > 0 &&
+      cells.every((cell) => /^:?-{3,}:?$/.test(cell));
+
     const tables = [];
-    const lines = text.split(/\r?\n/);
-    let i = 0;
-    while (i < lines.length) {
-      const line = lines[i].trim();
-      // Look for a header row: starts with COLLECTION | or DATE |
-      if (/^COLLECTION\s*\|/i.test(line) || /^DATE\s*\|/i.test(line)) {
-        const columns = line.split("|").map(c => c.trim()).filter(Boolean);
-        const rows = [];
-        // Collect subsequent lines that also have pipes
-        let j = i + 1;
-        while (j < lines.length) {
-          const rowLine = lines[j].trim();
-          // Row must have pipes AND start with a date-like token
-          if (!/\|/.test(rowLine)) break;
-          if (!/^\d{1,2}\/\d{2,4}/.test(rowLine) && !/^\d{1,2}\/\d{1,2}\/\d{2,4}/.test(rowLine)) break;
-          const cells = rowLine.split("|").map(c => c.trim());
-          if (cells.length !== columns.length) break;
-          // Build a row object keyed by column name
-          const rowObj = {};
-          columns.forEach((col, idx) => { rowObj[col] = cells[idx] || ""; });
-          rows.push(rowObj);
-          j++;
-        }
-        if (rows.length > 0) {
-          tables.push({ columns, rows });
-        }
-        i = j;
-      } else {
-        i++;
+    const lines = String(text).split(/\r?\n/);
+    let index = 0;
+
+    while (index < lines.length) {
+      if (!lines[index].includes("|")) {
+        index += 1;
+        continue;
       }
+
+      const block = [];
+      let cursor = index;
+
+      while (
+        cursor < lines.length &&
+        lines[cursor].includes("|")
+      ) {
+        block.push(lines[cursor]);
+        cursor += 1;
+      }
+
+      index = cursor;
+
+      if (block.length < 2) continue;
+
+      const parsedRows = block
+        .map(splitPipeRow)
+        .filter((cells) => cells.length >= 2);
+
+      if (parsedRows.length < 2) continue;
+
+      const columns = parsedRows[0];
+      let dataRows = parsedRows.slice(1);
+
+      if (
+        dataRows.length > 0 &&
+        isSeparatorRow(dataRows[0])
+      ) {
+        dataRows = dataRows.slice(1);
+      }
+
+      dataRows = dataRows.filter(
+        (cells) =>
+          cells.length === columns.length &&
+          !isSeparatorRow(cells)
+      );
+
+      if (dataRows.length === 0) continue;
+
+      const labSignalText = [
+        ...columns,
+        ...dataRows.map((cells) => cells[0])
+      ]
+        .join(" ")
+        .toUpperCase();
+
+      const looksLikeLabTable =
+        /\b(?:COLLECTION|DATE|TEST|WBC|RBC|HGB|HEMOGLOBIN|HCT|PLT|PLATELET|SODIUM|POTASSIUM|CREATININE|BUN|GLUCOSE|A1C|AST|ALT|TSH|LDL|HDL|CRP|ESR)\b/.test(
+          labSignalText
+        );
+
+      if (!looksLikeLabTable) continue;
+
+      const rows = dataRows.map((cells) => {
+        const row = {};
+
+        columns.forEach((column, cellIndex) => {
+          row[column] = cells[cellIndex] || "";
+        });
+
+        return row;
+      });
+
+      tables.push({
+        title: "Labs",
+        columns,
+        rows
+      });
     }
+
     return tables;
   };
+
+  structuredTables.push(
+    ...extractInlineLabTables(labText),
+    ...extractInlineLabTables(updatesText),
+    ...extractInlineLabTables(whatToKnowText),
+    ...extractInlineLabTables(mixedLabsImagingText),
+    ...extractInlineLabTables(diagnosticsText)
+  );
+
+  // Remove duplicate copies of the same table collected from overlapping
+  // sections or parser outputs.
+  const seenLabTables = new Set();
+
+  structuredTables = structuredTables.filter((table) => {
+    if (
+      !Array.isArray(table?.columns) ||
+      !Array.isArray(table?.rows) ||
+      table.columns.length === 0 ||
+      table.rows.length === 0
+    ) {
+      return false;
+    }
+
+    const signature = JSON.stringify([
+      table.columns,
+      table.rows
+    ]);
+
+    if (seenLabTables.has(signature)) return false;
+    seenLabTables.add(signature);
+    return true;
+  });
 
   // ── Canonical panel assignment ──
   // Uppercased analyte names → canonical panel.
@@ -10195,10 +10664,11 @@ const buildInRoomHtml = (doc, session) => {
     labsHtml += `<div class="lab-note">${esc(na.labTrendsSummary)}</div>`;
   }
 
-  // Fallback: no structured tables and no AI summary → dump raw verbatim
-  if (!hasAnyLabs && !na.labTrendsSummary && diagnosticsText) {
+  // Fallback: when table parsing is unavailable, show only the raw
+  // lab-specific section. Never place imaging narrative in Laboratory Results.
+  if (!hasAnyLabs && !na.labTrendsSummary && labText) {
     labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
-    labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(diagnosticsText)}</pre>`;
+    labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(labText)}</pre>`;
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -11083,6 +11553,7 @@ ${refGridHtml}
 ${vitalsHtml}
 ${medsSectionHtml}
 ${problemsHtml}
+${diagnosticsHtml}
 ${labsHtml}
 ${socialHtml}
 ${timelineHtml}
