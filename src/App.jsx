@@ -428,6 +428,144 @@ const stripTreatmentVerb = (str) => {
   return str.replace(/^(Continue|Start|Initiate|Add|Consider|Prescribe|Begin|Maintain|Discontinue|Stop|Hold|Resume|Trial(?:\s+of)?)\s+/i, "");
 };
 
+// True when a proposed "treatment" is actually a diagnostic or monitoring
+// study. These items must never be rendered in a Medications subsection.
+const isDiagnosticOrMonitoringItem = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return false;
+
+  return /\b(?:PET(?:\/CT)?|CT(?:\s+scan)?|MRI|ultrasound|sonogram|x-?ray|radiograph|echocardiogram|echo|ECG|EKG|pulmonary\s+function(?:\s+testing)?|PFTs?|spirometry|sleep\s+study|HSAT|TSH|CBC|CMP|BMP|A1c|HbA1c|laboratory\s+tests?|lab\s+tests?|blood\s+tests?|colonoscopy|endoscopy|screening|surveillance|monitoring|measurement|test|scan)\b/i.test(
+    text
+  );
+};
+
+// Convert teaching-case test data into one stable shape used by both the
+// interactive HTML preview and the printable React document.
+//
+// Only completed, chart-documented tests with an actual patient result are
+// retained. Recommended, pending, hypothetical, or future surveillance tests
+// are intentionally excluded from the patient-results section.
+const normalizeTeachingResults = (items) => {
+  const clean = (value) =>
+    String(value || "")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const looksLikeActualResult = (value) => {
+    const result = clean(value);
+    if (!result) return false;
+
+    if (
+      /^(?:none|n\/?a|unknown|not documented|not available|result unavailable|pending|ordered|planned|recommended)$/i.test(
+        result
+      )
+    ) {
+      return false;
+    }
+
+    // These are purposes or future plans, not patient results.
+    if (
+      /^(?:screen(?:ing)?|monitor(?:ing)?|surveillance|baseline|repeat|annual(?:ly)?|every\b|assess(?:ment)?|evaluate|evaluation|rule out|to\s+(?:screen|monitor|assess|evaluate|rule out))\b/i.test(
+        result
+      )
+    ) {
+      return false;
+    }
+
+    // A purely conditional statement such as "normal EF would be reassuring"
+    // is educational commentary, not a documented result.
+    if (
+      /\b(?:would|should|could)\b/i.test(result) &&
+      !/\b(?:showed|demonstrated|revealed|found|was|were|measured|resulted|confirmed)\b/i.test(
+        result
+      )
+    ) {
+      return false;
+    }
+
+    return /(?:\d|positive|negative|reactive|nonreactive|normal|abnormal|elevated|decreased|low|high|present|absent|benign|malignant|unremarkable|clear|euthyroid|hypothyroid|hyperthyroid|sinus rhythm|undetectable|detected|not detected|no evidence|without evidence|complete|partial|stable|unchanged|improved|worsened|response|remission|deauville|lvef|ejection fraction|findings?|impression|showed|demonstrated|revealed|confirmed|consistent with|compatible with)/i.test(
+      result
+    );
+  };
+
+  return (Array.isArray(items) ? items : [])
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+
+      const study = clean(item.study || item.name);
+      const date = clean(item.date);
+      const explicitResult = clean(
+        item.result || item.actualResult || item.finding
+      );
+      const legacyInterpretation = clean(item.interpretation);
+
+      // Backward compatibility for already-generated cases that used the old
+      // schema, where an actual result was sometimes placed in interpretation.
+      // Be deliberately conservative: generic statements such as "normal EF
+      // would be reassuring" or "normal PFTs suggest..." are not results.
+      const legacyCandidate = legacyInterpretation
+        .split(
+          /;\s*(?=(?:if|a|an|this|which|normal|abnormal|elevated|decreased|future|repeat)\b)/i
+        )[0]
+        .trim();
+
+      const legacyLooksDocumented =
+        /(?:\d|deauville|showed|demonstrated|revealed|found|confirm(?:ed|s)|measured|resulted|complete\s+(?:metabolic\s+)?response|no\s+(?:uptake|evidence|new\s+site|acute)|negative|positive|undetectable|remission)/i.test(
+          legacyCandidate
+        ) &&
+        !/\b(?:would|could|should|if)\b/i.test(
+          legacyCandidate
+        );
+
+      const legacyResult =
+        !explicitResult && legacyLooksDocumented
+          ? legacyCandidate
+          : "";
+
+      const result = explicitResult || legacyResult;
+
+      if (!study || !looksLikeActualResult(result)) {
+        return null;
+      }
+
+      const whatItDoes = clean(
+        item.whatItDoes ||
+          item.whatItMeasures ||
+          item.measures
+      );
+      const whyOrdered = clean(
+        item.whyOrdered || item.purpose
+      );
+      const clinicalMeaning = clean(
+        item.clinicalMeaning ||
+          (explicitResult ? item.interpretation : "")
+      );
+
+      const explanation = [
+        whatItDoes,
+        whyOrdered
+          ? `Why it was ordered here: ${whyOrdered}`
+          : "",
+        clinicalMeaning
+          ? `Clinical meaning: ${clinicalMeaning}`
+          : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+
+      return {
+        study,
+        date,
+        result,
+        whatItDoes,
+        whyOrdered,
+        clinicalMeaning,
+        explanation,
+      };
+    })
+    .filter(Boolean);
+};
+
 // ===== Prenote section extractor =====
 // Handles:
 //   1. Normal multiline prenotes
@@ -3497,7 +3635,7 @@ For each diagnosis in the chart:
 - keyLearningPoints should teach diagnostic-reasoning concepts: how to recognize this pattern, what distinguishes it from lookalikes, what would push you toward a different diagnosis
 - focusedHistoryQuestions should be diagnostic-focused: questions that would confirm or refute the diagnosis
 - physicalExam should focus on maneuvers that discriminate this diagnosis from alternatives
-- keyLabsAndImaging should emphasize what each test tells you diagnostically (sensitivity, specificity, when to order)
+- keyLabsAndImaging must contain only completed, chart-documented tests with this patient's actual results. Use the explanation fields to teach what each test tells you diagnostically; never add a future or hypothetical test to this results list.
 - treatmentApproach: keep brief — this lens is about the diagnostic story, not the treatment story
 - clinicalPearl: frame around a diagnostic insight ("The thing to remember about diagnosing X is...")`,
 
@@ -3511,7 +3649,7 @@ For each diagnosis in the chart:
 - keyLearningPoints should teach workup concepts: why order this test now vs. later, what to do with abnormal results, when initial testing warrants escalation
 - focusedHistoryQuestions should focus on history elements that inform test selection or interpretation
 - physicalExam should focus on findings that would change test ordering
-- keyLabsAndImaging is the STAR of this lens: explain each test's role in this diagnosis specifically — why it was ordered, what a positive/negative result means, how it changes the plan, what to order next based on the result
+- keyLabsAndImaging is the STAR of this lens, but it is still a PATIENT RESULTS list: include only completed chart-documented tests with actual results. Explain why each was ordered and what its result means. Put future testing recommendations or what to order next in keyLearningPoints or treatmentApproach.additional, never in keyLabsAndImaging.
 - treatmentApproach: emphasize the connection between workup findings and treatment choice
 - clinicalPearl: frame around a workup insight ("The key thing about working up X is...")`,
 
@@ -3525,7 +3663,7 @@ For each diagnosis in the chart:
 - keyLearningPoints should teach management concepts: guideline-recommended first-line therapy, why THIS patient got the treatment they got (consider comorbidities, contraindications, preferences), when to escalate, when to switch, side effects to monitor
 - focusedHistoryQuestions should focus on treatment tolerance, adherence, side effects
 - physicalExam should focus on findings that would change management (BP for HTN meds, tremor for thyroid meds, etc.)
-- keyLabsAndImaging should emphasize monitoring labs — what to check on treatment and why
+- keyLabsAndImaging should show only monitoring labs or studies that were actually completed and have a chart-documented result. Explain what was measured and why it mattered; do not list merely recommended monitoring.
 - treatmentApproach is the STAR of this lens: detailed first-line with dosing, real citation, and clear explanation of WHY this fits this patient. Additional considerations should include monitoring plan, common adverse effects, patient-specific tradeoffs
 - clinicalPearl: frame around a management insight ("The nuance in managing X is...")`,
 
@@ -3642,6 +3780,18 @@ ${isPreVisit ? `- BAD (checklist framing — belongs elsewhere in the doc, NOT i
 - BAD: "The patient should be counseled on adherence (per OpenEvidence)."
 - GOOD: "System-level barriers like a name mismatch on refill records — exactly what happened to our patient — are increasingly recognized as a driver of apparent 'non-adherence.' Asking 'have you been able to get your medications?' rather than 'are you taking them?' surfaces these barriers (VA/DoD Clinical Practice Guidelines 2022)."`}
 
+PATIENT RESULTS RULES — MANDATORY:
+- keyLabsAndImaging is a PATIENT RESULTS section, not a recommended-workup list.
+- Include an item only when the note explicitly documents that the lab, imaging study, or procedure was completed AND gives this patient's actual result.
+- The result field is required for every item. If a test is ordered, pending, recommended, due, planned, or has no result in the note, omit it.
+- Never substitute a surveillance schedule, screening recommendation, reference range, expected result, or conditional statement such as 'if normal...' for the patient's result.
+- Put the actual result in result. Put what the test measures in whatItDoes. Put the patient-specific reason it was ordered in whyOrdered. Put brief interpretation in clinicalMeaning.
+- Future testing recommendations belong in keyLearningPoints or treatmentApproach.additional, not keyLabsAndImaging.
+
+MEDICATION / TEST SEPARATION RULES — MANDATORY:
+- treatmentApproach.firstLine may contain medications or therapeutic interventions, but NEVER diagnostic tests, imaging, laboratory monitoring, screening, or surveillance schedules.
+- PET/CT, CT, MRI, echocardiography, pulmonary function testing, TSH, CBC, and similar studies are not medications or treatments.
+
 Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES: (1) Use straight quotes " and ' — NEVER smart/curly quotes. (2) When you need an apostrophe or quote inside a string value, use single quote ' — never backslash-escape (\\"). Example: "vignette": "The patient's mother says 'take a look'" — NOT "vignette": "The patient\\'s mother says \\"take a look\\"". (3) Never include line breaks inside string values.
 
 {
@@ -3660,8 +3810,8 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 "shelfQuestions": [{"specialty": "one-word or short specialty tag for this question — e.g., 'Pathophysiology', 'Psychiatry', 'Nephrology', 'Gastroenterology', 'Hepatology', 'Preventive Medicine', 'Veterans Health Policy', 'Clinical Reasoning' — pick what best matches the concept being tested, not the patient's diagnosis", "vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
-  "keyLabsAndImaging": [{"study": "name", "purpose": "${isPreVisit ? "why you might order it — or, if the chart shows it's already been done, what to look for in the result" : "why I ordered/would order it for OUR patient"}", "interpretation": "${isPreVisit ? "what the actual (or expected) result means clinically" : "what her actual result (or what a hypothetical result) would mean in her clinical context"}", "role": "${isPreVisit ? "how the result should change your plan" : "how it changes management for HER"}"}],
-"treatmentApproach": {"firstLine": [{"treatment": "medication or intervention NAME ONLY — do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', 'Consider'. Just the drug/intervention name (e.g., 'Hydrocodone/acetaminophen', 'Intra-articular corticosteroid injection', 'Neuromuscular physiotherapy'). The rendering context makes the action clear.", "dosing": "dose/route/frequency", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations to bring up in the visit" : "patient-specific considerations, not generic bullet points"}"]},
+  "keyLabsAndImaging": [{"study": "completed lab, imaging study, or procedure name", "date": "date performed if explicitly documented, otherwise empty string", "result": "this patient's actual chart-documented result — REQUIRED; omit the entire item if no result is documented", "whatItDoes": "plain-language explanation of what the test measures or detects", "whyOrdered": "why this test was ordered for this patient in this clinical scenario", "clinicalMeaning": "brief interpretation of what this patient's result means now"}],
+"treatmentApproach": {"firstLine": [{"treatment": "medication or THERAPEUTIC intervention NAME ONLY — never a diagnostic test, lab, imaging study, screening test, surveillance schedule, or monitoring study. Do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', or 'Consider'.", "dosing": "dose/route/frequency or therapeutic schedule", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations, including future monitoring recommendations that are not completed results" : "patient-specific considerations, including future monitoring recommendations that are not completed results"}"]},
   "suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
   "dontMiss": "one-line warning of the single most important don't-miss item, iatrogenic risk, or prescribing pitfall specific to THIS problem in THIS patient. Example for a patient asking to share their topical antibiotic with family: 'He wants to use topical erythromycin on family members. This is a prescription medication — you cannot prescribe for undiagnosed family members. Offer to evaluate them separately.' Leave empty string if no specific warning applies.",
   "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
@@ -3671,7 +3821,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}"
 }
 
-ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (may be empty string if no specific warning).
+ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (may be empty string if no specific warning).
 
 ═══════════════════════════════════════════════════════════════
 FINAL REMINDER — REQUIRED FIELDS CHECK
@@ -3687,7 +3837,7 @@ If these fields are absent from your JSON output, the response is invalid.
 
 The illnessScript section is the anchor for the student's growing library of pattern recognition — this is the CU Trek curriculum's explicit expectation (MEPO Patient Care #8: "organize knowledge of clinical and basic medical science using illness scripts"). Even if this is a case with an obvious diagnosis, the illness script section formalizes the pattern so the student can retrieve it faster next time. Do NOT skip this section. Do NOT make it generic textbook material — always anchor each element to what our specific patient does or does not show.
 
-Additionally include ONLY these focus-driven optional subsections based on what the attending selected: ${includedSections || "(none — core sections only)"}. Map focus keys to subsections as follows: history → focusedHistoryQuestions, physicalExam → physicalExam, workup → keyLabsAndImaging, management → treatmentApproach, patientContext → patientContextConsiderations, communication → communicationTeaching. If a focus key isn't in the selected list above, OMIT that subsection entirely (return null or empty).
+Additionally include ONLY these focus-driven optional subsections based on what the attending selected: ${includedSections || "(none — core sections only)"}. Map focus keys to subsections as follows: history → focusedHistoryQuestions, physicalExam → physicalExam, management → treatmentApproach, patientContext → patientContextConsiderations, communication → communicationTeaching. keyLabsAndImaging is always returned because it is the patient's factual results list; when workup is selected, make its whyOrdered and clinicalMeaning explanations more detailed. If another optional focus key isn't selected, omit its subsection entirely (return null or empty).
 
 Provide substantive teaching content — 2-3 sentences per learning point, thorough differential reasoning tied to case features, complete treatment rationale, and detailed shelf question explanations.
 
@@ -3716,6 +3866,56 @@ ${isTangential
         16000
       );
         const parsed = extractJson(response);
+
+        // Keep the patient-results section factual. The prompt requires an
+        // actual chart result, and this client-side pass prevents recommended
+        // or hypothetical tests from leaking into the rendered document.
+        parsed.keyLabsAndImaging = normalizeTeachingResults(
+          parsed.keyLabsAndImaging
+        );
+
+        // Diagnostic and surveillance studies are not treatments. Preserve
+        // them as future-management considerations instead of allowing them to
+        // appear in treatment/medication output.
+        if (
+          Array.isArray(
+            parsed.treatmentApproach?.firstLine
+          )
+        ) {
+          const monitoringItems =
+            parsed.treatmentApproach.firstLine.filter(
+              (item) =>
+                isDiagnosticOrMonitoringItem(
+                  item?.treatment
+                )
+            );
+
+          parsed.treatmentApproach.firstLine =
+            parsed.treatmentApproach.firstLine.filter(
+              (item) =>
+                !isDiagnosticOrMonitoringItem(
+                  item?.treatment
+                )
+            );
+
+          if (monitoringItems.length > 0) {
+            const existingAdditional = Array.isArray(
+              parsed.treatmentApproach.additional
+            )
+              ? parsed.treatmentApproach.additional
+              : [];
+
+            parsed.treatmentApproach.additional = [
+              ...existingAdditional,
+              ...monitoringItems.map((item) =>
+                [item?.treatment, item?.dosing]
+                  .filter(Boolean)
+                  .join(" — ")
+              ),
+            ];
+          }
+        }
+
         console.log(`[teachingCase] "${problem}" citations:`, parsed.keyLearningPoints?.map(lp => lp.citation).filter(Boolean));
         // Always inject the known problem name and kind — never trust the AI to echo them correctly
         parsed.problem = problem;
@@ -8773,9 +8973,14 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
                             )}
                             {tc.data.keyLabsAndImaging?.length > 0 && (
                               <div>
-                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Labs & Imaging ({tc.data.keyLabsAndImaging.length})</div>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Documented Results ({tc.data.keyLabsAndImaging.length})</div>
                                 <ul className="mt-0.5 ml-3 list-disc text-slate-600">
-                                  {tc.data.keyLabsAndImaging.map((lab, i) => <li key={i}>{lab.study}</li>)}
+                                  {tc.data.keyLabsAndImaging.map((lab, i) => (
+                                    <li key={i}>
+                                      <b>{lab.study}</b>
+                                      {lab.result ? ` — ${lab.result}` : ""}
+                                    </li>
+                                  ))}
                                 </ul>
                               </div>
                             )}
@@ -9886,20 +10091,15 @@ const buildInRoomHtml = (doc, session) => {
       html += `<p>${esc(chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition)}</p>`;
     }
 
-    // Medications subsection
-    const firstLine = Array.isArray(c.treatmentApproach?.firstLine) ? c.treatmentApproach.firstLine : [];
-    if (chartBlock?.currentMeds || chartBlock?.pastMeds || firstLine.length > 0) {
+    // Medications subsection — chart-documented medications only.
+    // Do not fall back to treatmentApproach.firstLine here: that field may
+    // contain therapeutic interventions or monitoring recommendations, which
+    // previously caused PET/CT, echocardiography, PFTs, and TSH testing to be
+    // mislabeled as medications.
+    if (chartBlock?.currentMeds || chartBlock?.pastMeds) {
       html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-pills"></i> Medications</div>`;
       if (chartBlock?.currentMeds) html += `<p><b>Current:</b> ${esc(chartBlock.currentMeds)}</p>`;
       if (chartBlock?.pastMeds) html += `<p><b>Past:</b> ${esc(chartBlock.pastMeds)}</p>`;
-      if (!chartBlock?.currentMeds && firstLine.length > 0) {
-        html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
-        firstLine.forEach(t => {
-          const treatment = stripTreatmentVerb(t?.treatment || "");
-          html += `<li><b>${esc(treatment)}</b>${t?.dosing ? ` — ${esc(t.dosing)}` : ""}</li>`;
-        });
-        html += `</ul>`;
-      }
       html += `</div>`;
     }
 
@@ -9911,23 +10111,36 @@ const buildInRoomHtml = (doc, session) => {
       html += `</div>`;
     }
 
-    // Labs / Studies (from teaching case)
-    const keyLabsAndImaging = Array.isArray(c.keyLabsAndImaging) ? c.keyLabsAndImaging : [];
-    if (keyLabsAndImaging.length > 0) {
-      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-flask"></i> Labs &amp; Studies</div>`;
+    // Completed patient results only. The bold/black line shows WHAT
+    // happened; the smaller gray line teaches what the test does and why it
+    // was ordered in this patient's scenario.
+    const patientResults = normalizeTeachingResults(
+      c.keyLabsAndImaging
+    );
+
+    if (patientResults.length > 0) {
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-flask"></i> Chart Results: Labs, Imaging &amp; Procedures</div>`;
       html += `<ul style="padding-left:1.25rem;margin-top:4px;">`;
-      keyLabsAndImaging.forEach(lab => {
-        if (!lab || typeof lab !== "object") return;
-        html += `<li><b>${esc(lab.study || "")}</b>${lab.purpose ? ` — ${esc(lab.purpose)}` : ""}`;
-        if (lab.interpretation) html += `<div style="font-size:.85em;color:#6b7280;margin-top:1px;">${esc(lab.interpretation)}</div>`;
+
+      patientResults.forEach((item) => {
+        const dateLabel = item.date
+          ? ` (${esc(item.date)})`
+          : "";
+
+        html += `<li><b>${esc(item.study)}${dateLabel}</b> — ${esc(item.result)}`;
+
+        if (item.explanation) {
+          html += `<div style="font-size:.85em;color:#6b7280;margin-top:2px;line-height:1.4;">${esc(item.explanation)}</div>`;
+        }
+
         html += `</li>`;
       });
-      html += `</ul></div>`;
-    }
 
-    // Imaging / Procedures
-    if (chartBlock?.imaging) {
-      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-x-ray"></i> Imaging / Procedures</div><p>${esc(chartBlock.imaging)}</p></div>`;
+      html += `</ul></div>`;
+    } else if (chartBlock?.imaging) {
+      // Deterministic fallback: preserve chart-documented imaging text when a
+      // teaching call fails, but do not mix it into the medication section.
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-x-ray"></i> Chart Imaging / Procedures</div><p>${esc(chartBlock.imaging)}</p></div>`;
     }
 
     // Care Team
@@ -12810,6 +13023,9 @@ function DocumentContent({ doc, phase, session }) {
         {/* Teaching Cases */}
         {enabledCases.map((tc, idx) => {
           const c = tc.data;
+          const patientResults = normalizeTeachingResults(
+            c.keyLabsAndImaging
+          );
           return (
             <section key={idx} className="doc-case-wrap">
               <div className="doc-case-banner">
@@ -12976,30 +13192,37 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              {c.keyLabsAndImaging?.length > 0 && (
+              {patientResults.length > 0 && (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Key Labs & Imaging</div>
+                  <div className="doc-subsection-label">Chart Results: Labs, Imaging & Procedures</div>
                   <div className="doc-table-scroll">
-                  <table className="doc-table" style={{ fontSize: "0.82rem" }}>
-                    <thead>
-                      <tr>
-                        <th>Study</th>
-                        <th>Purpose</th>
-                        <th>Interpretation</th>
-                        <th>Role</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {c.keyLabsAndImaging.map((lab, i) => (
-                        <tr key={i}>
-                          <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{lab.study}</td>
-                          <td>{lab.purpose}</td>
-                          <td>{lab.interpretation}</td>
-                          <td>{lab.role}</td>
+                    <table className="doc-table" style={{ fontSize: "0.82rem" }}>
+                      <thead>
+                        <tr>
+                          <th style={{ width: "24%" }}>Study</th>
+                          <th style={{ width: "32%" }}>Patient Result</th>
+                          <th>What It Does / Why It Was Ordered</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                      </thead>
+                      <tbody>
+                        {patientResults.map((item, i) => (
+                          <tr key={i}>
+                            <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>
+                              {item.study}
+                              {item.date && (
+                                <div style={{ fontSize: "0.78em", color: "var(--doc-warm-gray)", marginTop: "0.1rem" }}>
+                                  {item.date}
+                                </div>
+                              )}
+                            </td>
+                            <td>{item.result}</td>
+                            <td style={{ color: "var(--doc-warm-gray)", fontSize: "0.95em" }}>
+                              {item.explanation}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
               )}
