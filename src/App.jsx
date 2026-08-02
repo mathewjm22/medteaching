@@ -825,6 +825,154 @@ const getSection = (sections, ...candidates) => {
   return null;
 };
 
+// Return only the PAST MEDICAL HISTORY body for diagnosis extraction.
+// Prefer the dedicated prenote parser, then the local section parser, then a
+// conservative heading-based fallback. Nothing outside PMH is sent to the
+// diagnosis-extraction AI call.
+const extractPmhSectionForAi = (
+  rawText,
+  parsedPrenote = null
+) => {
+  if (!rawText || typeof rawText !== "string") return "";
+
+  const stopHeadingSource = [
+    "SOCIAL(?:\\s+HISTORY)?",
+    "FAMILY\\s+HISTORY",
+    "SURGICAL\\s+HISTORY",
+    "MILITARY\\s+HISTORY",
+    "MED(?:ICATION)?\\s+REC(?:ONCILIATION)?",
+    "CURRENT\\s+MEDICATIONS?",
+    "PREVENTIVE\\s+MEDICINE",
+    "DIAGNOSTICS",
+    "RECENT\\s+LABS?(?:\\s+SUMMARY)?",
+    "LAB(?:ORATORY)?\\s+(?:DATA|STUDIES|RESULTS|TRENDS)",
+    "VITAL\\s+SIGNS?(?:\\s+TRENDS?)?",
+    "ALLERGIES",
+    "FOLLOW[- ]?UP",
+    "UPDATES?\\s*\\/\\s*RECENT\\s+VISITS?",
+    "WHAT\\s+TO\\s+KNOW\\s+ABOUT",
+    "KEY\\s+DIAGNOSES",
+    "REVIEW\\s+OF\\s+SYSTEMS",
+    "ROS",
+  ].join("|");
+
+  // Sanitize a candidate PMH body even when an upstream parser accidentally
+  // kept a glued markdown boundary such as "...last PMH line ## SOCIAL".
+  const trimAtNextTopLevelSection = (candidate) => {
+    if (!candidate) return "";
+
+    let body = String(candidate)
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+      .replace(/\u00a0/g, " ")
+      .replace(
+        /[ \t]*(?:[-=_]{10,}|[─━═—–]{10,})[ \t]*/g,
+        "\n"
+      );
+
+    body = body.replace(
+      new RegExp(
+        `([^\\n])\\s+(?=#{1,6}\\s*(?:${stopHeadingSource})\\b)`,
+        "gi"
+      ),
+      "$1\n"
+    );
+
+    // A bare heading must occupy the whole line. This prevents diagnoses
+    // such as "Social anxiety disorder" from being mistaken for the SOCIAL
+    // section merely because they begin with the same word.
+    const bareLineStop = new RegExp(
+      `(?:^|\\n)[ \\t]*(?:${stopHeadingSource})[ \\t]*:?[ \\t]*(?=\\n|$)`,
+      "i"
+    ).exec(body);
+
+    // Markdown markers are strong enough to identify a boundary even when a
+    // heading is glued to the previous PMH line or has content after it.
+    const markdownLineStop = new RegExp(
+      `(?:^|\\n)[ \\t]*#{1,6}[ \\t]*(?:${stopHeadingSource})\\b`,
+      "i"
+    ).exec(body);
+
+    const inlineMarkdownStop = new RegExp(
+      `\\s+#{1,6}\\s*(?:${stopHeadingSource})\\b`,
+      "i"
+    ).exec(body);
+
+    const stopIndexes = [
+      bareLineStop?.index,
+      markdownLineStop?.index,
+      inlineMarkdownStop?.index,
+    ].filter((index) => Number.isInteger(index));
+
+    const endIndex = stopIndexes.length
+      ? Math.min(...stopIndexes)
+      : body.length;
+
+    return body.slice(0, endIndex).trim();
+  };
+
+  const parsedPmh =
+    parsedPrenote?.sections?.pastMedicalHistory;
+
+  if (
+    typeof parsedPmh === "string" &&
+    parsedPmh.trim()
+  ) {
+    return trimAtNextTopLevelSection(parsedPmh);
+  }
+
+  const locallyParsedSections =
+    extractPrenoteSections(rawText);
+
+  const localPmh = getSection(
+    locallyParsedSections,
+    "PAST MEDICAL HISTORY"
+  );
+
+  if (localPmh?.trim()) {
+    return trimAtNextTopLevelSection(localPmh);
+  }
+
+  // Last-resort fallback for unusual one-line or markdown-formatted prenotes.
+  // Divider runs are converted to newlines before looking for PMH and the next
+  // known top-level section (commonly "## SOCIAL").
+  let normalized = String(rawText)
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(
+      /[ \t]*(?:[-=_]{10,}|[─━═—–]{10,})[ \t]*/g,
+      "\n"
+    );
+
+  // A markdown heading may occasionally be glued to the end of the previous
+  // section. Put it on its own line so the stop-heading search can see it.
+  normalized = normalized.replace(
+    new RegExp(
+      `([^\\n])\\s+(?=#{1,6}\\s*(?:${stopHeadingSource})\\b)`,
+      "gi"
+    ),
+    "$1\n"
+  );
+
+  const startMatch = new RegExp(
+    "(?:^|\\n)[ \\t]*(?:#{1,6}[ \\t]*)?PAST[ \\t]+MEDICAL[ \\t]+HISTORY\\b",
+    "i"
+  ).exec(normalized);
+
+  if (!startMatch) return "";
+
+  const bodyStart =
+    startMatch.index + startMatch[0].length;
+
+  const remainder = normalized
+    .slice(bodyStart)
+    .replace(/^[ \t]*(?:[:\-–—]|[=_-]{3,})?[ \t]*/, "")
+    .replace(/^\n+/, "");
+
+  return trimAtNextTopLevelSection(remainder);
+};
+
 // Find a regex match without carrying global/sticky regex state between calls.
 const findTextRegexMatch = (
   text,
@@ -1919,9 +2067,21 @@ const [customTopics, setCustomTopics] = useState([]);
   const activeSources = Object.keys(sources).filter(k => sources[k]);
   const activeFocusList = Object.keys(focusAreas).filter(k => focusAreas[k]);
 
-  // ===== Worker API call =====
-  const callAi = async (systemPrompt, userPrompt, maxTokens = 2000, retryCount = 0) => {
-    const MAX_RETRIES = 3;
+    // ===== Worker API call =====
+  const callAi = async (
+    systemPrompt,
+    userPrompt,
+    maxTokens = 2000,
+    options = {},
+    retryCount = 0
+  ) => {
+    const maxRetries = Number.isInteger(options.maxRetries)
+      ? Math.max(0, options.maxRetries)
+      : 3;
+    const temperature = Number.isFinite(options.temperature)
+      ? options.temperature
+      : 0.5;
+
     const res = await fetch(WORKER_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1931,33 +2091,80 @@ const [customTopics, setCustomTopics] = useState([]);
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        temperature: 0.5,
+        temperature,
         max_tokens: maxTokens,
       }),
     });
+
     if (!res.ok) {
       const err = await res.text();
-      const isRateLimit = res.status === 429 || (res.status === 413 && err.includes("rate_limit_exceeded"));
-      if (isRateLimit && retryCount < MAX_RETRIES) {
-        const waitMatch = err.match(/try again in ([\d.]+)s/i);
-        const waitSec = waitMatch ? Math.ceil(parseFloat(waitMatch[1])) + 3 : (retryCount + 1) * 30;
-        console.warn(`[callAi] Rate limit. Waiting ${waitSec}s, retry ${retryCount + 1}/${MAX_RETRIES}`);
+      const isRateLimit =
+        res.status === 429 ||
+        (res.status === 413 &&
+          err.includes("rate_limit_exceeded"));
+
+      if (isRateLimit && retryCount < maxRetries) {
+        const waitMatch = err.match(
+          /try again in ([\d.]+)s/i
+        );
+
+        const retryAfterHeader = Number.parseFloat(
+          res.headers.get("Retry-After") || ""
+        );
+
+        const waitSec = Number.isFinite(retryAfterHeader)
+          ? Math.ceil(retryAfterHeader) + 1
+          : waitMatch
+            ? Math.ceil(parseFloat(waitMatch[1])) + 3
+            : (retryCount + 1) * 30;
+
+        console.warn(
+          `[callAi] Rate limit. Waiting ${waitSec}s, retry ${retryCount + 1}/${maxRetries}`
+        );
+
         setAiStatus(prev => ({
           ...prev,
           progress: `Pausing briefly to stay within AI service limits (${waitSec}s)...`,
         }));
-        await new Promise(r => setTimeout(r, waitSec * 1000));
-        return callAi(systemPrompt, userPrompt, maxTokens, retryCount + 1);
+
+        await new Promise(
+          r => setTimeout(r, waitSec * 1000)
+        );
+
+        return callAi(
+          systemPrompt,
+          userPrompt,
+          maxTokens,
+          options,
+          retryCount + 1
+        );
       }
-      throw new Error(`API error (${res.status}): ${err}`);
+
+      throw new Error(
+        `API error (${res.status}): ${err}`
+      );
     }
+
     const data = await res.json();
-    const content = data.choices?.[0]?.message?.content || "";
-    const finishReason = data.choices?.[0]?.finish_reason;
-    console.log("[callAi] Response length:", content.length, "Finish reason:", finishReason);
+    const content =
+      data.choices?.[0]?.message?.content || "";
+    const finishReason =
+      data.choices?.[0]?.finish_reason;
+
+    console.log(
+      "[callAi] Response length:",
+      content.length,
+      "Finish reason:",
+      finishReason
+    );
+
     if (finishReason === "length") {
-      console.error("[callAi] TRUNCATED - increase max_tokens. Preview:", content.slice(-300));
+      console.error(
+        "[callAi] TRUNCATED - increase max_tokens. Preview:",
+        content.slice(-300)
+      );
     }
+
     return content;
   };
 
@@ -2274,126 +2481,95 @@ For each problem, generate ONE focused query prioritizing recent guidelines, lan
   };
 
 
-// ===== Single AI call that returns everything the doc needs, structured =====
-  // Replaces the fragile regex-based section/vitals/labs/social parsers.
-  // Given the raw prenote text, returns a JSON blob with:
-  //   - problems: [{name, status, icdCode, currentMeds, pastMeds, labTrends, recentControl, imaging, careTeam, currentStatus, statusNotes}]
-  //   - vitals: {bp, hr, temp, spo2, wt, bmi, resp, date}
-  //   - labTables: [{panel, columns, rows}]  ← each row is {date, valuesByAnalyte}
-  //   - socialTiles: [{label, text}]
-  //   - familyHistory: string
-  //   - surgicalHistory: [string]
-  //   - militaryHistory: string
-  //   - allergies: string
-  //   - preventiveItems: [{name, status, isDue}]
-  //   - timeline: [{date, event}]
-  //   - currentMeds: [{name, dose, freq, indication, start, notes, specialty}]
-  //   - discontinuedMeds: [{name, dose, indication, stopped, reason}]
-  //   - historicalMeds: [{name, timeframe, note}]
-  const extractStructuredPrenote = async (rawText) => {
-    if (!rawText?.trim()) return null;
+// ===== PMH-only diagnosis extraction =====
+  // Step 2 only needs the problem list here. Sending the whole prenote plus
+  // the previous all-sections JSON schema consumed unnecessary input and
+  // reserved up to 12,000 output tokens before the main analysis call.
+  // This focused call receives only the PAST MEDICAL HISTORY body and returns
+  // only diagnosis name/status/code. Other prenote sections continue to use
+  // the app's deterministic parsers and the main analysis call.
+  const extractPmhProblemsWithAi = async (pmhText) => {
+    if (!pmhText?.trim()) return null;
     if (!aiEnabled) return null;
 
-    const sys = `You are extracting structured clinical data from a prenote for a medical education document. The prenote may be in any format — flattened into one line, using divider boxes, using markdown headers, using colon-separated fields. Handle all formats.
+    const sys = `You extract a diagnosis/problem list from ONLY the PAST MEDICAL HISTORY section of a prenote.
 
-Return ONLY valid JSON matching this exact schema (no markdown fences, no commentary). Use empty arrays [] or empty strings "" for missing data. Never omit a top-level key.
-
+Return ONLY valid JSON matching this exact schema. Do not use markdown fences or commentary:
 {
   "problems": [
     {
-      "name": "exact diagnosis name as it appears in PMH, e.g., 'Hypertension' or 'Nodular sclerosis Hodgkin lymphoma, intrathoracic lymph nodes'",
-      "status": "one of: active, stable, remission, resolved, controlled, registry, uncontrolled — normalize to lowercase from whatever the prenote says (e.g., 'Active/Changing' → 'active', 'stable/chronic' → 'stable', 'remission' → 'remission')",
-      "icdCode": "ICD-10 code if given in parens next to name, else empty string",
-      "currentMeds": "text from 'Medications - Current:' field, or empty",
-      "pastMeds": "text from 'Past:' field under this problem, or empty",
-      "labTrends": "text from 'Lab trends relevant:' field, or empty",
-      "recentControl": "text from 'Recent control/trends:' field, or empty",
-      "imaging": "text from 'Imaging/procedures:' field, or empty",
-      "careTeam": "text from 'Care team:' field, or empty",
-      "currentStatus": "text from 'Current status:' or opening paragraph of this problem block",
-      "statusNotes": "text from 'Status notes:' field, or empty",
-      "consult": "text from 'Consult:' field, or empty"
+      "name": "exact diagnosis name as written in the PMH problem heading, without a trailing status label or ICD code",
+      "status": "active|stable|remission|resolved|controlled|registry|uncontrolled|unknown",
+      "icdCode": "ICD-10 code if explicitly present, otherwise an empty string"
     }
-  ],
-  "vitals": {
-    "bp": "e.g., '121/80' or empty",
-    "hr": "e.g., '70' or empty",
-    "temp": "e.g., '97.8°F' or empty",
-    "spo2": "e.g., '96%' or empty",
-    "wt": "e.g., '199 lb' or empty",
-    "bmi": "e.g., '27.2' or empty",
-    "resp": "e.g., '16' or empty",
-    "date": "date of most recent vital signs, e.g., '07/2026' or empty"
-  },
-  "labTables": [
-    {
-      "panel": "panel name if identifiable (e.g., 'CBC', 'Metabolic Panel', 'Lipid Panel', 'Inflammatory Markers') or 'Labs'",
-      "columns": ["Test", "07/2026", "04/2026"],
-      "rows": [
-        {"Test": "ESR", "07/2026": "10", "04/2026": "6"},
-        {"Test": "hs-CRP", "07/2026": "0.6", "04/2026": "0.3"}
-      ]
-    }
-  ],
-  "socialTiles": [
-    {"label": "Living status", "text": "Alone"},
-    {"label": "Marital status", "text": "Never married"},
-    {"label": "Alcohol", "text": "Rarely drinks"},
-    {"label": "Tobacco", "text": "No current use"}
-  ],
-  "familyHistory": "one-string family history summary, or empty",
-  "surgicalHistory": ["one item per surgery, e.g., 'Appendectomy - 2010'"],
-  "militaryHistory": "one-string military history summary, or empty",
-  "allergies": "one-string allergy list, or 'NKDA' if no known allergies",
-  "preventiveItems": [
-    {"name": "Influenza vaccine", "status": "Due 08/2026", "isDue": true},
-    {"name": "Colonoscopy", "status": "Up to date (09/2021)", "isDue": false}
-  ],
-  "timeline": [
-    {"date": "07/09/26", "event": "PCMHI individual session with Dr. Bergman; PHQ-9 18, GAD-7 10"},
-    {"date": "06/29/26", "event": "Sleep disorders PA f/u for OSA; recommended MAD, CBT-I"}
-  ],
-  "currentMeds": [
-    {"name": "Bupropion XL", "dose": "300 mg + 150 mg (total 450 mg) daily", "freq": "daily", "indication": "depression", "start": "07/2026", "notes": "titrated up from 300 mg", "specialty": "Psychiatry"}
-  ],
-  "discontinuedMeds": [
-    {"name": "Hydroxychloroquine", "dose": "200 mg BID", "indication": "chronic fatigue/possible RA", "stopped": "05/2026", "reason": "Severe GI side effects"}
-  ],
-  "historicalMeds": [
-    {"name": "Ferrous sulfate", "timeframe": "04/2026 - 07/2026", "note": "Completed short-term iron replacement"}
   ]
 }
 
 RULES:
-1. LAB TABLES: Every lab table in the prenote goes into labTables. This includes tables in "Most recent labs" sections, DIAGNOSTICS sections, and anywhere pipe-delimited (|) data appears with dates as columns. Preserve original column headers. Include H/L flags in values (e.g., "82 L", "216 H").
-2. PROBLEMS: Extract EVERY problem in PAST MEDICAL HISTORY. Include problems in remission, stable chronic conditions, and resolved conditions.
-3. SOCIAL TILES: Split the SOCIAL section into individual tiles by label. Every "X: Y" pair becomes a tile.
-4. PREVENTIVE: Mark items as isDue=true if the status text says "due", "overdue", "not documented", or "declined". Mark as isDue=false if "up to date", "completed", specific date given, or "negative".
-5. TIMELINE: Extract dated events from UPDATES / RECENT VISITS. Format dates consistently (MM/DD/YY or MM/YYYY).
-6. MEDS: Split MED REC into current/discontinued/historical based on subsection headings.
-7. Handle both flattened single-line format AND multi-line format. Look for structural cues (COLLECTION headers, "Current status:", divider lines, ICD codes in parens, etc.).
-8. Do NOT include imaging as lab tables — imaging goes in the doc's diagnostics summary field, not labTables.`;
+1. Extract every top-level problem in this PMH section, preserving source order.
+2. Include active, stable, chronic, controlled, remission, registry, and resolved problems.
+3. Do not turn subfields such as Current status, Medications, Past, Lab trends, Imaging, Care team, Consult, or Status notes into separate problems.
+4. Preserve the diagnosis wording. Put a parenthetical status in "status", not in "name". Put an ICD code in "icdCode", not in "name".
+5. Do not infer or add diagnoses that are not explicitly listed in this section.
+6. If no problems are present, return {"problems": []}.`;
 
-    const user = `Extract structured data from this prenote:\n\n${rawText}`;
+    const user =
+      `PAST MEDICAL HISTORY section only:\n\n${pmhText}`;
 
     try {
-      const response = await callAi(sys, user, 12000);
+      // The response is a compact list, so 3,500 tokens leaves ample room even
+      // for unusually long problem lists without reserving 12,000 tokens.
+      const response = await callAi(
+        sys,
+        user,
+        3500,
+        {
+          temperature: 0.1,
+
+          // This call is optional because a deterministic PMH parser is ready
+          // as a fallback. Do not spend multiple rate-limit retries here; save
+          // the retry budget for the main teaching-analysis request.
+          maxRetries: 0,
+        }
+      );
+
       const parsed = extractJson(response);
-      console.log("[extractStructuredPrenote] extracted:", {
-        problems: parsed.problems?.length || 0,
-        labTables: parsed.labTables?.length || 0,
-        socialTiles: parsed.socialTiles?.length || 0,
-        preventiveItems: parsed.preventiveItems?.length || 0,
-        timeline: parsed.timeline?.length || 0,
-        currentMeds: parsed.currentMeds?.length || 0,
-        vitalsPresent: !!parsed.vitals?.bp || !!parsed.vitals?.hr,
-      });
-      return parsed;
+
+      const problems = Array.isArray(parsed?.problems)
+        ? parsed.problems
+            .filter(
+              (problem) => problem?.name?.trim()
+            )
+            .map((problem) => ({
+              name: String(problem.name).trim(),
+              status: String(
+                problem.status || "unknown"
+              )
+                .trim()
+                .toLowerCase(),
+              icdCode: String(
+                problem.icdCode || ""
+              ).trim(),
+            }))
+        : [];
+
+      console.log(
+        `[extractPmhProblemsWithAi] PMH input: ${pmhText.length} chars; problems: ${problems.length}`
+      );
+
+      return { problems };
     } catch (e) {
-      console.warn("[extractStructuredPrenote] failed:", e.message);
+      // analyzeNote falls back to the deterministic PMH parser when this
+      // focused AI call is unavailable or rate-limited.
+      console.warn(
+        "[extractPmhProblemsWithAi] failed; using deterministic PMH parser:",
+        e.message
+      );
+
       return null;
     }
   };
+
   // ===== Analyze note with AI =====
 const analyzeNote = async () => {
     if (!clinicalNote.trim()) return;
@@ -2422,38 +2598,129 @@ const analyzeNote = async () => {
       let deterministicProblemNames = [];
       let structuredData = null;
 
-      if (isPreVisit) {
-        // First: AI-driven structured extraction (handles any prenote format)
-        setAiStatus(prev => ({ ...prev, progress: "Extracting structured data from prenote..." }));
-        structuredData = await extractStructuredPrenote(clinicalNote);
-        window.__lastStructuredData = structuredData;
+            if (isPreVisit) {
+        // Parse locally first so the AI diagnosis call can receive only PMH.
+        deterministicPrenote =
+          parsePrenote(clinicalNote);
 
-        deterministicPrenote = parsePrenote(clinicalNote);
-        console.log("[DEBUG] Full normalized text length:", deterministicPrenote?.normalizedText?.length);
-console.log("[DEBUG] Sections found:", Object.keys(deterministicPrenote?.sections || {}));
-console.log("[DEBUG] PMH chars:", (deterministicPrenote?.sections?.pastMedicalHistory || "").length);
-console.log("[DEBUG] Search for 'PAST MEDICAL HISTORY' position:", deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY"));
-console.log("[DEBUG] Text right around PMH heading:", deterministicPrenote?.normalizedText?.slice(Math.max(0, (deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY") || 0) - 100), (deterministicPrenote?.normalizedText?.indexOf("PAST MEDICAL HISTORY") || 0) + 500));
-        console.log("[analyzeNote DIAG] diagnostics section length:", (deterministicPrenote.sections?.diagnostics || "").length, "tables found:", deterministicPrenote.diagnostics?.tables?.length || 0);
-        // Prefer AI-extracted problems (handles any format); fall back to
-        // deterministic regex parser if AI extraction failed
-        if (structuredData?.problems?.length > 0) {
-          deterministicProblemNames = structuredData.problems.map(p => {
-            const statusLabel = p.status ? ` (${p.status})` : "";
-            return `${p.name}${statusLabel}`.trim();
-          });
-          console.log(`[analyzeNote] Using AI-extracted problems: ${deterministicProblemNames.length}`);
-        } else {
-          deterministicProblemNames = (deterministicPrenote.pmhProblems || [])
-            .map((p) => p.rawHeader || p.name)
-            .filter(Boolean);
-          console.log(`[analyzeNote] Fallback to regex parser: ${deterministicProblemNames.length}`);
-        }
-          window.__lastParsedPrenote = deterministicPrenote;
-        console.log("[DEBUG] Raw pmhProblems:", deterministicPrenote.pmhProblems);
-        console.log("[DEBUG] Raw pmhProblems JSON:", JSON.stringify(deterministicPrenote.pmhProblems?.slice(0, 5), null, 2));
+        const pmhForDiagnosisExtraction =
+          extractPmhSectionForAi(
+            clinicalNote,
+            deterministicPrenote
+          );
+
         console.log(
-          `[analyzeNote] Deterministic PMH extraction found ${deterministicProblemNames.length} problems:`,
+          "[DEBUG] Full normalized text length:",
+          deterministicPrenote?.normalizedText?.length
+        );
+
+        console.log(
+          "[DEBUG] Sections found:",
+          Object.keys(
+            deterministicPrenote?.sections || {}
+          )
+        );
+
+        console.log(
+          "[DEBUG] PMH chars:",
+          pmhForDiagnosisExtraction.length
+        );
+
+        console.log(
+          "[analyzeNote DIAG] diagnostics section length:",
+          (
+            deterministicPrenote.sections
+              ?.diagnostics || ""
+          ).length,
+          "tables found:",
+          deterministicPrenote.diagnostics
+            ?.tables?.length || 0
+        );
+
+        if (pmhForDiagnosisExtraction) {
+          setAiStatus((prev) => ({
+            ...prev,
+            progress:
+              "Extracting diagnoses from Past Medical History only...",
+          }));
+
+          structuredData =
+            await extractPmhProblemsWithAi(
+              pmhForDiagnosisExtraction
+            );
+        } else {
+          console.warn(
+            "[analyzeNote] PAST MEDICAL HISTORY section was not found; using deterministic parser results."
+          );
+        }
+
+        // Keep this object for the generated document. Fields not present here
+        // already have deterministic fallbacks in buildInRoomHtml.
+        window.__lastStructuredData =
+          structuredData;
+
+        // Prefer the focused AI result; fall back to the deterministic parser
+        // if the AI call fails, is rate-limited, or returns no problems.
+        if (
+          structuredData?.problems?.length > 0
+        ) {
+          deterministicProblemNames =
+            structuredData.problems.map((p) => {
+              const normalizedStatus = String(
+                p.status || ""
+              )
+                .trim()
+                .toLowerCase();
+
+              const statusLabel =
+                normalizedStatus &&
+                normalizedStatus !== "unknown"
+                  ? ` (${normalizedStatus})`
+                  : "";
+
+              return `${p.name}${statusLabel}`.trim();
+            });
+
+          console.log(
+            `[analyzeNote] Using PMH-only AI problems: ${deterministicProblemNames.length}`
+          );
+        } else {
+          deterministicProblemNames = (
+            deterministicPrenote.pmhProblems ||
+            []
+          )
+            .map(
+              (p) => p.rawHeader || p.name
+            )
+            .filter(Boolean);
+
+          console.log(
+            `[analyzeNote] Using deterministic PMH parser: ${deterministicProblemNames.length}`
+          );
+        }
+
+        window.__lastParsedPrenote =
+          deterministicPrenote;
+
+        console.log(
+          "[DEBUG] Raw pmhProblems:",
+          deterministicPrenote.pmhProblems
+        );
+
+        console.log(
+          "[DEBUG] Raw pmhProblems JSON:",
+          JSON.stringify(
+            deterministicPrenote.pmhProblems?.slice(
+              0,
+              5
+            ),
+            null,
+            2
+          )
+        );
+
+        console.log(
+          `[analyzeNote] Final PMH problem list has ${deterministicProblemNames.length} problems:`,
           deterministicProblemNames
         );
       }
@@ -2591,7 +2858,33 @@ ${extractedForAnalysis}
 Student is in month ${phase.monthsIn} of LIC (${phase.name} phase).
 Focus on: ${phase.focus}`;
 
-      const response = await callAi(sys, user, 16000);
+            // Reserve output according to the number of PMH problems instead of
+      // always reserving 16,000 tokens. This is typically 4,500-8,000 tokens
+      // and materially reduces tokens-per-minute pressure.
+      const analysisMaxTokens = isPreVisit
+        ? Math.min(
+            8000,
+            Math.max(
+              4500,
+              3500 +
+                deterministicProblemNames.length *
+                  150
+            )
+          )
+        : 8000;
+
+      setAiStatus((prev) => ({
+        ...prev,
+        progress:
+          "Analyzing the relevant note sections...",
+      }));
+
+      const response = await callAi(
+        sys,
+        user,
+        analysisMaxTokens
+      );
+      
       const parsed = extractJson(response);
 
       // ─── POST-PROCESS: enforce the deterministic problem list ──────────
