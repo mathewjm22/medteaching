@@ -10446,15 +10446,46 @@ const buildInRoomHtml = (doc, session) => {
     return rows;
   };
 
-  // Utility: format allergies for compact header display
+  // Utility: format allergies for compact header display.
+  // Extracts just the drug names from a bulleted allergy list so they fit
+  // in a one-line badge without truncating mid-word.
   const formatAllergiesShort = (text) => {
     if (!text) return "NKDA";
     const lower = text.toLowerCase();
     if (/no known|nkda|none/i.test(lower)) return "NKDA";
-    // Extract just drug names
-    const match = text.match(/[Aa]llergies?:\s*(.+?)(?:\n|$)/);
-    if (match) return match[1].trim().slice(0, 80);
-    return text.slice(0, 80);
+
+    // Parse bulleted list format:
+    //   - Cyclobenzaprine (Flexeril): Reaction not specified
+    //   - Sertraline: Diarrhea
+    //   - Codeine: Rash, pruritus
+    // Extract just the drug name (part before the colon or paren).
+    const lines = text.split(/\r?\n/);
+    const drugs = [];
+    for (const rawLine of lines) {
+      const line = rawLine.trim().replace(/^[-*•]\s*/, "");
+      if (!line) continue;
+      // Skip a header line like "Allergies:"
+      if (/^allergies?:?\s*$/i.test(line)) continue;
+      // Extract drug name before first colon or opening paren
+      const match = line.match(/^([A-Za-z][A-Za-z0-9\s\-\/]{1,40}?)(?:\s*\(|:)/);
+      if (match) {
+        drugs.push(match[1].trim());
+      } else if (line.length < 40 && /^[A-Z]/.test(line)) {
+        // Short capitalized line with no separator — probably just a drug name
+        drugs.push(line);
+      }
+    }
+
+    if (drugs.length > 0) {
+      return drugs.join(", ");
+    }
+
+    // Fallback: strip prefix and clip at word boundary at 100 chars
+    const stripped = text.replace(/[Aa]llergies?:\s*/, "").trim();
+    if (stripped.length <= 100) return stripped;
+    const clipped = stripped.slice(0, 100);
+    const lastSpace = clipped.lastIndexOf(" ");
+    return (lastSpace > 60 ? clipped.slice(0, lastSpace) : clipped) + "…";
   };
 
   // ──────────────────────────────────────────────────────────────
@@ -10532,8 +10563,17 @@ const buildInRoomHtml = (doc, session) => {
   let headerHtml = `<div class="pt-header">`;
   headerHtml += `<div class="pt-name">${esc(primaryLabel)}`;
   if (na.oneLiner && na.oneLiner.trim()) {
-    // AI-generated 2-sentence assessment goes here as the subtitle
-    headerHtml += ` <span class="pt-assessment">${esc(na.oneLiner)}</span>`;
+    // Strip leading demographic phrase if AI redundantly repeats what's
+    // already in the patient descriptor (e.g., "50 y/o M veteran with...").
+    // We match: age + optional gender + optional identity + "with"/"presenting"/"here"
+    const cleaned = na.oneLiner
+      .replace(/^(\d{1,3}\s*y\/?o|\d{1,3}[- ]year[- ]old)[^,.]{0,40}?(?=with |presenting |here |who )/i, "")
+      .replace(/^[,.\s]+/, "")
+      .trim();
+    const displayLiner = cleaned.length > 20 ? cleaned : na.oneLiner;
+    // Capitalize first letter if we stripped a lowercase remainder
+    const finalLiner = displayLiner.charAt(0).toUpperCase() + displayLiner.slice(1);
+    headerHtml += ` <span class="pt-assessment">${esc(finalLiner)}</span>`;
   } else if (subtitle) {
     headerHtml += ` <span class="pt-demo">${esc(subtitle)}</span>`;
   }
@@ -11286,8 +11326,9 @@ const buildInRoomHtml = (doc, session) => {
         html += `</div>`;
       }
 
-      // Per-problem red flags from analysis
-      if (perProbRedFlags.length > 0) {
+      // Per-problem red flags from analysis — suppress if we already showed
+      // an expanded Don't Miss array, to avoid duplicate red warning boxes
+      if (perProbRedFlags.length > 0 && dontMissItems.length === 0) {
         html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul style="margin:0;padding-left:14px;">`;
         perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:#991b1b;line-height:1.4;">${esc(rf)}</li>`);
         html += `</ul></div>`;
