@@ -4146,14 +4146,15 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 "suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
 "dontMiss": ["array of 2-3 short don't-miss items specific to THIS problem in THIS patient — each is one sentence naming a diagnosis to rule out, an iatrogenic risk, a prescribing pitfall, or a red-flag pattern that would change management. Example items: 'Confirm no red-flag features (weight loss, night pain, neurologic deficit) before assuming benign cause.', 'Check for QTc prolongation before starting azithromycin in a patient on citalopram.', 'Do not prescribe topical medications for undiagnosed family members — offer separate evaluation.' Return empty array if no specific warnings apply. Prefer 2-3 items over one when multiple are relevant.",
 "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
-  "landmarkTrial": {"name": "the single most practice-defining trial for this problem (e.g., 'SPRINT', 'PARADIGM-HF', 'CAPRIE'). Leave empty string if no single trial is clearly practice-defining.", "oneLineSummary": "one sentence: what the trial showed and why it changed practice. Example: 'In high-risk patients, targeting SBP <120 vs <140 reduced cardiovascular events by 25% at the cost of more AKI and syncope.' Leave empty string if no clear trial."},
-  "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
+"landmarkTrial": {"name": "the single most practice-defining trial for this problem (e.g., 'SPRINT', 'PARADIGM-HF', 'CAPRIE'). Leave empty string if no single trial is clearly practice-defining.", "oneLineSummary": "one sentence: what the trial showed and why it changed practice. Example: 'In high-risk patients, targeting SBP <120 vs <140 reduced cardiovascular events by 25% at the cost of more AKI and syncope.' Leave empty string if no clear trial."},
+  "practiceChangingUpdate": {"summary": "ONLY populate this field if the last 2-3 years (roughly 2023-2026) have produced evidence that MATERIALLY CHANGED how this problem is managed — a new drug approval that shifted first-line therapy, a major trial that flipped practice, an updated guideline with a substantive change. One sentence naming the update and citing the source (e.g., '2024 ADA guidelines added tirzepatide as first-line for T2DM with obesity, based on SURPASS-1 through SURPASS-5.'). If no recent practice-changing evidence exists — or if all the important evidence is >3 years old — leave this as an empty string. Do NOT populate this to be helpful when nothing has really changed; the value of this field depends on it firing only when there is a real recent update.", "yearRange": "e.g., '2024' or '2023-2025' — the year(s) when the update landed"},
+    "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
   "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
   "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away ${isPreVisit ? "thinking about as they go into the visit" : "remembering from OUR encounter today"}",
   "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}"
 }
 
-ALWAYS include these core sections regardless of focus selection: caseSummary (one sentence), primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (array of 2-3 items, may be empty array), landmarkTrial (object with name and oneLineSummary; both may be empty strings if no clearly practice-defining trial).
+ALWAYS include these core sections regardless of focus selection: caseSummary (one sentence), primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (array of 2-3 items, may be empty array), landmarkTrial (object with name and oneLineSummary; both may be empty strings if no clearly practice-defining trial), practiceChangingUpdate (object with summary and yearRange; summary may be empty string if no recent practice-changing evidence — DO NOT populate to be helpful).
 
 ═══════════════════════════════════════════════════════════════
 FINAL REMINDER — REQUIRED FIELDS CHECK
@@ -4195,7 +4196,7 @@ ${isTangential
         const response = await callAi(
         sys,
         user,
-        17000
+        18000
       );
         const parsed = extractJson(response);
 
@@ -4277,6 +4278,7 @@ ${isTangential
     // aren't threads in this patient's story, so weaving them into cross-cutting themes
     // would be dishonest.
     let crossCuttingThemes = [];
+    let crossProblemInteractions = [];
     let questionsForReflection = [];
     let themesStatus = "skipped"; // "success" | "failed" | "skipped"
     let themesError = null;
@@ -4285,26 +4287,46 @@ ${isTangential
       await wait(3000);
       setAiStatus(prev => ({ ...prev, progress: "Generating cross-cutting themes" }));
       try {
-        const themesSys = `You are the attending debriefing a case with your medical student. Identify the CONCEPTUAL threads that connect this patient's multiple problems — not restating what the problems are, but revealing the underlying clinical reasoning threads that a student should see.
+        const themesSys = `You are the attending debriefing a case with your medical student. This patient has multiple active problems, and your job is to reveal how they connect — both conceptually (cross-cutting themes) and mechanistically (cross-problem interactions).
 
-Good themes are things like: "how untreated hypothyroidism creates a cascade of downstream symptoms that mimic separate diseases" or "when to prioritize adherence over titration in complex regimens" or "the challenge of sequencing referrals when multiple specialists could be involved."
+CROSS-CUTTING THEMES are conceptual/reasoning threads. Things like: "how untreated hypothyroidism creates a cascade of downstream symptoms that mimic separate diseases" or "when to prioritize adherence over titration in complex regimens." Bad themes: "interrelated physical conditions" or "hormonal dysregulation affecting musculoskeletal health" — those are categories, not insights.
 
-Bad themes are things like: "interrelated physical conditions" or "hormonal dysregulation affecting musculoskeletal health" — these are just categories, not insights.
+CROSS-PROBLEM INTERACTIONS are mechanistic clinical facts about how one problem changes the management of another. Each interaction names TWO OR MORE of the patient's problems and explains the specific clinical consequence. Format each as: which problems interact + what the interaction is + what to do about it in this patient.
+
+Good interaction examples:
+- "CKD stage 2 + dyslipidemia: statin selection is affected — atorvastatin is preferred over rosuvastatin as eGFR declines, and the statin's expected cardiovascular benefit is amplified because CKD is itself an ASCVD risk multiplier."
+- "OSA + hypertension: untreated OSA drives nocturnal sympathetic surges and is a common cause of resistant hypertension. Getting his CPAP adherence up may make antihypertensive intensification unnecessary."
+- "PTSD + alcohol use disorder + insomnia: this is a self-reinforcing loop — PTSD nightmares drive alcohol use for sleep, alcohol worsens sleep architecture, poor sleep worsens PTSD symptoms. Breaking any one link (doxepin for sleep, mental health re-engagement for PTSD, naltrexone for AUD) can shift the whole pattern."
+
+Bad interaction examples (too vague):
+- "Multiple comorbidities affect care" — not specific
+- "His problems are all cardiovascular in nature" — categorical, not mechanistic
 
 IMPORTANT: Only weave in the problems the patient ACTUALLY has. Do NOT include any tangential topics that were added separately for teaching purposes — those aren't threads in this patient's story.
 
 Return ONLY valid JSON (no markdown fences):
 {
   "crossCuttingThemes": ["2-3 specific clinical reasoning insights that thread through this patient's problems — written as full sentences from the attending's perspective"],
+  "crossProblemInteractions": [
+    {
+      "problems": ["Problem A", "Problem B"],
+      "interaction": "One paragraph explaining the mechanistic clinical interaction between these problems in THIS patient, ending with what to do about it. Reference specific chart facts (labs, medications, trajectories) where relevant."
+    }
+  ],
   "questionsForReflection": ["2-3 thought-provoking open-ended questions for the student to sit with after this encounter"]
-}`;
+}
+
+Provide 2-4 crossProblemInteractions when the patient has 3+ selected problems; 1-2 when the patient has exactly 2 selected problems. If no meaningful interaction exists between any pair of problems, return an empty array — do NOT invent weak connections just to fill the field.`;
+
         const problemSummaries = patientDxCases.map(tc =>
           `- ${tc.problem}: ${tc.primaryDiagnosis?.name || ""} — ${tc.clinicalPearl || tc.primaryDiagnosis?.briefDefinition || ""}`
         ).join("\n");
         const themesUser = `Patient chief concern: ${chiefConcern || "internal medicine encounter"}\n\nTeaching cases generated for this patient (patient-diagnosis cases only — tangential topics excluded):\n${problemSummaries}\n\nWhat are the deeper clinical reasoning threads that connect these problems in THIS patient?`;
-        const themesResp = await callAi(themesSys, themesUser, 1500);
+        // Themes prompt is larger and now returns an additional structured field
+        const themesResp = await callAi(themesSys, themesUser, 3000);
         const themesParsed = extractJson(themesResp);
         crossCuttingThemes = themesParsed.crossCuttingThemes || [];
+        crossProblemInteractions = themesParsed.crossProblemInteractions || [];
         questionsForReflection = themesParsed.questionsForReflection || [];
         themesStatus = "success";
       } catch (e) {
@@ -4314,7 +4336,7 @@ Return ONLY valid JSON (no markdown fences):
       }
     }
 
-    return { teachingCases, crossCuttingThemes, questionsForReflection, caseResults, themesStatus, themesError };
+    return { teachingCases, crossCuttingThemes, crossProblemInteractions, questionsForReflection, caseResults, themesStatus, themesError };
   };
 
   // ===== Med descriptions (pre-visit only) =====
@@ -5693,6 +5715,10 @@ Formatting rules:
         crossCuttingThemes: {
           enabled: (aiContent?.crossCuttingThemes || []).length > 0,
           content: aiContent?.crossCuttingThemes || [],
+        },
+        crossProblemInteractions: {
+          enabled: (aiContent?.crossProblemInteractions || []).length > 0,
+          content: aiContent?.crossProblemInteractions || [],
         },
         synthesizedEvidence: {
           enabled: !!synthesized,
@@ -9549,6 +9575,14 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
               <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Cross-Cutting Themes</div><span className="text-xs text-slate-500 italic">Not generated</span></div>
             )}
           </div>
+          {/* Cross-Problem Interactions */}
+          <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
+            {s.crossProblemInteractions?.content?.length > 0 ? (
+              <SectionHeader label="Cross-Problem Interactions" enabled={s.crossProblemInteractions.enabled} onToggle={() => togglePreviewSection("crossProblemInteractions")} count={s.crossProblemInteractions.content.length} />
+            ) : (
+              <div className="bg-slate-100 px-4 py-2 flex items-center justify-between"><div className="font-semibold text-sm text-slate-500">Cross-Problem Interactions</div><span className="text-xs text-slate-500 italic">Not generated (needs 2+ patient-diagnosis cases)</span></div>
+            )}
+          </div>
 
           {/* Synthesized Evidence */}
           <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
@@ -11343,6 +11377,16 @@ const buildInRoomHtml = (doc, session) => {
       if (c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim()) {
         html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-flask-vial"></i> Landmark Trial: ${esc(c.landmarkTrial.name)}</div><p style="font-size:8pt;color:#44403c;line-height:1.45;">${esc(c.landmarkTrial.oneLineSummary)}</p></div>`;
       }
+      // Practice-changing recent evidence (TEACH box, distinct amber-yellow tint)
+      if (c.practiceChangingUpdate?.summary?.trim()) {
+        const yearLabel = c.practiceChangingUpdate.yearRange?.trim()
+          ? ` · ${esc(c.practiceChangingUpdate.yearRange)}`
+          : "";
+        html += `<div class="tch" style="border-left-color:#ca8a04;background:#fefce8;">`;
+        html += `<div class="tch-label" style="color:#a16207;"><i class="fa-solid fa-arrow-trend-up"></i> Recent Update${yearLabel}</div>`;
+        html += `<p style="color:#713f12;">${esc(c.practiceChangingUpdate.summary)}</p>`;
+        html += `</div>`;
+      }
       // Clinical pearl (TEACH box)
       if (c.clinicalPearl) {
         html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(c.clinicalPearl)}</p></div>`;
@@ -13084,6 +13128,28 @@ const buildInRoomHtml = (doc, session) => {
     }
     complexTeachingHtml += `</div>`;
   }
+// ──────────────────────────────────────────────────────────────
+  // CROSS-PROBLEM INTERACTIONS (pre-visit)
+  // ──────────────────────────────────────────────────────────────
+  let crossProblemHtml = "";
+  const crossProblemInteractions = Array.isArray(s.crossProblemInteractions?.content)
+    ? s.crossProblemInteractions.content
+    : [];
+  if (s.crossProblemInteractions?.enabled && crossProblemInteractions.length > 0) {
+    crossProblemHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Cross-Problem Interactions</div><div class="sec-div-line"></div></div>`;
+    crossProblemHtml += `<p style="font-size:8pt;color:var(--fg-d);font-style:italic;margin-bottom:8px;">How this patient's problems change each other's workup or management.</p>`;
+    crossProblemInteractions.forEach((intx) => {
+      const problemLabels = Array.isArray(intx.problems) ? intx.problems.join(" ↔ ") : "";
+      const interactionText = String(intx.interaction || "").trim();
+      if (!interactionText) return;
+      crossProblemHtml += `<div class="tch" style="border-left-color:var(--accent);background:var(--panel);">`;
+      if (problemLabels) {
+        crossProblemHtml += `<div class="tch-label" style="color:var(--accent);">${esc(problemLabels)}</div>`;
+      }
+      crossProblemHtml += `<p>${esc(interactionText)}</p>`;
+      crossProblemHtml += `</div>`;
+    });
+  }
 
   // ──────────────────────────────────────────────────────────────
   // PRACTICE QUESTIONS
@@ -14141,6 +14207,7 @@ ${labsHtml}
 ${diagnosticsHtml}
 ${preventiveHtml}
 ${problemsHtml}
+${crossProblemHtml}
 ${timelineHtml}
 ${practiceHtml}
 <div class="doc-footer">Prenote for ${esc(primaryLabel)} — Generated for clinical education use — Session ${esc(sessionId)}</div>
@@ -15958,6 +16025,20 @@ function DocumentContent({ doc, phase, session }) {
                   <div style={{ fontSize: "0.9rem" }}>{c.landmarkTrial.oneLineSummary}</div>
                 </div>
               )}
+              {c.practiceChangingUpdate?.summary?.trim() && (
+                <div className="keep-together" style={{
+                  marginBottom: "1.25rem",
+                  padding: "0.85rem 1rem",
+                  background: "#fefce8",
+                  borderLeft: "2.5px solid #ca8a04",
+                  borderRadius: "0 4px 4px 0",
+                }}>
+                  <div className="doc-meta-label" style={{ color: "#a16207", marginBottom: "0.4rem" }}>
+                    Recent Update{c.practiceChangingUpdate.yearRange ? ` · ${c.practiceChangingUpdate.yearRange}` : ""}
+                  </div>
+                  <div style={{ fontSize: "0.9rem", color: "#713f12" }}>{c.practiceChangingUpdate.summary}</div>
+                </div>
+              )}
               {c.clinicalPearl && (
                 <div className="doc-callout-pearl">
                   <div className="label">Clinical Pearl</div>
@@ -16031,6 +16112,28 @@ function DocumentContent({ doc, phase, session }) {
               ))}
             </ol>
           </section>
+          {s.crossProblemInteractions?.enabled && s.crossProblemInteractions.content?.length > 0 && (
+          <section style={{ marginTop: "2.5rem" }} className="keep-together">
+            <h2 className="doc-h2">Cross-Problem Interactions</h2>
+            <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+              How this patient's problems change each other's workup or management.
+            </p>
+            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
+              {s.crossProblemInteractions.content.map((intx, i) => (
+                <div key={i} className="keep-together" style={{
+                  padding: "0.85rem 1rem",
+                  background: "var(--doc-paper)",
+                  borderLeft: "3px solid var(--doc-navy-mid)",
+                }}>
+                  <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>
+                    {(intx.problems || []).join(" ↔ ")}
+                  </div>
+                  <div style={{ fontSize: "0.9rem", lineHeight: 1.55 }}>{intx.interaction}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
         )}
 
         {/* Evidence Deep-Dive */}
