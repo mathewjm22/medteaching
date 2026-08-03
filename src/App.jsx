@@ -9921,27 +9921,27 @@ const buildInRoomHtml = (doc, session) => {
   const advanceDirectivesText = firstNonEmptyText(
     prenoteSections.advanceDirectives,
     fallbackSection("ADVANCE DIRECTIVES")
-  ));
+  );
 
   const healthMaintenanceText = firstNonEmptyText(
     prenoteSections.healthMaintenance,
     fallbackSection("HEALTH MAINTENANCE")
-  ));
+  );
 
   const specialtyCareText = firstNonEmptyText(
     prenoteSections.specialtyCare,
     fallbackSection("SPECIALTY CARE / CONSULTS", "SPECIALTY CARE", "CONSULTS")
-  ));
+  );
 
   const hospitalizationsText = firstNonEmptyText(
     prenoteSections.hospitalizations,
     fallbackSection("HOSPITALIZATIONS / ER VISITS", "HOSPITALIZATIONS")
-  ));
+  );
 
   const assessmentPlanText = firstNonEmptyText(
     prenoteSections.assessmentPlanSummary,
     fallbackSection("ASSESSMENT & PLAN SUMMARY")
-  ));
+  );
 
   const rawPreventiveText = firstNonEmptyText(
     prenoteSections.preventiveMedicine,
