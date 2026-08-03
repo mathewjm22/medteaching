@@ -16226,7 +16226,9 @@ function DocumentContent({ doc, phase, session }) {
               ))}
             </ol>
           </section>
-          {s.crossProblemInteractions?.enabled && s.crossProblemInteractions.content?.length > 0 && (
+        )}
+
+        {s.crossProblemInteractions?.enabled && s.crossProblemInteractions.content?.length > 0 && (
           <section style={{ marginTop: "2.5rem" }} className="keep-together">
             <h2 className="doc-h2">Cross-Problem Interactions</h2>
             <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
@@ -16247,7 +16249,6 @@ function DocumentContent({ doc, phase, session }) {
               ))}
             </div>
           </section>
-        )}
         )}
 
         {/* Evidence Deep-Dive */}
