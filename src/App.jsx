@@ -9918,6 +9918,31 @@ const buildInRoomHtml = (doc, session) => {
     fallbackSection("MILITARY HISTORY")
   );
 
+  const advanceDirectivesText = firstNonEmptyText(
+    prenoteSections.advanceDirectives,
+    fallbackSection("ADVANCE DIRECTIVES")
+  ));
+
+  const healthMaintenanceText = firstNonEmptyText(
+    prenoteSections.healthMaintenance,
+    fallbackSection("HEALTH MAINTENANCE")
+  ));
+
+  const specialtyCareText = firstNonEmptyText(
+    prenoteSections.specialtyCare,
+    fallbackSection("SPECIALTY CARE / CONSULTS", "SPECIALTY CARE", "CONSULTS")
+  ));
+
+  const hospitalizationsText = firstNonEmptyText(
+    prenoteSections.hospitalizations,
+    fallbackSection("HOSPITALIZATIONS / ER VISITS", "HOSPITALIZATIONS")
+  ));
+
+  const assessmentPlanText = firstNonEmptyText(
+    prenoteSections.assessmentPlanSummary,
+    fallbackSection("ASSESSMENT & PLAN SUMMARY")
+  ));
+
   const rawPreventiveText = firstNonEmptyText(
     prenoteSections.preventiveMedicine,
     fallbackSection("PREVENTIVE MEDICINE")
@@ -10806,125 +10831,100 @@ const buildInRoomHtml = (doc, session) => {
   });
   refGridHtml += `</ul></div></div>`;
 
-  // Right: Clinical Reference Data
+  // Right: Clinical Reference Data — organized by section, each with its own heading
   refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="ref-body">`;
 
-  // Helper: split reference text on inline separators and newlines.
-  const renderRefBullets = (text) => {
+  // Helper: render a subsection with a title + body (either bulleted or prose)
+  const renderRefSubsection = (icon, label, contentHtml) => {
+    if (!contentHtml) return "";
+    return `<div class="ref-subsection"><div class="ref-subsection-title"><i class="fa-solid ${icon}"></i> ${esc(label)}</div><div class="ref-subsection-body">${contentHtml}</div></div>`;
+  };
+
+  // Helper: convert a text block into a bulleted list, splitting on line breaks
+  const renderAsBulletList = (text) => {
     if (!text) return "";
-
-    let items = text.split(/\r?\n/).flatMap((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return [];
-
-      return trimmed
-        .split(/\s+[-*•]\s+/)
-        .map((item) => item.trim())
-        .filter(Boolean);
-    });
-
-    items = items
-      .map((item) =>
-        item.replace(/^[\-*•●○]+\s*/, "").trim()
-      )
+    const items = text.split(/\r?\n/)
+      .map(line => line.replace(/^[\s]*[-*•●○▪▫►◆·]\s*/, "").trim())
       .filter(Boolean);
-
     if (items.length === 0) return "";
-    if (items.length === 1) {
-      return `<div>${esc(items[0])}</div>`;
+    if (items.length === 1) return `<div>${esc(items[0])}</div>`;
+    return `<ul class="ref-bullet-list">${items.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`;
+  };
+
+  // Helper: render text preserving line structure but as prose (for multi-paragraph content)
+  const renderAsProse = (text) => {
+    if (!text) return "";
+    const paragraphs = text.split(/\n\n+/).map(p => p.trim()).filter(Boolean);
+    if (paragraphs.length === 0) return "";
+    return paragraphs.map(p => `<p style="margin:0 0 6px;">${esc(p)}</p>`).join("");
+  };
+
+  // Surgical History
+  const surgList = structured.surgicalHistory?.length > 0 ? structured.surgicalHistory : null;
+  let surgicalHtml = "";
+  if (surgList) {
+    surgicalHtml = surgList.length === 1
+      ? `<div>${esc(surgList[0])}</div>`
+      : `<ul class="ref-bullet-list">${surgList.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`;
+  } else if (surgicalText) {
+    surgicalHtml = renderAsBulletList(surgicalText);
+  }
+  refGridHtml += renderRefSubsection("fa-scalpel", "Surgical History", surgicalHtml);
+
+  // Family History
+  const familyHtml = structured.familyHistory
+    ? renderAsBulletList(structured.familyHistory)
+    : renderAsBulletList(familyText);
+  refGridHtml += renderRefSubsection("fa-people-roof", "Family History", familyHtml);
+
+  // Military History
+  const militaryHtml = structured.militaryHistory
+    ? renderAsBulletList(structured.militaryHistory)
+    : renderAsBulletList(militaryText);
+  refGridHtml += renderRefSubsection("fa-shield", "Military History", militaryHtml);
+
+  // Advance Directives
+  refGridHtml += renderRefSubsection("fa-file-signature", "Advance Directives", renderAsBulletList(advanceDirectivesText));
+
+  // Health Maintenance
+  refGridHtml += renderRefSubsection("fa-heart-pulse", "Health Maintenance", renderAsBulletList(healthMaintenanceText));
+
+  // Last Primary Care Visit
+  if (lastPcpDate) {
+    refGridHtml += renderRefSubsection("fa-user-doctor", "Last Primary Care Visit", `<div>${esc(lastPcpDate)}</div>`);
+  }
+
+  // Fallback message if nothing populated
+  const anyRefContent = surgicalHtml || familyHtml || militaryHtml || advanceDirectivesText || healthMaintenanceText || lastPcpDate;
+  if (!anyRefContent) {
+    refGridHtml += `<div style="font-size:8pt;color:var(--fg-d);font-style:italic;">No additional reference data documented.</div>`;
+  }
+
+  refGridHtml += `</div></div></div>`;
+
+  // NEW BOX: Specialty Care & Consults + Hospitalizations / ER Visits
+  // These get their own full-width box below the ref grid because they're
+  // often lengthy and warrant separate visual space.
+  if (specialtyCareText || hospitalizationsText || assessmentPlanText) {
+    refGridHtml += `<div class="specialty-hosp-grid" style="display:grid;grid-template-columns:${(specialtyCareText && hospitalizationsText) ? "1fr 1fr" : "1fr"};gap:10px;margin-bottom:10px;">`;
+
+    if (specialtyCareText) {
+      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-stethoscope"></i> Specialty Care &amp; Consults</div><div class="ref-body">${renderAsBulletList(specialtyCareText)}</div></div>`;
     }
 
-    return `<ul style="margin:0;padding-left:1rem;">${items
-      .map(
-        (item) =>
-          `<li style="margin-bottom:2px;">${esc(item)}</li>`
-      )
-      .join("")}</ul>`;
-  };
+    if (hospitalizationsText) {
+      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-hospital"></i> Hospitalizations &amp; ER Visits</div><div class="ref-body">${renderAsBulletList(hospitalizationsText)}</div></div>`;
+    }
 
-  const surgList =
-    structured.surgicalHistory?.length > 0
-      ? structured.surgicalHistory
-      : null;
+    refGridHtml += `</div>`;
 
-  const finalSurgical = surgList
-    ? surgList.length === 1
-      ? `<div>${esc(surgList[0])}</div>`
-      : `<ul style="margin:0;padding-left:1rem;">${surgList
-          .map(
-            (item) =>
-              `<li style="margin-bottom:2px;">${esc(item)}</li>`
-          )
-          .join("")}</ul>`
-    : surgicalText
-      ? renderRefBullets(surgicalText)
-      : "";
-
-  const finalFamily = structured.familyHistory
-    ? esc(structured.familyHistory)
-    : familyText
-      ? renderRefBullets(familyText)
-      : "";
-
-  const finalMilitary = structured.militaryHistory
-    ? esc(structured.militaryHistory)
-    : militaryText
-      ? renderRefBullets(militaryText)
-      : "";
-
-  const clinicalReferenceItems = [];
-
-  const addClinicalReference = (
-    icon,
-    label,
-    html
-  ) => {
-    if (!html) return;
-
-    clinicalReferenceItems.push(
-      `<div class="ref-item"><div class="ref-label"><i class="fa-solid ${icon}"></i> ${esc(label)}</div><div class="ref-text">${html}</div></div>`
-    );
-  };
-
-  addClinicalReference(
-    "fa-scalpel",
-    "Surgical History",
-    finalSurgical
-  );
-
-  addClinicalReference(
-    "fa-people-roof",
-    "Family History",
-    finalFamily
-  );
-
-  addClinicalReference(
-    "fa-shield",
-    "Military History",
-    finalMilitary
-  );
-
-  if (lastPcpDate) {
-    addClinicalReference(
-      "fa-user-doctor",
-      "Last Primary Care Visit",
-      `<div>${esc(lastPcpDate)}</div>`
-    );
+    // Assessment & Plan Summary gets its own full-width box if present
+    if (assessmentPlanText) {
+      refGridHtml += `<div class="ref-box" style="margin-bottom:10px;"><div class="ref-head"><i class="fa-solid fa-clipboard-list"></i> Assessment &amp; Plan Summary</div><div class="ref-body">${renderAsProse(assessmentPlanText)}</div></div>`;
+    }
   }
 
-  // WHAT TO KNOW ABOUT has its own full-width box above this grid. Never use
-  // it as fallback content here; that was the source of duplicated and badly
-  // misfiled patient narrative in Clinical Reference Data.
-  if (clinicalReferenceItems.length === 0) {
-    addClinicalReference(
-      "fa-circle-info",
-      "Source Note",
-      "<div>No additional family, surgical, military, or primary-care reference data were documented.</div>"
-    );
-  }
 
-  refGridHtml += clinicalReferenceItems.join("");
-  refGridHtml += `</div></div></div>`;
 
   // ──────────────────────────────────────────────────────────────
   // VITALS ROW
@@ -13419,6 +13419,42 @@ body.dark .narrative-inline-date {
 }
 body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
 .ref-item { margin-bottom: 8px; }
+.ref-item:last-child { margin-bottom: 0; }
+.ref-subsection {
+  margin-bottom: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-vl);
+}
+.ref-subsection:last-child {
+  margin-bottom: 0;
+  padding-bottom: 0;
+  border-bottom: none;
+}
+.ref-subsection-title {
+  font-size: 7.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--fg-d);
+  margin-bottom: 4px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.ref-subsection-body {
+  font-size: 9pt;
+  color: var(--fg-m);
+  line-height: 1.45;
+}
+.ref-bullet-list {
+  margin: 0;
+  padding-left: 16px;
+  list-style: disc;
+}
+.ref-bullet-list li {
+  margin-bottom: 2px;
+  line-height: 1.4;
+}
 .ref-item:last-child { margin-bottom: 0; }
 .ref-label {
   font-size: 7.5pt;

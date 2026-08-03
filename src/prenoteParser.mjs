@@ -99,6 +99,48 @@ const SECTION_DEFINITIONS = [
     match: (value) => value === "PREVENTIVE MEDICINE",
   },
   {
+    key: "advanceDirectives",
+    match: (value) =>
+      value === "ADVANCE DIRECTIVES" ||
+      value === "ADVANCE DIRECTIVE",
+  },
+  {
+    key: "healthMaintenance",
+    match: (value) =>
+      value === "HEALTH MAINTENANCE" ||
+      value === "HEALTH MAINTENANCE / SCREENING",
+  },
+  {
+    key: "specialtyCare",
+    match: (value) =>
+      value === "SPECIALTY CARE / CONSULTS" ||
+      value === "SPECIALTY CARE" ||
+      value === "CONSULTS" ||
+      value === "ACTIVE CONSULTS",
+  },
+  {
+    key: "hospitalizations",
+    match: (value) =>
+      value === "HOSPITALIZATIONS / ER VISITS" ||
+      value === "HOSPITALIZATIONS / ER VISITS (PAST YEAR)" ||
+      value === "HOSPITALIZATIONS" ||
+      value === "ER VISITS" ||
+      value === "HOSPITALIZATIONS AND ER VISITS",
+  },
+  {
+    key: "assessmentPlanSummary",
+    match: (value) =>
+      value === "ASSESSMENT & PLAN SUMMARY" ||
+      value === "ASSESSMENT AND PLAN SUMMARY" ||
+      value === "A&P SUMMARY",
+  },
+  {
+    key: "lastPrimaryCareVisit",
+    match: (value) =>
+      value === "LAST PRIMARY CARE VISIT" ||
+      value === "LAST PCP VISIT",
+  },
+  {
     key: "vitalSigns",
     match: (value) =>
       value === "VITAL SIGNS TRENDS" ||
