@@ -3098,7 +3098,11 @@ const analyzeNote = async () => {
           "[DEBUG] Raw pmhProblems:",
           deterministicPrenote.pmhProblems
         );
-
+// TEMP: log a sample of the PMH text so we can see what format headers use
+console.log(
+  "[DEBUG] PMH text first 2000 chars:",
+  deterministicPrenote.sections?.pastMedicalHistory?.slice(0, 2000)
+);
         console.log(
           "[DEBUG] Raw pmhProblems JSON:",
           JSON.stringify(
@@ -3280,8 +3284,15 @@ Focus on: ${phase.focus}`;
       // Even with strong prompt instructions, defense-in-depth: filter the AI's
       // activeProblems to ONLY those whose name matches a deterministic problem.
       // Backfill any missing ones from the deterministic list with minimal enrichment.
+      //
+      // BUT: only enforce this when the deterministic parser (parsedPrenote.pmhProblems)
+      // actually returned problems. If the parser returned nothing and we're falling
+      // back to the AI PMH-only extraction, there's no deterministic list to enforce
+      // against — trust the AI extraction directly.
+      const deterministicParserFoundProblems =
+        (deterministicPrenote?.pmhProblems || []).length > 0;
       let mergedActiveProblems;
-      if (isPreVisit && deterministicProblemNames.length > 0) {
+      if (isPreVisit && deterministicProblemNames.length > 0 && deterministicParserFoundProblems) {
         // Normalize a name for comparison
         const normalize = (s) =>
           String(s || "")
@@ -3352,10 +3363,24 @@ Focus on: ${phase.focus}`;
           );
         }
       } else {
-        // Post-visit or no deterministic problems: use AI extraction as-is
+        // Post-visit OR pre-visit-with-empty-deterministic-parser: use AI extraction as-is.
+        // The deterministic PMH parser can fail on unfamiliar prenote formats;
+        // when that happens we trust the AI's PMH-only extraction rather than
+        // dropping every problem.
         mergedActiveProblems = Array.isArray(parsed.activeProblems)
           ? parsed.activeProblems
           : [];
+        if (isPreVisit && deterministicProblemNames.length > 0 && mergedActiveProblems.length === 0) {
+          // AI didn't return activeProblems but the PMH-only extraction succeeded —
+          // build minimal problem entries from those names so the UI has something.
+          mergedActiveProblems = deterministicProblemNames.map(name => ({
+            problem: name,
+            category: "other",
+            status: "active",
+            shortSubtitle: "From prenote PMH",
+            source: "prenote",
+          }));
+        }
       }
 
       const analysisForState = {
