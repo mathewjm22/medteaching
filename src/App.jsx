@@ -3289,10 +3289,51 @@ Focus on: ${phase.focus}`;
       // actually returned problems. If the parser returned nothing and we're falling
       // back to the AI PMH-only extraction, there's no deterministic list to enforce
       // against — trust the AI extraction directly.
-      const deterministicParserFoundProblems =
-        (deterministicPrenote?.pmhProblems || []).length > 0;
+      // ─── POST-PROCESS: enforce the deterministic problem list ──────────
+      // Defense-in-depth: filter AI activeProblems to only those matching a
+      // deterministic PMH problem. Backfill missing ones from the deterministic
+      // list with minimal enrichment.
+      //
+      // BUT: only enforce this when the deterministic parser produced BOTH
+      // (a) at least one problem AND (b) problems that align with what the
+      // AI PMH-only extraction found. If the deterministic parser found garbage
+      // (e.g., "Current Medications" mistakenly matched as a PMH header) while
+      // the AI found real diagnoses, don't let one garbage entry cause every
+      // real problem to be dropped.
+      const deterministicRawProblems =
+        deterministicPrenote?.pmhProblems || [];
+      const aiPmhNames = deterministicProblemNames.map(n =>
+        n.toLowerCase().replace(/\s*\([^)]*\)\s*/g, "").trim()
+      );
+      const deterministicAlignsWithAi = deterministicRawProblems.some(dp => {
+        const detName = String(dp.rawHeader || dp.name || "")
+          .toLowerCase()
+          .replace(/\s*\([^)]*\)\s*/g, "")
+          .trim();
+        if (!detName) return false;
+        return aiPmhNames.some(aiName =>
+          aiName === detName ||
+          aiName.includes(detName) ||
+          detName.includes(aiName)
+        );
+      });
+      const shouldEnforceDeterministic =
+        isPreVisit &&
+        deterministicRawProblems.length > 0 &&
+        deterministicProblemNames.length > 0 &&
+        deterministicAlignsWithAi;
+
+      if (!deterministicAlignsWithAi && deterministicRawProblems.length > 0) {
+        console.warn(
+          `[analyzeNote] Deterministic PMH parser found ${deterministicRawProblems.length} problem(s) but none align with AI PMH extraction. Trusting AI extraction instead of enforcing a mismatched list. Deterministic:`,
+          deterministicRawProblems.map(dp => dp.rawHeader || dp.name),
+          "AI:",
+          deterministicProblemNames
+        );
+      }
+
       let mergedActiveProblems;
-      if (isPreVisit && deterministicProblemNames.length > 0 && deterministicParserFoundProblems) {
+      if (shouldEnforceDeterministic) {
         // Normalize a name for comparison
         const normalize = (s) =>
           String(s || "")
