@@ -4075,17 +4075,18 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
   "keyLabsAndImaging": [{"study": "completed lab, imaging study, or procedure name", "date": "date performed if explicitly documented, otherwise empty string", "result": "this patient's actual chart-documented result — REQUIRED; omit the entire item if no result is documented", "resultType": "lab or diagnostic", "whatItDoes": "plain-language explanation of what the test measures or detects", "valueExplanation": "plain-language definitions of every abbreviation, score, unit, and component shown in result; compare related components when useful", "whyOrdered": "why this test was ordered for this patient in this clinical scenario", "clinicalMeaning": "brief interpretation of what this patient's result means now"}],
-"treatmentApproach": {"firstLine": [{"treatment": "medication or THERAPEUTIC intervention NAME ONLY — never a diagnostic test, lab, imaging study, screening test, surveillance schedule, or monitoring study. Do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', or 'Consider'.", "dosing": "dose/route/frequency or therapeutic schedule", "teachingRationale": "what this treatment or consult actually does, what it targets, the expected benefit, and why that target fits this patient's scenario; for referrals or allied-health consults, explain the clinician's role and specific focus", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations, including future monitoring recommendations that are not completed results" : "patient-specific considerations, including future monitoring recommendations that are not completed results"}"]},
-  "suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
-  "dontMiss": "one-line warning of the single most important don't-miss item, iatrogenic risk, or prescribing pitfall specific to THIS problem in THIS patient. Example for a patient asking to share their topical antibiotic with family: 'He wants to use topical erythromycin on family members. This is a prescription medication — you cannot prescribe for undiagnosed family members. Offer to evaluate them separately.' Leave empty string if no specific warning applies.",
-  "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
+"treatmentApproach": {"firstLine": [{"treatment": "medication or THERAPEUTIC intervention NAME ONLY — never a diagnostic test, lab, imaging study, screening test, surveillance schedule, or monitoring study. Do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', or 'Consider'.", "dosing": "dose/route/frequency or therapeutic schedule", "teachingRationale": "what this treatment or consult actually does, what it targets, the expected benefit, and why that target fits this patient's scenario; for referrals or allied-health consults, explain the clinician's role and specific focus", "monitoring": "what to check and when. For medications: labs to follow (e.g., 'basic metabolic panel at 2 weeks after starting or dose change; then every 6-12 months'), symptoms to reassess, timing of follow-up. For consults or non-drug therapies: how to know it is working. Empty string if not applicable.", "adverseEffectsToWatch": "1-2 sentences on the clinically meaningful adverse effects for THIS patient — reference their comorbidities, other meds, or context where relevant. Do not enumerate every possible side effect; name the ones that would change management or require patient counseling. Empty string if not applicable (e.g., for a consult referral).", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations, including future monitoring recommendations that are not completed results" : "patient-specific considerations, including future monitoring recommendations that are not completed results"}"]},
+"suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
+"dontMiss": ["array of 2-3 short don't-miss items specific to THIS problem in THIS patient — each is one sentence naming a diagnosis to rule out, an iatrogenic risk, a prescribing pitfall, or a red-flag pattern that would change management. Example items: 'Confirm no red-flag features (weight loss, night pain, neurologic deficit) before assuming benign cause.', 'Check for QTc prolongation before starting azithromycin in a patient on citalopram.', 'Do not prescribe topical medications for undiagnosed family members — offer separate evaluation.' Return empty array if no specific warnings apply. Prefer 2-3 items over one when multiple are relevant.",
+"patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
+  "landmarkTrial": {"name": "the single most practice-defining trial for this problem (e.g., 'SPRINT', 'PARADIGM-HF', 'CAPRIE'). Leave empty string if no single trial is clearly practice-defining.", "oneLineSummary": "one sentence: what the trial showed and why it changed practice. Example: 'In high-risk patients, targeting SBP <120 vs <140 reduced cardiovascular events by 25% at the cost of more AKI and syncope.' Leave empty string if no clear trial."},
   "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
   "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
   "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away ${isPreVisit ? "thinking about as they go into the visit" : "remembering from OUR encounter today"}",
   "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}"
 }
 
-ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (may be empty string if no specific warning).
+ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (array of 2-3 items, may be empty array), landmarkTrial (object with name and oneLineSummary; both may be empty strings if no clearly practice-defining trial).
 
 ═══════════════════════════════════════════════════════════════
 FINAL REMINDER — REQUIRED FIELDS CHECK
@@ -4095,7 +4096,7 @@ Before returning your JSON, verify these NEW fields are present in your response
 
 ✓ suggestedQuestions — REQUIRED array of 3-5 concrete questions the student should ask the patient about THIS problem during the visit. Grounded in what the chart shows. Written as actual question strings, not screening tool names.
 
-✓ dontMiss — REQUIRED string (may be empty "" if no specific warning applies, but the KEY must exist in your JSON output). Contains the single most important don't-miss item, iatrogenic risk, or prescribing pitfall for THIS problem in THIS patient.
+✓ dontMiss — REQUIRED array (may be empty [] if no specific warning applies, but the KEY must exist in your JSON output). Contains 2-3 don't-miss items, iatrogenic risks, or prescribing pitfalls for THIS problem in THIS patient. Each item is one sentence.
 
 If these fields are absent from your JSON output, the response is invalid.
 
@@ -4127,7 +4128,7 @@ ${isTangential
         const response = await callAi(
         sys,
         user,
-        16000
+        17000
       );
         const parsed = extractJson(response);
 
@@ -11180,12 +11181,17 @@ const buildInRoomHtml = (doc, session) => {
           const treatmentName = stripTreatmentVerb(item?.treatment || "Treatment");
           const dosing = String(item?.dosing || "").trim();
           const rationale = getTreatmentTeachingRationale(item);
+          const monitoring = String(item?.monitoring || "").trim();
+          const adverseEffects = String(item?.adverseEffectsToWatch || "").trim();
           const evidence = String(item?.evidence || "").trim();
           html += `<li><b>${esc(treatmentName)}</b>${dosing ? ` — ${esc(dosing)}` : ""}`;
           if (rationale) html += `<div style="margin-top:2px;color:#44403c;"><b>Why / what it does:</b> ${esc(rationale)}</div>`;
+          if (monitoring) html += `<div style="margin-top:2px;color:#44403c;"><b>Monitoring:</b> ${esc(monitoring)}</div>`;
+          if (adverseEffects) html += `<div style="margin-top:2px;color:#44403c;"><b>Watch for:</b> ${esc(adverseEffects)}</div>`;
           if (evidence) html += `<div style="margin-top:2px;opacity:.75;"><em>${esc(evidence)}</em></div>`;
           html += `</li>`;
         });
+        
         html += `</ul>`;
         const additionalTreatmentNotes = Array.isArray(c.treatmentApproach?.additional)
           ? c.treatmentApproach.additional.filter(Boolean)
@@ -11196,9 +11202,22 @@ const buildInRoomHtml = (doc, session) => {
         html += `</div>`;
       }
 
-      // Don't miss (WARN box)
-      if (c.dontMiss?.trim && c.dontMiss.trim()) {
-        html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div><p>${esc(c.dontMiss)}</p></div>`;
+      // Don't miss (WARN box) — accept both new array format and legacy string
+      const dontMissItems = Array.isArray(c.dontMiss)
+        ? c.dontMiss.filter(item => item && String(item).trim())
+        : (typeof c.dontMiss === "string" && c.dontMiss.trim() ? [c.dontMiss.trim()] : []);
+      if (dontMissItems.length > 0) {
+        html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div>`;
+        if (dontMissItems.length === 1) {
+          html += `<p>${esc(dontMissItems[0])}</p>`;
+        } else {
+          html += `<ul style="margin:0;padding-left:16px;">`;
+          dontMissItems.forEach(item => {
+            html += `<li style="font-size:8pt;color:#991b1b;line-height:1.4;margin-bottom:3px;">${esc(item)}</li>`;
+          });
+          html += `</ul>`;
+        }
+        html += `</div>`;
       }
 
       // Per-problem red flags from analysis
@@ -11207,7 +11226,10 @@ const buildInRoomHtml = (doc, session) => {
         perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:#991b1b;line-height:1.4;">${esc(rf)}</li>`);
         html += `</ul></div>`;
       }
-
+// Landmark trial (TEACH box)
+      if (c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim()) {
+        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-flask-vial"></i> Landmark Trial: ${esc(c.landmarkTrial.name)}</div><p style="font-size:8pt;color:#44403c;line-height:1.45;">${esc(c.landmarkTrial.oneLineSummary)}</p></div>`;
+      }
       // Clinical pearl (TEACH box)
       if (c.clinicalPearl) {
         html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(c.clinicalPearl)}</p></div>`;
@@ -15639,25 +15661,50 @@ function DocumentContent({ doc, phase, session }) {
                         <table className="doc-table" style={{ fontSize: "0.78rem" }}>
                           <thead>
                             <tr>
-                              <th style={{ width: "20%" }}>Treatment / Consult</th>
-                              <th style={{ width: "18%" }}>Dose / Plan</th>
+                              <th style={{ width: "18%" }}>Treatment / Consult</th>
+                              <th style={{ width: "15%" }}>Dose / Plan</th>
                               <th>Why It Helps / What the Consult Does</th>
-                              <th style={{ width: "20%" }}>Evidence</th>
+                              <th style={{ width: "18%" }}>Evidence</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {c.treatmentApproach.firstLine.map((t, i) => (
-                              <tr key={i}>
-                                <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{stripTreatmentVerb(t.treatment)}</td>
-                                <td>{t.dosing}</td>
-                                <td style={{ color: "var(--doc-warm-gray)" }}>
-                                  {getTreatmentTeachingRationale(t) || "—"}
-                                </td>
-                                <td style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
-                              </tr>
-                            ))}
+                            {c.treatmentApproach.firstLine.map((t, i) => {
+                              const monitoring = String(t?.monitoring || "").trim();
+                              const adverseEffects = String(t?.adverseEffectsToWatch || "").trim();
+                              return (
+                                <React.Fragment key={i}>
+                                  <tr>
+                                    <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{stripTreatmentVerb(t.treatment)}</td>
+                                    <td>{t.dosing}</td>
+                                    <td style={{ color: "var(--doc-warm-gray)" }}>
+                                      {getTreatmentTeachingRationale(t) || "—"}
+                                    </td>
+                                    <td style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
+                                  </tr>
+                                  {(monitoring || adverseEffects) && (
+                                    <tr>
+                                      <td colSpan={4} style={{ paddingTop: "0", paddingLeft: "1.5rem", background: "var(--doc-paper)", fontSize: "0.85em" }}>
+                                        {monitoring && (
+                                          <div style={{ marginBottom: adverseEffects ? "0.3rem" : 0 }}>
+                                            <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Monitoring: </span>
+                                            <span style={{ color: "var(--doc-warm-gray)" }}>{monitoring}</span>
+                                          </div>
+                                        )}
+                                        {adverseEffects && (
+                                          <div>
+                                            <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Watch for: </span>
+                                            <span style={{ color: "var(--doc-warm-gray)" }}>{adverseEffects}</span>
+                                          </div>
+                                        )}
+                                      </td>
+                                    </tr>
+                                  )}
+                                </React.Fragment>
+                              );
+                            })}
                           </tbody>
                         </table>
+                        
                       </div>
                     </div>
                   )}
@@ -15715,7 +15762,12 @@ function DocumentContent({ doc, phase, session }) {
                   </ol>
                 </div>
               )}
-
+{c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim() && (
+                <div className="doc-callout-goal keep-together" style={{ marginBottom: "1.25rem" }}>
+                  <div className="doc-meta-label" style={{ marginBottom: "0.35rem" }}>Landmark Trial · {c.landmarkTrial.name}</div>
+                  <div style={{ fontSize: "0.9rem" }}>{c.landmarkTrial.oneLineSummary}</div>
+                </div>
+              )}
               {c.clinicalPearl && (
                 <div className="doc-callout-pearl">
                   <div className="label">Clinical Pearl</div>
