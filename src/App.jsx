@@ -9096,7 +9096,8 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
                 <div className="text-xs text-slate-400 italic">Read-only</div>
               </div>
             </div>
-            <div className="bg-white rounded-xl border border-slate-200 overflow-hidden shadow-sm" style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
+            <style>{POST_VISIT_DOCUMENT_STYLES}</style>
+            <div className="post-visit-preview-shell rounded-xl shadow-sm" style={{ maxHeight: "calc(100vh - 220px)", overflowY: "auto" }}>
               <div style={{ transform: `scale(${previewScale})`, transformOrigin: "top left", width: `${100 / previewScale}%`, pointerEvents: "none" }}>
                 <DocumentContent doc={{...previewData, isPreview: true}} phase={phase} session={session} />
               </div>
@@ -13686,6 +13687,488 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
   );
 }
 
+// Shared visual system for the post-visit teaching document. This intentionally
+// mirrors the redesigned prenote output: compact DM Sans typography, neutral
+// clinical panels, restrained status colors, a wide paper canvas, dark mode in
+// standalone exports, and print rules that collapse back to letter size.
+const POST_VISIT_DOCUMENT_STYLES = `
+.post-visit-document {
+  --bg: #ffffff;
+  --fg: #1a1f2e;
+  --fg-m: #374151;
+  --fg-d: #6b7280;
+  --border: #d1d5db;
+  --border-l: #e5e7eb;
+  --border-vl: #f3f4f6;
+  --panel: #f9fafb;
+  --panel-h: #f3f4f6;
+  --accent: #2563eb;
+  --page-bg: #c8cdd5;
+  --doc-navy: var(--fg);
+  --doc-navy-mid: var(--accent);
+  --doc-paper: var(--panel);
+  --doc-surface: var(--bg);
+  --doc-warm-gray: var(--fg-d);
+  --doc-terracotta: #b45309;
+  --doc-consensus: #15803d;
+  --doc-majority: #2563eb;
+  --doc-single: #6b7280;
+  --doc-conflict: #dc2626;
+  --doc-hairline: var(--border-l);
+  width: 100%;
+  max-width: 10in;
+  margin: 0 auto;
+  padding: 30px 36px 36px;
+  border-radius: 2px;
+  background: var(--bg);
+  color: var(--fg);
+  box-shadow: 0 2px 24px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 9pt;
+  line-height: 1.45;
+  color-scheme: light;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+body.post-visit-export.dark .post-visit-document {
+  --bg: #0f1419;
+  --fg: #e8edf3;
+  --fg-m: #cbd5e1;
+  --fg-d: #94a3b8;
+  --border: #334155;
+  --border-l: #263149;
+  --border-vl: #1e293b;
+  --panel: #1c242c;
+  --panel-h: #212a34;
+  --accent: #60a5fa;
+  --page-bg: #0b1220;
+  --doc-terracotta: #fbbf24;
+  --doc-consensus: #86efac;
+  --doc-conflict: #fca5a5;
+  color-scheme: dark;
+  box-shadow: 0 2px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+}
+.post-visit-document,
+.post-visit-document * {
+  box-sizing: border-box;
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+.post-visit-document strong,
+.post-visit-document b { color: var(--fg); font-weight: 700; }
+.post-visit-document a { color: var(--accent); }
+.post-visit-document .doc-body-mobile-padded { padding: 0 !important; }
+
+/* Compact document header, matching the prenote patient header. */
+.post-visit-document .doc-cover {
+  margin: 0 0 10px;
+  padding: 0 0 10px !important;
+  border-bottom: 2.5px solid var(--fg);
+  background: transparent !important;
+  color: var(--fg) !important;
+}
+.post-visit-document .doc-cover .cover-eyebrow {
+  margin: 0 0 3px;
+  color: var(--fg-d) !important;
+  font-size: 7pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase;
+}
+.post-visit-document .doc-cover .cover-title {
+  margin: 0;
+  color: var(--fg) !important;
+  font-size: 17pt !important;
+  font-weight: 700 !important;
+  line-height: 1.18 !important;
+  letter-spacing: -0.02em !important;
+}
+.post-visit-document .doc-cover .cover-rule { display: none; }
+.post-visit-document .doc-cover .cover-docket {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 4px 18px !important;
+  margin-top: 6px;
+}
+.post-visit-document .doc-cover .cover-docket > div {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
+  white-space: nowrap;
+}
+.post-visit-document .doc-cover .cover-docket .label {
+  margin: 0 !important;
+  color: var(--fg-d) !important;
+  font-size: 7pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.06em !important;
+  text-transform: uppercase;
+}
+.post-visit-document .doc-cover .cover-docket .value {
+  color: var(--fg-m) !important;
+  font-size: 9pt !important;
+  font-weight: 600 !important;
+}
+
+/* Section hierarchy: compact rules and panel labels from the prenote design. */
+.post-visit-document .doc-h2 {
+  margin: 16px 0 8px !important;
+  padding: 0 0 5px !important;
+  border-bottom: 1.5px solid var(--border) !important;
+  color: var(--fg-d) !important;
+  font-size: 8pt !important;
+  font-weight: 700 !important;
+  line-height: 1.3 !important;
+  letter-spacing: 0.12em !important;
+  text-transform: uppercase;
+}
+.post-visit-document .doc-subsection-label {
+  margin: 0 0 7px !important;
+  padding: 5px 8px !important;
+  border: 1px solid var(--border) !important;
+  border-left: 3px solid var(--accent) !important;
+  border-radius: 3px !important;
+  background: var(--panel-h) !important;
+  color: var(--fg-d) !important;
+  font-size: 7.5pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.07em !important;
+  text-transform: uppercase;
+}
+.post-visit-document .doc-meta-label {
+  color: var(--fg-d) !important;
+  font-size: 7pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  text-transform: uppercase;
+}
+.post-visit-document section { color: var(--fg-m); }
+.post-visit-document p,
+.post-visit-document li,
+.post-visit-document td,
+.post-visit-document .doc-shelf-q,
+.post-visit-document .doc-callout-pearl,
+.post-visit-document .doc-callout-quote,
+.post-visit-document .doc-callout-goal { font-size: 9pt !important; }
+
+/* Teaching cases become the same bordered problem cards used in the prenote. */
+.post-visit-document .doc-case-wrap {
+  margin-top: 14px !important;
+  padding: 0 0 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  overflow: hidden;
+  background: var(--bg);
+}
+.post-visit-document .doc-case-wrap > :not(.doc-case-banner) {
+  margin-left: 12px !important;
+  margin-right: 12px !important;
+}
+.post-visit-document .doc-case-banner {
+  margin: 0 0 10px !important;
+  padding: 8px 12px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--border) !important;
+  border-radius: 0 !important;
+  background: var(--panel) !important;
+  box-shadow: none !important;
+  color: var(--fg) !important;
+}
+.post-visit-document .doc-case-banner .doc-case-numeral {
+  margin-bottom: 2px !important;
+  color: var(--fg-d) !important;
+  font-size: 7pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+}
+.post-visit-document .doc-case-banner .doc-case-title {
+  margin: 0 !important;
+  color: var(--fg) !important;
+  font-size: 11pt !important;
+  font-weight: 700 !important;
+  line-height: 1.3 !important;
+}
+.post-visit-document .doc-case-banner .case-focus-line {
+  margin-top: 3px !important;
+  color: var(--fg-d) !important;
+  font-size: 8pt !important;
+  font-style: normal !important;
+}
+
+/* Tables and structured clinical data. */
+.post-visit-document .doc-table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.post-visit-document .doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  border: 1px solid var(--border) !important;
+  background: var(--bg);
+  color: var(--fg-m);
+  font-size: 9pt !important;
+}
+.post-visit-document .doc-table thead th {
+  padding: 5px 8px !important;
+  border-bottom: 1.5px solid var(--fg-d) !important;
+  background: var(--panel-h) !important;
+  color: var(--fg-d) !important;
+  font-size: 7pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.05em !important;
+  text-align: left;
+  text-transform: uppercase;
+}
+.post-visit-document .doc-table tbody td {
+  padding: 5px 8px !important;
+  border-bottom: 1px solid var(--border-l) !important;
+  background: transparent !important;
+  color: var(--fg-m) !important;
+  font-size: 9pt !important;
+  line-height: 1.4;
+  vertical-align: top;
+}
+.post-visit-document .doc-table tbody tr:last-child td { border-bottom: 0 !important; }
+.post-visit-document .doc-table .row-label,
+.post-visit-document .doc-table td[style*="font-weight: 500"] {
+  color: var(--fg) !important;
+  font-weight: 700 !important;
+}
+.post-visit-document [style*="#0F2A44"],
+.post-visit-document [style*="var(--doc-navy)"] { color: var(--fg) !important; }
+.post-visit-document [style*="var(--doc-warm-gray)"] { color: var(--fg-d) !important; }
+
+/* Callouts use the prenote teaching / ask / warning language. */
+.post-visit-document .doc-callout-goal {
+  margin: 8px 0 !important;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-left: 2.5px solid #6366f1 !important;
+  border-radius: 0 4px 4px 0 !important;
+  background: #eef2ff !important;
+  color: #3730a3 !important;
+}
+.post-visit-document .doc-callout-pearl {
+  margin: 8px 12px 10px !important;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-left: 2.5px solid #f59e0b !important;
+  border-radius: 0 4px 4px 0 !important;
+  background: #fffbeb !important;
+  color: #44403c !important;
+}
+.post-visit-document .doc-callout-pearl .label { color: #b45309 !important; font-size: 7pt !important; }
+.post-visit-document .doc-callout-quote {
+  margin: 8px 12px 10px !important;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-left: 2.5px solid #2563eb !important;
+  border-radius: 0 4px 4px 0 !important;
+  background: #eff6ff !important;
+  color: #1e3a8a !important;
+}
+.post-visit-document .doc-callout-quote::before { display: none; }
+.post-visit-document .doc-callout-quote .label { color: #1d4ed8 !important; font-size: 7pt !important; }
+.post-visit-document .doc-callout-quote .quote-text { color: inherit !important; font-size: 9pt !important; }
+body.post-visit-export.dark .post-visit-document .doc-callout-goal { background: rgba(99, 102, 241, 0.08) !important; color: #c7d2fe !important; }
+body.post-visit-export.dark .post-visit-document .doc-callout-pearl { background: rgba(245, 158, 11, 0.08) !important; color: #d6d3d1 !important; }
+body.post-visit-export.dark .post-visit-document .doc-callout-quote { background: rgba(59, 130, 246, 0.1) !important; color: #bfdbfe !important; }
+
+/* Practice questions and footer. */
+.post-visit-document .doc-shelf-q { padding: 9px 0 !important; border-top: 1px solid var(--border-l) !important; }
+.post-visit-document .doc-shelf-answer {
+  margin-top: 6px !important;
+  padding: 7px 9px !important;
+  border-left: 2.5px solid #16a34a !important;
+  background: #f0fdf4 !important;
+  color: #166534 !important;
+}
+body.post-visit-export.dark .post-visit-document .doc-shelf-answer { background: rgba(34, 197, 94, 0.08) !important; color: #bbf7d0 !important; }
+.post-visit-document .doc-footer {
+  margin-top: 20px !important;
+  padding-top: 10px !important;
+  border-top: 1px solid var(--border) !important;
+  color: var(--fg-d) !important;
+  font-size: 8pt !important;
+  line-height: 1.4;
+  text-align: center;
+}
+.post-visit-document figure { border-color: var(--border) !important; background: var(--bg) !important; }
+.post-visit-document img { max-width: 100%; }
+
+.post-visit-preview-shell {
+  padding: 20px 0;
+  border: 1px solid var(--app-border, #e2e8f0);
+  border-radius: 12px;
+  background: #c8cdd5;
+  overflow: auto;
+}
+.post-visit-preview-shell [contenteditable="true"] { min-width: 0; }
+.post-visit-preview-shell [contenteditable="true"]:focus .post-visit-document {
+  box-shadow: 0 2px 24px rgba(0, 0, 0, 0.18), 0 0 0 2px rgba(37, 99, 235, 0.22);
+}
+
+@media (max-width: 640px) {
+  .post-visit-preview-shell { padding: 0; border-radius: 8px; }
+  .post-visit-document { padding: 20px 16px 24px; box-shadow: none; }
+  .post-visit-document .doc-cover .cover-title { font-size: 14pt !important; }
+  .post-visit-document .doc-cover .cover-docket { gap: 4px 12px !important; }
+  .post-visit-document .doc-case-wrap > :not(.doc-case-banner) { margin-left: 9px !important; margin-right: 9px !important; }
+  .post-visit-document .doc-table { min-width: 500px; }
+}
+
+@page { size: letter; margin: 0.5in 0.55in 0.6in; }
+@media print {
+  body.post-visit-export,
+  body.post-visit-export.dark { background: #fff !important; padding: 0 !important; color: #1a1f2e !important; }
+  .post-visit-preview-shell { padding: 0 !important; border: 0 !important; background: #fff !important; overflow: visible !important; }
+  .post-visit-document,
+  body.post-visit-export.dark .post-visit-document {
+    --bg: #ffffff;
+    --fg: #1a1f2e;
+    --fg-m: #374151;
+    --fg-d: #6b7280;
+    --border: #d1d5db;
+    --border-l: #e5e7eb;
+    --border-vl: #f3f4f6;
+    --panel: #f9fafb;
+    --panel-h: #f3f4f6;
+    --accent: #2563eb;
+    max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: 0 !important;
+    background: #fff !important;
+    color: #1a1f2e !important;
+    box-shadow: none !important;
+    color-scheme: light;
+  }
+  .post-visit-document .doc-cover { page-break-after: avoid !important; break-after: avoid !important; }
+  .post-visit-document .doc-case-wrap { break-inside: auto; page-break-inside: auto; }
+  .post-visit-document .doc-case-banner,
+  .post-visit-document .doc-subsection-label,
+  .post-visit-document .doc-h2 { break-after: avoid; page-break-after: avoid; }
+  .post-visit-document .keep-together,
+  .post-visit-document tr,
+  .post-visit-document figure,
+  .post-visit-document .doc-callout-goal,
+  .post-visit-document .doc-callout-pearl,
+  .post-visit-document .doc-callout-quote { break-inside: avoid; page-break-inside: avoid; }
+  .post-visit-document p,
+  .post-visit-document li,
+  .post-visit-document div { orphans: 3; widows: 3; }
+}
+`;
+
+const POST_VISIT_EXPORT_STYLES = `
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body.post-visit-export {
+  margin: 0;
+  min-height: 100vh;
+  padding: 20px 0;
+  background: #c8cdd5;
+  color: #1a1f2e;
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  transition: background 0.2s, color 0.2s;
+}
+body.post-visit-export.dark { background: #0b1220; color: #e8edf3; }
+.doc-toolbar {
+  width: min(10in, calc(100% - 16px));
+  margin: 0 auto 12px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1a1f2e;
+  font: 600 0.82rem 'DM Sans', sans-serif;
+  cursor: pointer;
+}
+body.dark .tb-btn { border-color: #334155; background: #0f1419; color: #e8edf3; }
+.tb-btn:hover { transform: translateY(-1px); }
+.interactive-banner {
+  width: min(10in, calc(100% - 16px));
+  margin: 0 auto 10px;
+  padding: 8px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 8pt;
+  line-height: 1.4;
+}
+body.dark .interactive-banner { border-color: rgba(96, 165, 250, 0.35); background: rgba(59, 130, 246, 0.12); color: #bfdbfe; }
+.doc-body td ul li a.problem-jump { color: var(--accent); text-decoration: none; border-bottom: 1px dotted currentColor; }
+.doc-body td ul li a.problem-jump::before { content: "down "; font-size: 7pt; opacity: 0.65; }
+.case-nav-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 10px 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.case-nav-pills .nav-label { align-self: center; margin-right: 4px; color: var(--fg-d); font-size: 7pt; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.case-nav-pills a.case-jump {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg-m);
+  font-size: 8pt;
+  font-weight: 600;
+  text-decoration: none;
+}
+.case-nav-pills a.case-jump:hover { border-color: var(--accent); color: var(--accent); }
+.shelf-choices-interactive { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 5px 8px; margin: 5px 0 4px 24px; }
+.shelf-option-btn {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg-m);
+  font: 400 9pt/1.4 'DM Sans', sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.shelf-option-btn:hover:not(:disabled) { border-color: var(--accent); background: var(--panel); }
+.shelf-option-btn:disabled { cursor: default; }
+.shelf-option-btn .letter { margin-right: 4px; font-weight: 700; }
+.shelf-option-btn .indicator { display: none; margin-left: 5px; font-size: 7pt; font-weight: 700; }
+.shelf-option-btn.chosen-correct,
+.shelf-option-btn.revealed-correct { border-color: #16a34a; background: #f0fdf4; color: #166534; }
+.shelf-option-btn.chosen-wrong { border-color: #dc2626; background: #fef2f2; color: #991b1b; }
+.shelf-option-btn.revealed-wrong { opacity: 0.55; text-decoration: line-through; }
+.shelf-option-btn.chosen-correct .indicator,
+.shelf-option-btn.revealed-correct .indicator,
+.shelf-option-btn.chosen-wrong .indicator { display: inline; }
+body.dark .shelf-option-btn.chosen-correct,
+body.dark .shelf-option-btn.revealed-correct { background: rgba(34, 197, 94, 0.1); color: #bbf7d0; }
+body.dark .shelf-option-btn.chosen-wrong { background: rgba(239, 68, 68, 0.1); color: #fecaca; }
+.shelf-answer-interactive { margin: 0 0 0 24px; max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.3s, opacity 0.3s; }
+.shelf-answer-interactive.revealed { max-height: 1200px; opacity: 1; }
+.shelf-answer-interactive .label { color: #15803d; font-size: 7pt; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.shelf-reset-btn { margin: 5px 0 0 24px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--fg-d); font: 600 7pt 'DM Sans', sans-serif; cursor: pointer; }
+.shelf-reset-btn.hidden { display: none; }
+@media (max-width: 640px) {
+  body.post-visit-export { padding-top: 10px; }
+  .doc-toolbar, .interactive-banner { width: calc(100% - 16px); }
+  .shelf-choices-interactive { grid-template-columns: 1fr; margin-left: 0; }
+  .shelf-answer-interactive, .shelf-reset-btn { margin-left: 0; }
+}
+@media print {
+  .doc-toolbar, .interactive-banner, .case-nav-pills, .shelf-reset-btn { display: none !important; }
+  .shelf-answer-interactive { max-height: none !important; opacity: 1 !important; }
+}
+`;
+
+
 // ============ FINAL DOCUMENT COMPONENT ============
 function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   const [savedHtml, setSavedHtml] = React.useState(null);
@@ -13725,382 +14208,11 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
     const student = doc.student || "Student";
     const sessionDate = session.sessionDate || new Date().toISOString().split("T")[0];
     const title = `Teaching Document — ${student} — ${sessionDate}`;
+    const exportThemeKey = `postvisit-${String(doc.sessionId || "no-id").replace(/[^a-z0-9_-]/gi, "-")}-theme`;
 
-    // Inline stylesheet: design tokens, doc styles, plus interactive-only additions
-    const inlineStyles = `
-      @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Source+Serif+4:ital,wght@0,400;0,600;1,400&display=swap');
-
-      :root {
-        --doc-navy: #0F2A44;
-        --doc-navy-mid: #1E5B94;
-        --doc-paper: #F5F1EA;
-        --doc-surface: #FFFFFF;
-        --doc-warm-gray: #5C6470;
-        --doc-terracotta: #B85C2E;
-        --doc-consensus: #0F7A5A;
-        --doc-majority: #1E5B94;
-        --doc-single: #8B7355;
-        --doc-conflict: #B85C2E;
-        --doc-hairline: #D8D3CA;
-      }
-
-      * { box-sizing: border-box; }
-      body { margin: 0; padding: 0; background: var(--doc-paper); }
-
-      .doc-body {
-        font-family: 'Inter', system-ui, -apple-system, sans-serif;
-        font-size: 15px;
-        line-height: 1.65;
-        color: #1a1a1a;
-        background: var(--doc-paper);
-        max-width: 900px;
-        margin: 0 auto;
-        box-shadow: 0 0 40px rgba(0,0,0,0.08);
-      }
-      .doc-body h1, .doc-body h2, .doc-body h3, .doc-body h4 {
-        font-family: 'Inter', system-ui, sans-serif;
-        font-weight: 600;
-        color: var(--doc-navy);
-        line-height: 1.25;
-      }
-      .doc-serif { font-family: 'Source Serif 4', Georgia, serif; }
-      .doc-meta-label {
-        font-family: 'Inter', sans-serif;
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-        font-weight: 500;
-        font-size: 0.65rem;
-        color: var(--doc-warm-gray);
-      }
-      .doc-cover {
-        background: linear-gradient(135deg, #0F2A44 0%, #1a3d5c 50%, #0F2A44 100%);
-        color: white;
-        padding: 3rem 3rem 2.25rem;
-      }
-      .doc-cover .cover-eyebrow {
-        font-family: 'Inter', sans-serif;
-        text-transform: uppercase;
-        letter-spacing: 0.24em;
-        font-size: 0.68rem;
-        font-weight: 500;
-        color: rgba(255,255,255,0.7);
-        margin-bottom: 0.75rem;
-      }
-      .doc-cover .cover-title {
-        font-family: 'Inter', sans-serif;
-        font-weight: 500;
-        font-size: 2.25rem;
-        line-height: 1.15;
-        letter-spacing: -0.02em;
-        color: #fff;
-      }
-      .doc-cover .cover-rule { height: 1px; background: rgba(255,255,255,0.25); margin: 1.75rem 0 1.5rem; }
-      .doc-cover .cover-docket { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1.25rem; }
-      .doc-cover .cover-docket .label {
-        font-family: 'Inter', sans-serif; text-transform: uppercase; letter-spacing: 0.16em;
-        font-size: 0.6rem; font-weight: 500; color: rgba(255,255,255,0.6); margin-bottom: 0.25rem;
-      }
-      .doc-cover .cover-docket .value {
-        font-family: 'Inter', sans-serif; font-size: 0.9rem; font-weight: 500; color: #fff;
-      }
-      .doc-h2 {
-        font-family: 'Inter', sans-serif; font-size: 1.0625rem; font-weight: 600;
-        color: var(--doc-navy); letter-spacing: -0.005em; margin: 0 0 1rem;
-        padding-bottom: 0.5rem; border-bottom: 2px solid var(--doc-navy);
-      }
-      .doc-subsection-label {
-        font-family: 'Inter', sans-serif; text-transform: uppercase; letter-spacing: 0.11em;
-        font-size: 0.88rem; font-weight: 700; color: var(--doc-navy);
-        padding: 0.5rem 0 0.5rem 0.75rem; border-left: 3px solid var(--doc-navy-mid);
-        margin-bottom: 0.85rem;
-        background: linear-gradient(90deg, rgba(30, 91, 148, 0.06) 0%, transparent 60%);
-      }
-      .doc-case-wrap { margin-top: 3rem; scroll-margin-top: 20px; }
-      .doc-case-banner {
-        background: linear-gradient(135deg, var(--doc-navy) 0%, #1a3d5c 100%);
-        color: white; padding: 1.25rem 1.5rem; margin: 0 -1.5rem 1.75rem;
-        border-radius: 2px; box-shadow: 0 1px 3px rgba(15, 42, 68, 0.15);
-      }
-      .doc-case-banner .doc-case-numeral {
-        font-family: 'Inter', sans-serif; font-weight: 600; font-size: 0.65rem;
-        letter-spacing: 0.28em; color: rgba(255, 255, 255, 0.7);
-        text-transform: uppercase; margin-bottom: 0.35rem;
-      }
-      .doc-case-banner .doc-case-title {
-        font-family: 'Inter', sans-serif; font-weight: 600; font-size: 1.5rem;
-        line-height: 1.2; color: white; letter-spacing: -0.015em; margin: 0;
-      }
-      .doc-table {
-        width: 100%; border-collapse: collapse; font-size: 0.875rem;
-        border-top: 2px solid var(--doc-navy); border-bottom: 2px solid var(--doc-navy);
-      }
-      .doc-table thead th {
-        font-family: 'Inter', sans-serif; text-transform: uppercase; letter-spacing: 0.12em;
-        font-size: 0.62rem; font-weight: 600; color: var(--doc-warm-gray); text-align: left;
-        padding: 0.55rem 0.75rem; border-bottom: 1px solid var(--doc-navy); background: transparent;
-      }
-      .doc-table tbody td {
-        padding: 0.65rem 0.75rem; border-bottom: 1px solid var(--doc-hairline);
-        vertical-align: top; color: #1a1a1a;
-      }
-      .doc-table tbody tr:last-child td { border-bottom: none; }
-      .doc-table .row-label { font-weight: 500; color: var(--doc-navy); width: 30%; padding-right: 1rem; }
-      .doc-callout-pearl {
-        background: linear-gradient(90deg, rgba(184, 92, 46, 0.09) 0%, rgba(184, 92, 46, 0.03) 100%);
-        border-left: 3px solid var(--doc-terracotta); padding: 1rem 1.25rem; margin: 1.25rem 0;
-      }
-      .doc-callout-pearl .label {
-        font-family: 'Inter', sans-serif; font-size: 0.7rem; color: var(--doc-terracotta);
-        text-transform: uppercase; letter-spacing: 0.16em; font-weight: 700; margin-bottom: 0.4rem;
-      }
-      .doc-callout-quote {
-        background: linear-gradient(90deg, rgba(30, 91, 148, 0.09) 0%, rgba(30, 91, 148, 0.03) 100%);
-        border-left: 3px solid var(--doc-navy); padding: 1rem 1.25rem 1rem 2.5rem;
-        margin: 1.25rem 0; position: relative;
-      }
-      .doc-callout-quote::before {
-        content: '"'; position: absolute; left: 0.75rem; top: 0.35rem;
-        font-family: 'Source Serif 4', serif; font-size: 2.75rem; font-weight: 400;
-        color: var(--doc-navy); line-height: 1; opacity: 0.5;
-      }
-      .doc-callout-quote .quote-text {
-        font-family: 'Source Serif 4', serif; font-style: italic;
-        font-size: 0.95rem; line-height: 1.55; color: #1a1a1a;
-      }
-      .doc-callout-quote .label {
-        font-family: 'Inter', sans-serif; font-size: 0.7rem; color: var(--doc-navy);
-        text-transform: uppercase; letter-spacing: 0.16em; font-weight: 700; margin-bottom: 0.4rem;
-      }
-      .doc-callout-goal {
-        background: linear-gradient(180deg, var(--doc-paper) 0%, #fff 100%);
-        border-left: 3px solid var(--doc-navy-mid); padding: 1rem 1.25rem;
-      }
-      .doc-strength {
-        display: inline-flex; align-items: center; gap: 0.4rem;
-        font-family: 'Inter', sans-serif; font-size: 0.65rem; text-transform: uppercase;
-        letter-spacing: 0.12em; font-weight: 600; color: var(--doc-warm-gray);
-      }
-      .doc-strength .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-      .doc-strength.consensus .dot { background: var(--doc-consensus); }
-      .doc-strength.majority .dot { background: var(--doc-majority); }
-      .doc-strength.single-source .dot { background: var(--doc-single); }
-      .doc-strength.conflict .dot { background: var(--doc-conflict); }
-      .doc-strength.consensus { color: var(--doc-consensus); }
-      .doc-strength.majority { color: var(--doc-majority); }
-      .doc-strength.single-source { color: var(--doc-single); }
-      .doc-strength.conflict { color: var(--doc-conflict); }
-      .doc-shelf-q { border-top: 1px solid var(--doc-hairline); padding: 1rem 0; scroll-margin-top: 20px; }
-      .doc-shelf-q:first-child { border-top: none; padding-top: 0.25rem; }
-      .doc-shelf-answer {
-        margin-top: 0.75rem; padding: 0.75rem 1rem; background: var(--doc-paper);
-        border-left: 2px solid var(--doc-consensus);
-      }
-      .doc-shelf-answer .label {
-        font-family: 'Inter', sans-serif; font-size: 0.65rem; text-transform: uppercase;
-        letter-spacing: 0.14em; font-weight: 600; color: var(--doc-consensus); margin-bottom: 0.3rem;
-      }
-      .doc-footer {
-        margin-top: 3rem; padding-top: 1.25rem; border-top: 2px solid var(--doc-navy);
-        text-align: center; font-family: 'Inter', sans-serif; font-size: 0.7rem;
-        color: var(--doc-warm-gray); letter-spacing: 0.02em;
-      }
-
-      /* Interactive-only additions */
-      .interactive-banner {
-        background: linear-gradient(90deg, #eef2ff 0%, #fefce8 100%);
-        border-bottom: 1px solid #e0e7ff;
-        padding: 0.75rem 1.25rem;
-        display: flex;
-        align-items: center;
-        gap: 0.6rem;
-        font-family: 'Inter', sans-serif;
-        font-size: 0.78rem;
-        color: #4338ca;
-      }
-      .interactive-banner strong { color: #312e81; }
-
-      /* Make "Problems in focus" list items look clickable and add anchor behavior */
-      .doc-body td ul li a.problem-jump {
-        color: var(--doc-navy-mid);
-        text-decoration: none;
-        border-bottom: 1px dotted var(--doc-navy-mid);
-        cursor: pointer;
-        transition: color 0.15s;
-      }
-      .doc-body td ul li a.problem-jump:hover {
-        color: var(--doc-terracotta);
-        border-bottom-color: var(--doc-terracotta);
-      }
-      .doc-body td ul li a.problem-jump::before {
-        content: "↓ ";
-        opacity: 0.5;
-      }
-
-      /* Interactive shelf question styles */
-      .shelf-choices-interactive {
-        display: grid;
-        grid-template-columns: 1fr;
-        gap: 0.5rem;
-        padding-left: 2.2rem;
-        margin-bottom: 0.5rem;
-      }
-      @media (min-width: 640px) {
-        .shelf-choices-interactive {
-          grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-          column-gap: 1.5rem;
-        }
-      }
-      .shelf-option-btn {
-        text-align: left;
-        padding: 0.6rem 0.85rem;
-        background: white;
-        border: 1.5px solid var(--doc-hairline);
-        border-radius: 6px;
-        font-family: 'Inter', sans-serif;
-        font-size: 0.87rem;
-        color: #1a1a1a;
-        cursor: pointer;
-        transition: all 0.15s;
-        line-height: 1.45;
-      }
-      .shelf-option-btn:hover:not(:disabled) {
-        border-color: var(--doc-navy-mid);
-        background: #f8fafc;
-      }
-      .shelf-option-btn:disabled { cursor: default; }
-      .shelf-option-btn .letter { font-weight: 600; margin-right: 0.4rem; }
-      .shelf-option-btn.chosen-correct {
-        background: #ecfdf5;
-        border-color: var(--doc-consensus);
-        color: #064e3b;
-        font-weight: 500;
-      }
-      .shelf-option-btn.chosen-wrong {
-        background: #fef2f2;
-        border-color: #dc2626;
-        color: #7f1d1d;
-        font-weight: 500;
-      }
-      .shelf-option-btn.revealed-correct {
-        background: #ecfdf5;
-        border-color: var(--doc-consensus);
-        color: #064e3b;
-      }
-      .shelf-option-btn.revealed-wrong {
-        background: #fafafa;
-        border-color: var(--doc-hairline);
-        color: #737373;
-        text-decoration: line-through;
-      }
-      .shelf-option-btn .indicator {
-        display: none;
-        font-size: 0.75rem;
-        margin-left: 0.5rem;
-        font-weight: 600;
-      }
-      .shelf-option-btn.chosen-correct .indicator,
-      .shelf-option-btn.revealed-correct .indicator { display: inline; color: var(--doc-consensus); }
-      .shelf-option-btn.chosen-wrong .indicator { display: inline; color: #dc2626; }
-
-      .shelf-answer-interactive {
-        margin-top: 0.75rem;
-        margin-left: 2.2rem;
-        padding: 0.75rem 1rem;
-        background: var(--doc-paper);
-        border-left: 2px solid var(--doc-consensus);
-        opacity: 0;
-        max-height: 0;
-        overflow: hidden;
-        transition: opacity 0.3s, max-height 0.3s;
-      }
-      .shelf-answer-interactive.revealed {
-        opacity: 1;
-        max-height: 1000px;
-      }
-      .shelf-answer-interactive .label {
-        font-family: 'Inter', sans-serif;
-        font-size: 0.65rem;
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-        font-weight: 600;
-        color: var(--doc-consensus);
-        margin-bottom: 0.3rem;
-      }
-      .shelf-reset-btn {
-        display: inline-block;
-        margin-top: 0.5rem;
-        margin-left: 2.2rem;
-        padding: 0.25rem 0.6rem;
-        background: transparent;
-        border: 1px solid var(--doc-hairline);
-        border-radius: 4px;
-        font-family: 'Inter', sans-serif;
-        font-size: 0.7rem;
-        color: var(--doc-warm-gray);
-        cursor: pointer;
-      }
-      .shelf-reset-btn:hover { background: white; color: var(--doc-navy); border-color: var(--doc-navy-mid); }
-      .shelf-reset-btn.hidden { display: none; }
-
-      /* Sticky case-nav pill at the top of teaching cases */
-      .case-nav-pills {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 0.5rem;
-        padding: 0.75rem 1rem;
-        background: var(--doc-paper);
-        border-radius: 8px;
-        margin-bottom: 1.5rem;
-        border: 1px solid var(--doc-hairline);
-      }
-      .case-nav-pills .nav-label {
-        font-family: 'Inter', sans-serif;
-        text-transform: uppercase;
-        letter-spacing: 0.11em;
-        font-size: 0.62rem;
-        font-weight: 600;
-        color: var(--doc-warm-gray);
-        align-self: center;
-        margin-right: 0.5rem;
-      }
-      .case-nav-pills a.case-jump {
-        display: inline-block;
-        padding: 0.35rem 0.75rem;
-        background: white;
-        border: 1px solid var(--doc-hairline);
-        border-radius: 999px;
-        font-family: 'Inter', sans-serif;
-        font-size: 0.78rem;
-        font-weight: 500;
-        color: var(--doc-navy);
-        text-decoration: none;
-        transition: all 0.15s;
-      }
-      .case-nav-pills a.case-jump:hover {
-        background: var(--doc-navy);
-        color: white;
-        border-color: var(--doc-navy);
-      }
-
-      /* Print — restore printed doc feel from the HTML */
-      @media print {
-        body { background: white; }
-        .doc-body { max-width: none; box-shadow: none; margin: 0; }
-        .interactive-banner, .case-nav-pills, .shelf-reset-btn { display: none !important; }
-        .shelf-answer-interactive { opacity: 1 !important; max-height: none !important; }
-        .shelf-option-btn { border-color: var(--doc-hairline) !important; }
-        .shelf-option-btn.correct-print { background: #ecfdf5 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        .doc-cover { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-        .doc-callout-pearl, .doc-callout-quote, .doc-callout-goal, .doc-shelf-answer {
-          -webkit-print-color-adjust: exact; print-color-adjust: exact;
-        }
-        p, li, div { orphans: 3; widows: 3; }
-        h1, h2, h3, h4, h5, h6 { page-break-after: avoid; }
-        .keep-together { page-break-inside: avoid; }
-        .doc-cover { page-break-after: always; }
-      }
-      @page { margin: 0.55in; }
-    `;
+    // Preview and export share the exact same prenote-aligned visual system.
+    const inlineStyles = `${POST_VISIT_DOCUMENT_STYLES}
+${POST_VISIT_EXPORT_STYLES}`;
 
     // Process the DOM: give cases IDs, make problems clickable, transform shelf questions.
     // We do this on a temporary document so we don't mess with the live editable.
@@ -14208,6 +14320,24 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
 
     // 5. Interactive script injected inline
     const script = `
+      (function() {
+        var themeSwitch = document.getElementById("themeSwitch");
+        if (!themeSwitch) return;
+        try {
+          var savedTheme = localStorage.getItem("${exportThemeKey}");
+          if (savedTheme === "dark") {
+            document.body.classList.add("dark");
+            themeSwitch.checked = true;
+          }
+        } catch (e) {}
+        themeSwitch.addEventListener("change", function() {
+          document.body.classList.toggle("dark", this.checked);
+          try { localStorage.setItem("${exportThemeKey}", this.checked ? "dark" : "light"); } catch (e) {}
+        });
+      })();
+
+      function printDoc() { window.print(); }
+
       document.addEventListener("click", function(e) {
         // Shelf question option clicks
         if (e.target.closest(".shelf-option-btn") && !e.target.closest(".shelf-option-btn").disabled) {
@@ -14276,9 +14406,17 @@ function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>${title.replace(/</g, "&lt;")}</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
   <style>${inlineStyles}</style>
 </head>
-<body>
+<body class="post-visit-export">
+  <div class="doc-toolbar">
+    <button type="button" class="tb-btn" onclick="printDoc()">Print / PDF</button>
+    <label class="tb-btn" style="cursor:pointer;">
+      <input type="checkbox" id="themeSwitch" style="display:none;">
+      Dark mode
+    </label>
+  </div>
   <div class="interactive-banner">
     <span>🎓</span>
     <div>
@@ -14325,6 +14463,7 @@ const renderContent = () => {
 
   return (
     <>
+      <style>{POST_VISIT_DOCUMENT_STYLES}</style>
       <div className="no-print flex gap-2 mb-4 items-center flex-wrap">
         <button onClick={printDoc} className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium">
           <Printer className="w-4 h-4" />
@@ -14340,7 +14479,7 @@ const renderContent = () => {
           <span className="hidden sm:inline">← Back to Preview</span>
           <span className="sm:hidden">← Preview</span>
         </button>
-        {/* Editing hint hidden on mobile — takes too much room and the yellow-tinted document already signals editability */}
+        {/* Editing hint hidden on mobile because it takes too much room */}
         <div className="text-xs text-slate-500 italic ml-2 hidden sm:block">
           Click any text to edit — changes save automatically. Use the toolbar for bold/italic/underline.
         </div>
@@ -14414,7 +14553,7 @@ const renderContent = () => {
         <button type="button" onMouseDown={e => { e.preventDefault(); applyFormat("removeFormat"); }} className="toolbar-btn px-2 py-1.5 hover:bg-slate-700 rounded text-xs" title="Clear all formatting">Clear</button>
       </div>
 
-      <div className="bg-white rounded-xl border border-slate-200 print-doc" style={{fontFamily: "Georgia, 'Times New Roman', serif"}}>
+      <div className="post-visit-preview-shell print-doc">
         <div
           ref={editableRef}
           contentEditable
@@ -14422,7 +14561,7 @@ const renderContent = () => {
           spellCheck={false}
           onBlur={captureEdits}
           className="outline-none focus:outline-none"
-          style={{ boxShadow: "inset 0 0 0 2px rgba(251, 191, 36, 0.2)", borderRadius: "0.75rem" }}
+          style={{ borderRadius: "2px" }}
         >
           {renderContent()}
         </div>
@@ -14656,7 +14795,7 @@ function DocumentContent({ doc, phase, session }) {
   const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
 
   return (
-    <div className="doc-body">
+    <div className="doc-body post-visit-document">
       {/* ========== COVER ========== */}
       <div className="doc-cover">
         <div>
@@ -14785,7 +14924,7 @@ function DocumentContent({ doc, phase, session }) {
                   };
                   const labels = doc.focusAreas.map(f => focusReadable[f] || f);
                   return (
-                    <div style={{ marginTop: "0.55rem", fontSize: "0.65rem", color: "rgba(255,255,255,0.65)", fontStyle: "italic", letterSpacing: "0.02em" }}>
+                    <div className="case-focus-line" style={{ marginTop: "0.55rem", fontSize: "0.65rem", color: "var(--doc-warm-gray)", fontStyle: "italic", letterSpacing: "0.02em" }}>
                       Taught with focus on: {labels.join(" · ")}
                     </div>
                   );
