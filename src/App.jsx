@@ -5749,7 +5749,101 @@ Formatting rules:
   progress: null,
 });
   };
+// Regenerate ONE teaching case in place. Preserves all other cases,
+  // synthesis, themes, and preview state. The regenerated case takes the
+  // place of the old one in previewData.sections.teachingCases.
+  const regenerateSingleCase = async (caseIdx) => {
+    if (!previewData) return;
+    const targetCase = previewData.sections.teachingCases[caseIdx];
+    if (!targetCase) return;
 
+    const problemName = targetCase.data?.problem;
+    if (!problemName) return;
+
+    // Confirm — regeneration burns an AI call and takes 30-60 seconds
+    if (!confirm(`Regenerate the teaching case for "${problemName}"? This takes 30-60 seconds and replaces the current version. Other cases are preserved.`)) return;
+
+    setAiStatus({
+      analyzing: false,
+      generating: true,
+      error: null,
+      progress: `Regenerating teaching case: ${problemName}`,
+    });
+
+    try {
+      // Build a cached-cases object that includes every case EXCEPT the one
+      // we're regenerating. generateAiTeachingContent will reuse the cached
+      // ones and only call the AI for the missing (target) case.
+      const cachedCases = {};
+      previewData.sections.teachingCases.forEach((tc, i) => {
+        if (i === caseIdx) return; // skip the target — force regeneration
+        if (tc.data?.problem) cachedCases[tc.data.problem] = tc.data;
+      });
+
+      // The synthesized evidence stays cached — don't re-run synthesis.
+      const result = await generateAiTeachingContent(
+        synthesizedEvidence,
+        cachedCases,
+        false
+      );
+
+      if (!result?.teachingCases) {
+        throw new Error("Regeneration returned no cases");
+      }
+
+      // Find the freshly-generated version of our target case
+      const newCase = result.teachingCases.find(
+        tc => tc.problem === problemName
+      );
+
+      if (!newCase) {
+        // Check if it failed
+        const failure = (result.caseResults || []).find(
+          cr => cr.problem === problemName && cr.status === "failed"
+        );
+        throw new Error(
+          failure?.error || "Regeneration did not return the target case"
+        );
+      }
+
+      // Replace the target case in previewData, preserving its enabled state
+      // and id. All other cases pass through untouched.
+      setPreviewData(prev => {
+        const next = JSON.parse(JSON.stringify(prev));
+        next.sections.teachingCases[caseIdx] = {
+          ...next.sections.teachingCases[caseIdx],
+          data: newCase,
+        };
+        return next;
+      });
+
+      // Update the top-level teaching content cache so future retries see the new version
+      setAiTeachingContent(prev => {
+        if (!prev) return prev;
+        const nextCases = [...(prev.teachingCases || [])];
+        const idxInAiContent = nextCases.findIndex(tc => tc.problem === problemName);
+        if (idxInAiContent >= 0) {
+          nextCases[idxInAiContent] = newCase;
+        }
+        return { ...prev, teachingCases: nextCases };
+      });
+
+      setAiStatus({
+        analyzing: false,
+        generating: false,
+        error: null,
+        progress: null,
+      });
+    } catch (e) {
+      console.error(`[regenerateSingleCase] "${problemName}" failed:`, e);
+      setAiStatus({
+        analyzing: false,
+        generating: false,
+        error: `Failed to regenerate "${problemName}": ${e.message}`,
+        progress: null,
+      });
+    }
+  };
   const commitPreviewToDocument = () => {
     if (!previewData) return;
     setGeneratedDoc(previewData);
@@ -8668,6 +8762,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   onBack={() => setActiveTab("goals")}
                   onRegenerate={generateDocument}
                   onRetryFailed={() => generateDocument({ retryFailedOnly: true })}
+                  onRegenerateSingleCase={regenerateSingleCase}
                   generationAttempts={generationAttempts}
                   fetchingPubmed={fetchingPubmed}
                   aiStatus={aiStatus}
@@ -9199,7 +9294,7 @@ function TeachingDetailControls({
 }
 
 // ============ PREVIEW EDITOR COMPONENT ============
-function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, generationAttempts, aiStatus, focusLabels, phase, session, teachingDetailOptions, onTeachingDetailOptionsChange }) {
+function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, onRegenerateSingleCase, generationAttempts, aiStatus, focusLabels, phase, session, teachingDetailOptions, onTeachingDetailOptionsChange }) {
   const s = previewData.sections;
   const [previewScale, setPreviewScale] = React.useState(0.72);
   const SectionHeader = ({ label, enabled, onToggle, count }) => (
@@ -9377,6 +9472,25 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
                     <SectionHeader label={`Case ${idx+1}: ${tc.data.problem}`} enabled={tc.enabled} onToggle={() => toggleTeachingCase(idx)} />
                     {tc.enabled && (
                       <div className="p-3 space-y-2 bg-slate-50">
+                        {/* Per-case regeneration — burns one AI call, replaces this case only */}
+                        {onRegenerateSingleCase && (
+                          <div className="flex items-center justify-between bg-white border border-slate-200 rounded p-2">
+                            <div className="text-xs text-slate-600">
+                              Not satisfied with this case? Regenerate just this one — other cases are preserved.
+                            </div>
+                            <button
+                              onClick={() => onRegenerateSingleCase(idx)}
+                              disabled={aiStatus.generating}
+                              className="flex items-center gap-1 px-2.5 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded text-xs font-medium disabled:opacity-50 whitespace-nowrap ml-2"
+                              title="Regenerate this teaching case only (30-60 seconds)"
+                            >
+                              {aiStatus.generating
+                                ? <><Loader2 className="w-3 h-3 animate-spin" /> Regenerating...</>
+                                : <><Wand2 className="w-3 h-3" /> Regenerate</>
+                              }
+                            </button>
+                          </div>
+                        )}
                         {tc.data.primaryDiagnosis?.name && (
                           <div>
                             <label className="text-xs font-semibold text-slate-600 uppercase">Primary Diagnosis</label>
