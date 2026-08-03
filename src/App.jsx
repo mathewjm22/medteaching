@@ -4126,6 +4126,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 
 {
   "problem": "${problem}",
+  "caseSummary": "ONE italicized-worthy sentence capturing the essence of what YOU as the attending ${isPreVisit ? "want the student to walk into the visit understanding about this patient" : "took away from this specific encounter with this specific patient"}. This should be personal, specific, and clinical — not a definition. Example post-visit: 'This patient's TSH of 13.8 is the clinical story — 6 months off levothyroxine, and the menorrhagia and fatigue we saw today are all downstream of that one gap.' Example pre-visit: 'The tension in this visit will be balancing TSH suppression for her thyroid cancer against the risk of over-suppression given her age and osteoporosis risk.' Written in second person to the student.",
   "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for ${isPreVisit ? "the upcoming visit with THIS patient" : "THIS patient"}"},
   "illnessScript": {
     "epidemiology": "1-2 sentences on who typically gets this. Reference ${isPreVisit ? "the patient's chart-documented demographics" : "our patient's demographics"} where they fit or contrast the pattern.",
@@ -4152,7 +4153,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}"
 }
 
-ALWAYS include these core sections regardless of focus selection: primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (array of 2-3 items, may be empty array), landmarkTrial (object with name and oneLineSummary; both may be empty strings if no clearly practice-defining trial).
+ALWAYS include these core sections regardless of focus selection: caseSummary (one sentence), primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (array of 2-3 items, may be empty array), landmarkTrial (object with name and oneLineSummary; both may be empty strings if no clearly practice-defining trial).
 
 ═══════════════════════════════════════════════════════════════
 FINAL REMINDER — REQUIRED FIELDS CHECK
@@ -11188,6 +11189,11 @@ const buildInRoomHtml = (doc, session) => {
 
     html += `<div class="prob-body">`;
 
+    // Case summary — one italicized attending's-take sentence, at the top
+    if (isSelected && c.caseSummary) {
+      html += `<p style="font-style:italic;color:var(--fg);border-left:2px solid #b45309;padding-left:8px;margin-bottom:8px;font-size:9pt;line-height:1.5;">${esc(c.caseSummary)}</p>`;
+    }
+
     // Opening paragraph — brief definition or current status
     if (chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition) {
       html += `<p>${esc(chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition)}</p>`;
@@ -14542,18 +14548,14 @@ body.post-visit-export.dark .post-visit-document {
 /* Teaching cases become the same bordered problem cards used in the prenote. */
 .post-visit-document .doc-case-wrap {
   margin-top: 14px !important;
-  padding: 0 0 2px;
+  padding: 0 12px 12px;
   border: 1px solid var(--border);
   border-radius: 5px;
   overflow: hidden;
   background: var(--bg);
 }
-.post-visit-document .doc-case-wrap > :not(.doc-case-banner) {
-  margin-left: 12px !important;
-  margin-right: 12px !important;
-}
 .post-visit-document .doc-case-banner {
-  margin: 0 0 10px !important;
+  margin: 0 -12px 10px !important;
   padding: 8px 12px !important;
   border: 0 !important;
   border-bottom: 1px solid var(--border) !important;
@@ -14633,6 +14635,18 @@ body.post-visit-export.dark .post-visit-document {
   background: #eef2ff !important;
   color: #3730a3 !important;
 }
+  .post-visit-document .doc-callout-trial {
+  margin: 8px 12px 10px !important;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-left: 2.5px solid #0d9488 !important;
+  border-radius: 0 4px 4px 0 !important;
+  background: #f0fdfa !important;
+  color: #134e4a !important;
+}
+.post-visit-document .doc-callout-trial .label { color: #0f766e !important; font-size: 7pt !important; }
+body.post-visit-export.dark .post-visit-document .doc-callout-trial { background: rgba(20, 184, 166, 0.08) !important; color: #99f6e4 !important; }
+body.post-visit-export.dark .post-visit-document .doc-callout-trial .label { color: #5eead4 !important; }
 .post-visit-document .doc-callout-pearl {
   margin: 8px 12px 10px !important;
   padding: 8px 10px !important;
@@ -15620,6 +15634,23 @@ function DocumentContent({ doc, phase, session }) {
                   );
                 })()}
               </div>
+{c.caseSummary && (
+                <div className="keep-together" style={{
+                  marginBottom: "1.5rem",
+                  paddingLeft: "0.85rem",
+                  borderLeft: "2px solid var(--doc-terracotta)",
+                }}>
+                  <div style={{
+                    fontFamily: "'Source Serif 4', Georgia, serif",
+                    fontStyle: "italic",
+                    fontSize: "1rem",
+                    lineHeight: 1.55,
+                    color: "var(--doc-navy)",
+                  }}>
+                    {c.caseSummary}
+                  </div>
+                </div>
+              )}
 
               {c.primaryDiagnosis?.name && (
                 <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
@@ -15730,7 +15761,9 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.focusedHistoryQuestions?.length > 0 && (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Focused History Questions</div>
+                  <div className="doc-subsection-label">
+                    {c.kind === "tangential" ? "Focused History Questions" : "Key History That Anchored the Diagnosis"}
+                  </div>
                   <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
                     {c.focusedHistoryQuestions.map((hq, i) => (
                       <li key={i} className="keep-together" style={{ marginBottom: "0.75rem", paddingLeft: "0.85rem", borderLeft: "1px solid var(--doc-hairline)" }}>
@@ -15744,7 +15777,9 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.physicalExam?.maneuver && (
                 <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Physical Examination</div>
+                  <div className="doc-subsection-label">
+                    {c.kind === "tangential" ? "Physical Examination" : "Physical Exam Findings That Mattered"}
+                  </div>
                   <div style={{ fontWeight: 600, color: "var(--doc-navy)", marginBottom: "0.4rem" }}>{c.physicalExam.maneuver}</div>
                   {c.physicalExam.steps?.length > 0 && (
                     <ol style={{ margin: "0 0 0.5rem", paddingLeft: "1.3rem" }}>
@@ -15815,34 +15850,26 @@ function DocumentContent({ doc, phase, session }) {
                               const monitoring = String(t?.monitoring || "").trim();
                               const adverseEffects = String(t?.adverseEffectsToWatch || "").trim();
                               return (
-                                <React.Fragment key={i}>
-                                  <tr>
-                                    <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{stripTreatmentVerb(t.treatment)}</td>
-                                    <td>{t.dosing}</td>
-                                    <td style={{ color: "var(--doc-warm-gray)" }}>
-                                      {getTreatmentTeachingRationale(t) || "—"}
-                                    </td>
-                                    <td style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
-                                  </tr>
-                                  {(monitoring || adverseEffects) && (
-                                    <tr>
-                                      <td colSpan={4} style={{ paddingTop: "0", paddingLeft: "1.5rem", background: "var(--doc-paper)", fontSize: "0.85em" }}>
-                                        {monitoring && (
-                                          <div style={{ marginBottom: adverseEffects ? "0.3rem" : 0 }}>
-                                            <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Monitoring: </span>
-                                            <span style={{ color: "var(--doc-warm-gray)" }}>{monitoring}</span>
-                                          </div>
-                                        )}
-                                        {adverseEffects && (
-                                          <div>
-                                            <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Watch for: </span>
-                                            <span style={{ color: "var(--doc-warm-gray)" }}>{adverseEffects}</span>
-                                          </div>
-                                        )}
-                                      </td>
-                                    </tr>
-                                  )}
-                                </React.Fragment>
+                                <tr key={i}>
+                                  <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{stripTreatmentVerb(t.treatment)}</td>
+                                  <td>{t.dosing}</td>
+                                  <td style={{ color: "var(--doc-warm-gray)" }}>
+                                    {getTreatmentTeachingRationale(t) || "—"}
+                                    {monitoring && (
+                                      <div style={{ marginTop: "0.35rem", fontSize: "0.92em" }}>
+                                        <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Monitoring: </span>
+                                        <span>{monitoring}</span>
+                                      </div>
+                                    )}
+                                    {adverseEffects && (
+                                      <div style={{ marginTop: "0.2rem", fontSize: "0.92em" }}>
+                                        <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Watch for: </span>
+                                        <span>{adverseEffects}</span>
+                                      </div>
+                                    )}
+                                  </td>
+                                  <td style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
+                                </tr>
                               );
                             })}
                           </tbody>
@@ -15905,9 +15932,29 @@ function DocumentContent({ doc, phase, session }) {
                   </ol>
                 </div>
               )}
+              {(() => {
+                const dontMissItems = Array.isArray(c.dontMiss)
+                  ? c.dontMiss.filter(item => item && String(item).trim())
+                  : (typeof c.dontMiss === "string" && c.dontMiss.trim() ? [c.dontMiss.trim()] : []);
+                if (dontMissItems.length === 0) return null;
+                return (
+                  <div className="keep-together" style={{ marginBottom: "1.25rem", padding: "0.85rem 1rem", background: "#fef2f2", borderLeft: "3px solid #dc2626", borderRadius: "0 4px 4px 0" }}>
+                    <div className="doc-meta-label" style={{ color: "#dc2626", marginBottom: "0.4rem" }}>Don't Miss</div>
+                    {dontMissItems.length === 1 ? (
+                      <div style={{ fontSize: "0.9rem", color: "#991b1b" }}>{dontMissItems[0]}</div>
+                    ) : (
+                      <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                        {dontMissItems.map((item, i) => (
+                          <li key={i} style={{ fontSize: "0.88rem", color: "#991b1b", marginBottom: "0.3rem" }}>{item}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                );
+              })()}
 {c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim() && (
-                <div className="doc-callout-goal keep-together" style={{ marginBottom: "1.25rem" }}>
-                  <div className="doc-meta-label" style={{ marginBottom: "0.35rem" }}>Landmark Trial · {c.landmarkTrial.name}</div>
+                <div className="doc-callout-trial keep-together">
+                  <div className="label" style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: "0.4rem" }}>Landmark Trial · {c.landmarkTrial.name}</div>
                   <div style={{ fontSize: "0.9rem" }}>{c.landmarkTrial.oneLineSummary}</div>
                 </div>
               )}
@@ -15957,20 +16004,32 @@ function DocumentContent({ doc, phase, session }) {
 
         {/* Cross-Cutting Themes */}
         {s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0 && (
-          <section style={{ marginTop: "2.5rem" }}>
+          <section style={{ marginTop: "2.5rem" }} className="keep-together">
             <h2 className="doc-h2">Cross-Cutting Themes</h2>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
+            <ol style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
               {s.crossCuttingThemes.content.map((t, i) => (
-                <div key={i} className="keep-together" style={{
-                  padding: "1rem 1.15rem",
-                  background: "var(--doc-paper)",
-                  borderTop: "2px solid var(--doc-navy-mid)",
+                <li key={i} style={{
+                  display: "flex",
+                  gap: "0.75rem",
+                  marginBottom: "0.75rem",
+                  paddingLeft: "0.5rem",
                 }}>
-                  <div className="doc-meta-label" style={{ marginBottom: "0.35rem" }}>Theme {String(i + 1).padStart(2, "0")}</div>
-                  <div style={{ fontSize: "0.9rem" }}>{t}</div>
-                </div>
+                  <span style={{
+                    flexShrink: 0,
+                    fontFamily: "'Inter', sans-serif",
+                    fontWeight: 700,
+                    fontSize: "0.7rem",
+                    color: "var(--doc-warm-gray)",
+                    letterSpacing: "0.14em",
+                    minWidth: "1.75rem",
+                    paddingTop: "0.15rem",
+                  }}>
+                    {String(i + 1).padStart(2, "0")}
+                  </span>
+                  <div style={{ fontSize: "0.9rem", fontStyle: "italic", color: "var(--doc-navy)" }}>{t}</div>
+                </li>
               ))}
-            </div>
+            </ol>
           </section>
         )}
 
