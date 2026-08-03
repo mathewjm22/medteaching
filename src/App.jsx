@@ -428,6 +428,222 @@ const stripTreatmentVerb = (str) => {
   return str.replace(/^(Continue|Start|Initiate|Add|Consider|Prescribe|Begin|Maintain|Discontinue|Stop|Hold|Resume|Trial(?:\s+of)?)\s+/i, "");
 };
 
+const DEFAULT_TEACHING_DETAIL_OPTIONS = Object.freeze({
+  explainLabValues: true,
+  explainDiagnosticValues: true,
+});
+
+const inferTeachingResultType = (item, study, result) => {
+  const explicit = String(
+    item?.resultType || item?.category || item?.type || ""
+  ).trim().toLowerCase();
+  const haystack = `${study || ""} ${result || ""}`;
+
+  // A category changed by the attending in Review & Generate is authoritative.
+  // AI-provided categories still pass through the deterministic checks below.
+  if (item?.resultTypeSource === "manual") {
+    if (["lab", "laboratory"].includes(explicit)) return "lab";
+    if (["diagnostic", "imaging", "procedure", "physiologic"].includes(explicit)) return "diagnostic";
+  }
+
+  // Prefer deterministic content cues so an AI category slip cannot make an
+  // AHI/RDI explanation obey the lab toggle or an HbA1c explanation obey the
+  // diagnostic toggle. Explicit categories remain the fallback for uncommon
+  // studies that do not match the known terminology below.
+  if (/\b(?:CPAP|APAP|BiPAP|PAP\s+download|AHI|RDI|REI|ODI|sleep\s+study|polysomnogram|HSAT|CT|MRI|PET(?:\/CT)?|x-?ray|radiograph|ultrasound|sonogram|echocardiogram|echo|ECG|EKG|Holter|event\s+monitor|stress\s+test|PFTs?|pulmonary\s+function|spirometry|FEV1|FVC|DLCO|colonoscopy|endoscopy|mammogram|DEXA|bone\s+density|EEG|EMG|nerve\s+conduction|ABI|ankle[- ]brachial|Doppler|biopsy|pathology|ejection\s+fraction|LVEF)\b/i.test(haystack)) {
+    return "diagnostic";
+  }
+
+  if (/\b(?:glucose|A1c|HbA1c|lipid|cholesterol|LDL|HDL|triglycerides?|CBC|CMP|BMP|hemoglobin|hematocrit|WBC|platelets?|sodium|potassium|chloride|bicarbonate|CO2|creatinine|BUN|eGFR|AST|ALT|alkaline\s+phosphatase|bilirubin|albumin|TSH|T3|T4|thyroglobulin|urinalysis|urine|PSA|troponin|BNP|NT-proBNP|CRP|ESR|ferritin|iron|vitamin|INR|PTT|culture|serology|antibody|panel)\b/i.test(haystack)) {
+    return "lab";
+  }
+
+  if (["lab", "laboratory"].includes(explicit)) return "lab";
+  if (["diagnostic", "imaging", "procedure", "physiologic"].includes(explicit)) return "diagnostic";
+
+  // Unknown completed studies are safer to treat as diagnostics than as labs.
+  return "diagnostic";
+};
+
+const buildFallbackTreatmentTeachingRationale = (item) => {
+  const treatment = String(item?.treatment || "").trim();
+  const plan = String(item?.dosing || item?.plan || "").trim();
+  const text = `${treatment} ${plan}`;
+
+  // High-frequency safeguards for older saved cases and occasional omitted AI
+  // fields. Generated cases should normally provide a patient-specific
+  // teachingRationale; these fallbacks make sure common plans never collapse
+  // to a bare label in the student document.
+  if (/\b(?:physical\s+therapy|physiotherapy|PT)\b/i.test(text)) {
+    if (/\b(?:cervical|neck|scapular|shoulder\s+girdle)\b/i.test(text)) {
+      return "Physical therapy assesses neck and shoulder-girdle motion, strength, posture, and motor control, then uses graded exercise and functional retraining. Cervical stabilization targets coordinated control of the deep neck musculature, while scapular mechanics improve shoulder-girdle positioning and load sharing; together these can reduce painful mechanical stress, improve motion, and restore function.";
+    }
+    return "Physical therapy evaluates movement, strength, balance, endurance, and the activities limited by symptoms, then uses graded exercise, motor-control training, and functional practice to reduce impairment and restore safe activity.";
+  }
+
+  if (/\b(?:occupational\s+therapy|OT)\b/i.test(text)) {
+    return "Occupational therapy evaluates how symptoms affect daily activities, work, self-care, and cognition, then uses task-specific practice, pacing, equipment, and environmental modification to improve safe independence.";
+  }
+
+  if (/\b(?:registered\s+dietitian|dietitian|nutrition(?:ist)?|medical\s+nutrition\s+therapy)\b/i.test(text)) {
+    return "Nutrition consultation translates the medical goal into a realistic eating plan by assessing intake, culture, access, metabolic risks, and barriers, then using targeted counseling and follow-up to support sustainable change.";
+  }
+
+  if (/\b(?:clinical\s+pharmacist|pharmacist|pharmacy\s+consult)\b/i.test(text)) {
+    return "A clinical pharmacist reviews indication, dosing, interactions, adverse effects, access, and adherence across the full medication list, then helps simplify and optimize the regimen while monitoring safety and response.";
+  }
+
+  if (/\b(?:social\s+work|social\s+worker|case\s+management)\b/i.test(text)) {
+    return "Social work or case management identifies practical barriers such as transportation, insurance, housing, caregiving, or medication access and connects the patient with resources so the clinical plan is feasible.";
+  }
+
+  if (/\b(?:behavioral\s+health|psychology|psychotherapy|counseling)\b/i.test(text)) {
+    return "Behavioral health evaluates symptoms, coping patterns, safety, and psychosocial drivers, then uses evidence-based skills and therapy to reduce distress, improve self-management, and support function.";
+  }
+
+  if (/\b(?:NSAID|ibuprofen|naproxen|meloxicam|diclofenac|celecoxib)\b/i.test(text)) {
+    return "NSAIDs inhibit cyclooxygenase-mediated prostaglandin production, reducing pain and inflammation. In a short symptomatic trial, the goal is to improve comfort enough to maintain movement and participate in rehabilitation while weighing gastrointestinal, kidney, cardiovascular, and bleeding risks.";
+  }
+
+  return "";
+};
+
+const getTreatmentTeachingRationale = (item) =>
+  String(
+    item?.teachingRationale ||
+      item?.consultRationale ||
+      item?.whyThisFits ||
+      item?.rationale ||
+      item?.why ||
+      buildFallbackTreatmentTeachingRationale(item) ||
+      ""
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+
+const buildFallbackValueExplanation = (study, result, resultType) => {
+  const text = `${study || ""} ${result || ""}`;
+  const explanations = [];
+  const add = (key, explanation) => {
+    if (!explanations.some((entry) => entry.key === key)) {
+      explanations.push({ key, explanation });
+    }
+  };
+
+  // These deterministic definitions cover high-frequency shorthand even when
+  // an older saved case predates valueExplanation or the AI omits the field.
+  // They define the displayed metric without assigning a patient-specific
+  // interpretation or replacing the attending's clinical judgment.
+  if (/\b(?:HbA1c|A1c|hemoglobin\s*A1c)\b/i.test(text)) {
+    add(
+      "hba1c",
+      "HbA1c is the percentage of hemoglobin with glucose attached and estimates average glycemia over roughly the prior 2–3 months, with more weight from recent weeks."
+    );
+  }
+  if (/\bfasting\s+(?:blood\s+)?glucose\b/i.test(text)) {
+    add(
+      "fasting-glucose",
+      "Fasting glucose is the blood glucose concentration after a period without caloric intake; mg/dL means milligrams per deciliter."
+    );
+  }
+  if (/\bLDL(?:-C)?\b/i.test(text)) {
+    add(
+      "ldl",
+      "LDL cholesterol is the cholesterol carried in low-density lipoprotein particles; higher exposure is associated with atherosclerotic plaque formation."
+    );
+  }
+  if (/\bHDL(?:-C)?\b/i.test(text)) {
+    add(
+      "hdl",
+      "HDL cholesterol is the cholesterol carried in high-density lipoprotein particles; it is distinct from LDL and is generally interpreted as part of the overall risk profile rather than by itself."
+    );
+  }
+  if (/\btriglycerides?\b/i.test(text)) {
+    add(
+      "triglycerides",
+      "Triglycerides are circulating fats used for energy and can vary with meals, alcohol use, insulin resistance, and other metabolic factors."
+    );
+  }
+  if (/\btotal\s+cholesterol\b/i.test(text)) {
+    add(
+      "total-cholesterol",
+      "Total cholesterol summarizes cholesterol carried across the major lipoprotein classes; it is not the same measure as LDL, HDL, or triglycerides."
+    );
+  }
+  if (/\bAHI\b/i.test(text)) {
+    add(
+      "ahi",
+      "AHI is the apnea-hypopnea index: the average number of apneas (complete airflow pauses) plus hypopneas (partial reductions in airflow) per hour of sleep."
+    );
+  }
+  if (/\bRDI\b/i.test(text)) {
+    add(
+      "rdi",
+      "RDI is the respiratory disturbance index: respiratory disturbances per hour, often including AHI events plus respiratory-effort-related arousals; the exact definition can vary by study or device."
+    );
+  }
+  if (/\bREI\b/i.test(text)) {
+    add(
+      "rei",
+      "REI is the respiratory event index: breathing events per hour of recording time, commonly reported by home sleep apnea testing."
+    );
+  }
+  if (/\bODI\b/i.test(text)) {
+    add(
+      "odi",
+      "ODI is the oxygen desaturation index: the number of qualifying drops in oxygen saturation per hour; the report should state the drop threshold used."
+    );
+  }
+  if (/\b(?:CPAP|APAP|BiPAP|PAP)\b/i.test(text) && /\badherence\b/i.test(text)) {
+    add(
+      "pap-adherence",
+      "PAP adherence is the proportion of monitored nights meeting the report's device-use criterion; confirm the report's hour threshold when interpreting the percentage."
+    );
+  }
+  if (/\b(?:LVEF|ejection\s+fraction|EF)\b/i.test(text)) {
+    add(
+      "ejection-fraction",
+      "Ejection fraction is the percentage of ventricular blood volume ejected with each contraction; LVEF specifies the left ventricle."
+    );
+  }
+  if (/\bFEV1\b/i.test(text)) {
+    add(
+      "fev1",
+      "FEV1 is the volume exhaled during the first second of a forced breath and reflects expiratory airflow."
+    );
+  }
+  if (/\bFVC\b/i.test(text)) {
+    add(
+      "fvc",
+      "FVC is the total volume exhaled during a complete forced breath."
+    );
+  }
+  if (/\bDLCO\b/i.test(text)) {
+    add(
+      "dlco",
+      "DLCO estimates how effectively gas transfers from the lungs into the blood."
+    );
+  }
+
+  if (explanations.length === 0 && resultType === "diagnostic" && /%/.test(String(result || ""))) {
+    return "The percentage reflects the proportion measured by this study or device; interpret it using the metric definition and reference information in the report.";
+  }
+
+  return explanations.map((entry) => entry.explanation).join(" ");
+};
+
+const getResultValueExplanation = (item, study, result, resultType) =>
+  String(
+    item?.valueExplanation ||
+      item?.valueGuide ||
+      item?.termDefinitions ||
+      item?.resultExplanation ||
+      buildFallbackValueExplanation(study, result, resultType) ||
+      ""
+  )
+    .replace(/\s+/g, " ")
+    .trim();
+
 // True when a proposed "treatment" is actually a diagnostic or monitoring
 // study. These items must never be rendered in a Medications subsection.
 const isDiagnosticOrMonitoringItem = (value) => {
@@ -445,7 +661,10 @@ const isDiagnosticOrMonitoringItem = (value) => {
 // Only completed, chart-documented tests with an actual patient result are
 // retained. Recommended, pending, hypothetical, or future surveillance tests
 // are intentionally excluded from the patient-results section.
-const normalizeTeachingResults = (items) => {
+const normalizeTeachingResults = (
+  items,
+  teachingDetailOptions = DEFAULT_TEACHING_DETAIL_OPTIONS
+) => {
   const clean = (value) =>
     String(value || "")
       .replace(/\s+/g, " ")
@@ -540,9 +759,25 @@ const normalizeTeachingResults = (items) => {
         item.clinicalMeaning ||
           (explicitResult ? item.interpretation : "")
       );
+      const resultType = inferTeachingResultType(
+        item,
+        study,
+        result
+      );
+      const valueExplanation = clean(
+        getResultValueExplanation(item, study, result, resultType)
+      );
+      const showValueExplanation =
+        valueExplanation &&
+        (resultType === "lab"
+          ? teachingDetailOptions?.explainLabValues !== false
+          : teachingDetailOptions?.explainDiagnosticValues !== false);
 
       const explanation = [
         whatItDoes,
+        showValueExplanation
+          ? `Value guide: ${valueExplanation}`
+          : "",
         whyOrdered
           ? `Why it was ordered here: ${whyOrdered}`
           : "",
@@ -557,7 +792,9 @@ const normalizeTeachingResults = (items) => {
         study,
         date,
         result,
+        resultType,
         whatItDoes,
+        valueExplanation,
         whyOrdered,
         clinicalMeaning,
         explanation,
@@ -1958,6 +2195,13 @@ export default function App() {
   // Only affects pre-visit mode; ignored in post-visit.
   const [previsitEmphasis, setPrevisitEmphasis] = useState("auto");
 
+  // Student-facing explanatory detail. These controls are intentionally
+  // independent so an attending can include lab definitions, diagnostic
+  // metric definitions, both, or neither without changing the clinical data.
+  const [teachingDetailOptions, setTeachingDetailOptions] = useState(() => ({
+    ...DEFAULT_TEACHING_DETAIL_OPTIONS,
+  }));
+
 const [customTopics, setCustomTopics] = useState([]);
   const [newCustomTopic, setNewCustomTopic] = useState("");
   // Sources
@@ -2075,6 +2319,7 @@ const [customTopics, setCustomTopics] = useState([]);
     if (!confirm("Clear all fields and start over? Any unsaved work will be lost.")) return;
     setSessionMode("post");
     setPrevisitEmphasis("auto");
+    setTeachingDetailOptions({ ...DEFAULT_TEACHING_DETAIL_OPTIONS });
     setRawPrenote("");
     setDeidPreview(null);
     setShowDeidReviewer(false);
@@ -3792,7 +4037,20 @@ PATIENT RESULTS RULES — MANDATORY:
 - The result field is required for every item. If a test is ordered, pending, recommended, due, planned, or has no result in the note, omit it.
 - Never substitute a surveillance schedule, screening recommendation, reference range, expected result, or conditional statement such as 'if normal...' for the patient's result.
 - Put the actual result in result. Put what the test measures in whatItDoes. Put the patient-specific reason it was ordered in whyOrdered. Put brief interpretation in clinicalMeaning.
+- Classify every item as resultType "lab" or "diagnostic". A laboratory analyte or panel is "lab". Imaging, procedures, physiologic studies, device downloads, and their metrics are "diagnostic".
+- ALWAYS populate valueExplanation. Define every unfamiliar abbreviation, score, component, and unit that appears in the result. For a composite panel, distinguish the components rather than treating the panel as one number. Examples: explain HbA1c as the percentage of glycated hemoglobin and what time period it reflects; distinguish LDL, HDL, total cholesterol, and triglycerides; explain AHI as apneas plus hypopneas per hour and RDI as a broader respiratory-disturbance rate. Do not assume the student already knows the shorthand.
+- Keep valueExplanation focused on what the displayed values mean. Do not repeat whyOrdered or clinicalMeaning there.
 - Future testing recommendations belong in keyLearningPoints or treatmentApproach.additional, not keyLabsAndImaging.
+
+TREATMENT / CONSULT TEACHING RULES — MANDATORY:
+- Every treatmentApproach.firstLine item must include teachingRationale.
+- For a medication, explain its therapeutic target or mechanism, the intended benefit, and why it fits this patient's scenario.
+- For a referral, consultation, rehabilitation discipline, procedure, or other non-drug therapy, explain who provides it, what they will assess or work on, how that focus addresses the patient's impairment or pathophysiology, what benefit is expected, and why that specific focus was chosen here.
+- Do not merely restate the treatment name, schedule, or evidence citation. Translate the clinical plan into the reasoning a student needs to understand it.
+- Example for physical therapy: describe the relevant movement, strength, motor-control, posture, or functional targets and connect those targets to the patient's symptoms and goals. Do not stop at 'PT for pain.'
+
+TEACHING-OPPORTUNITY PASS — MANDATORY:
+Before finalizing, scan every result and management item for compressed clinical shorthand. Expand acronyms, unpack composite values, explain specialist or allied-health roles, and connect each intervention to the specific physiologic or functional problem it is intended to change. Prefer patient-specific reasoning over labels.
 
 MEDICATION / TEST SEPARATION RULES — MANDATORY:
 - treatmentApproach.firstLine may contain medications or therapeutic interventions, but NEVER diagnostic tests, imaging, laboratory monitoring, screening, or surveillance schedules.
@@ -3816,8 +4074,8 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 "shelfQuestions": [{"specialty": "one-word or short specialty tag for this question — e.g., 'Pathophysiology', 'Psychiatry', 'Nephrology', 'Gastroenterology', 'Hepatology', 'Preventive Medicine', 'Veterans Health Policy', 'Clinical Reasoning' — pick what best matches the concept being tested, not the patient's diagnosis", "vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
-  "keyLabsAndImaging": [{"study": "completed lab, imaging study, or procedure name", "date": "date performed if explicitly documented, otherwise empty string", "result": "this patient's actual chart-documented result — REQUIRED; omit the entire item if no result is documented", "whatItDoes": "plain-language explanation of what the test measures or detects", "whyOrdered": "why this test was ordered for this patient in this clinical scenario", "clinicalMeaning": "brief interpretation of what this patient's result means now"}],
-"treatmentApproach": {"firstLine": [{"treatment": "medication or THERAPEUTIC intervention NAME ONLY — never a diagnostic test, lab, imaging study, screening test, surveillance schedule, or monitoring study. Do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', or 'Consider'.", "dosing": "dose/route/frequency or therapeutic schedule", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations, including future monitoring recommendations that are not completed results" : "patient-specific considerations, including future monitoring recommendations that are not completed results"}"]},
+  "keyLabsAndImaging": [{"study": "completed lab, imaging study, or procedure name", "date": "date performed if explicitly documented, otherwise empty string", "result": "this patient's actual chart-documented result — REQUIRED; omit the entire item if no result is documented", "resultType": "lab or diagnostic", "whatItDoes": "plain-language explanation of what the test measures or detects", "valueExplanation": "plain-language definitions of every abbreviation, score, unit, and component shown in result; compare related components when useful", "whyOrdered": "why this test was ordered for this patient in this clinical scenario", "clinicalMeaning": "brief interpretation of what this patient's result means now"}],
+"treatmentApproach": {"firstLine": [{"treatment": "medication or THERAPEUTIC intervention NAME ONLY — never a diagnostic test, lab, imaging study, screening test, surveillance schedule, or monitoring study. Do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', or 'Consider'.", "dosing": "dose/route/frequency or therapeutic schedule", "teachingRationale": "what this treatment or consult actually does, what it targets, the expected benefit, and why that target fits this patient's scenario; for referrals or allied-health consults, explain the clinician's role and specific focus", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations, including future monitoring recommendations that are not completed results" : "patient-specific considerations, including future monitoring recommendations that are not completed results"}"]},
   "suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
   "dontMiss": "one-line warning of the single most important don't-miss item, iatrogenic risk, or prescribing pitfall specific to THIS problem in THIS patient. Example for a patient asking to share their topical antibiotic with family: 'He wants to use topical erythromycin on family members. This is a prescription medication — you cannot prescribe for undiagnosed family members. Offer to evaluate them separately.' Leave empty string if no specific warning applies.",
   "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
@@ -3920,6 +4178,12 @@ ${isTangential
               ),
             ];
           }
+
+          parsed.treatmentApproach.firstLine =
+            parsed.treatmentApproach.firstLine.map((item) => ({
+              ...item,
+              teachingRationale: getTreatmentTeachingRationale(item),
+            }));
         }
 
         console.log(`[teachingCase] "${problem}" citations:`, parsed.keyLearningPoints?.map(lp => lp.citation).filter(Boolean));
@@ -5334,6 +5598,7 @@ Formatting rules:
       complexity: session.complexity, sessionGoal, extractedTopics,
       focusAreas: activeFocusList,
       teachingLens,
+      teachingDetailOptions: { ...teachingDetailOptions },
       activeProblems, selectedProblems, patientQuotes, labTrends,
       longTermGoals,
       noteAnalysis,
@@ -5395,6 +5660,19 @@ Formatting rules:
     if (!previewData) return;
     setGeneratedDoc(previewData);
     setPreviewMode(false);
+  };
+
+  const updateTeachingDetailOptions = (nextOptions) => {
+    const normalized = {
+      ...DEFAULT_TEACHING_DETAIL_OPTIONS,
+      ...(nextOptions || {}),
+    };
+    setTeachingDetailOptions(normalized);
+    setPreviewData((prev) =>
+      prev
+        ? { ...prev, teachingDetailOptions: normalized }
+        : prev
+    );
   };
 
   const togglePreviewSection = (path) => {
@@ -8192,8 +8470,8 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
 
             <div className="flex gap-2 items-center">
               <button onClick={() => setActiveTab("sources")} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back</button>
-              <button onClick={generateDocument} disabled={activeFocusList.length === 0 || aiStatus.generating} className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium flex items-center gap-2 disabled:opacity-50">
-                {aiStatus.generating ? <><Loader2 className="w-4 h-4 animate-spin" />Generating...</> : <><Sparkles className="w-4 h-4" />Generate Teaching Document</>}
+              <button onClick={() => setActiveTab("output")} disabled={activeFocusList.length === 0} className="px-6 py-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white rounded-lg hover:opacity-90 text-sm font-medium flex items-center gap-2 disabled:opacity-50">
+                <Sparkles className="w-4 h-4" />Review & Generate
               </button>
               {activeFocusList.length === 0 && <span className="text-xs text-amber-700">Select at least one focus area</span>}
             </div>
@@ -8220,10 +8498,31 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                 </div>
               </div>
             ) : !previewData && !generatedDoc ? (
-              <div className="bg-white rounded-xl border border-slate-200 p-12 text-center">
-                <FileText className="w-12 h-12 text-slate-300 mx-auto mb-3" />
-                <div className="text-slate-500 mb-4">No document generated yet.</div>
-                <button onClick={generateDocument} disabled={activeFocusList.length === 0} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm font-medium disabled:opacity-50">Generate Preview</button>
+              <div className="bg-white rounded-xl border border-slate-200 p-6 sm:p-8 max-w-4xl mx-auto">
+                <div className="flex items-start gap-3 mb-6">
+                  <FileText className="w-10 h-10 text-indigo-500 flex-shrink-0" />
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-900">Review & Generate</h2>
+                    <p className="text-sm text-slate-600 mt-1">
+                      Choose how much value-level teaching the student should see. Lab and diagnostic explanations are independent and can be changed again in the live preview without re-running the AI.
+                    </p>
+                  </div>
+                </div>
+
+                <TeachingDetailControls
+                  value={teachingDetailOptions}
+                  onChange={updateTeachingDetailOptions}
+                />
+
+                <div className="flex items-center justify-between gap-3 mt-6 flex-wrap">
+                  <button onClick={() => setActiveTab("goals")} className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">← Back to Goals</button>
+                  <div className="flex items-center gap-3">
+                    {activeFocusList.length === 0 && <span className="text-xs text-amber-700">Select at least one focus area</span>}
+                    <button onClick={generateDocument} disabled={activeFocusList.length === 0} className="px-5 py-2.5 bg-indigo-600 text-white rounded-lg text-sm font-semibold disabled:opacity-50 flex items-center gap-2">
+                      <Sparkles className="w-4 h-4" />Generate Preview
+                    </button>
+                  </div>
+                </div>
               </div>
             ) : previewMode && previewData ? (
               // ============ PREVIEW/EDIT MODE ============
@@ -8246,6 +8545,13 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                           <Sparkles className="w-4 h-4" />Generate Final Document
                         </button>
                       </div>
+                    </div>
+                    <div className="mt-4 pt-4 border-t border-indigo-200">
+                      <TeachingDetailControls
+                        value={previewData.teachingDetailOptions || teachingDetailOptions}
+                        onChange={updateTeachingDetailOptions}
+                        compact
+                      />
                     </div>
                   </div>
                   <InRoomDocument
@@ -8274,6 +8580,8 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   focusLabels={focusLabels}
                   phase={phase}
                   session={session}
+                  teachingDetailOptions={previewData.teachingDetailOptions || teachingDetailOptions}
+                  onTeachingDetailOptionsChange={updateTeachingDetailOptions}
                 />
               )
             ) : sessionMode === "pre" ? (
@@ -8732,8 +9040,72 @@ function Editable({ value, onSave, multiline = false, className = "", as: Tag = 
   );
 }
 
+function TeachingDetailControls({
+  value,
+  onChange,
+  compact = false,
+}) {
+  const current = {
+    ...DEFAULT_TEACHING_DETAIL_OPTIONS,
+    ...(value || {}),
+  };
+  const rows = [
+    {
+      key: "explainLabValues",
+      label: "Explain lab values",
+      examples: "HbA1c, LDL vs. HDL, triglycerides, CBC indices, electrolytes",
+    },
+    {
+      key: "explainDiagnosticValues",
+      label: "Explain diagnostic values",
+      examples: "AHI/RDI, ejection fraction, PFT measures, device-download metrics, imaging scores",
+    },
+  ];
+
+  return (
+    <div className={`rounded-lg border border-slate-200 bg-slate-50 ${compact ? "p-3" : "p-4"}`}>
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <div>
+          <div className="text-sm font-bold text-slate-900">Student value explanations</div>
+          <div className="text-xs text-slate-600 mt-0.5">
+            Adds a plain-language “Value guide” inside the results teaching column. Test purpose, why it was ordered, and clinical meaning remain visible either way.
+          </div>
+        </div>
+      </div>
+      <div className="grid gap-2 md:grid-cols-2">
+        {rows.map((row) => {
+          const enabled = current[row.key] !== false;
+          return (
+            <div key={row.key} className="rounded-md border border-slate-200 bg-white p-3">
+              <div className="text-sm font-semibold text-slate-900">{row.label}</div>
+              <div className="text-xs text-slate-500 mt-1 min-h-[2.25rem]">{row.examples}</div>
+              <div className="inline-flex rounded-md border border-slate-300 overflow-hidden mt-3" role="group" aria-label={row.label}>
+                {[true, false].map((choice) => (
+                  <button
+                    key={String(choice)}
+                    type="button"
+                    aria-pressed={enabled === choice}
+                    onClick={() => onChange({ ...current, [row.key]: choice })}
+                    className={`px-3 py-1.5 text-xs font-semibold transition ${
+                      enabled === choice
+                        ? "bg-indigo-600 text-white"
+                        : "bg-white text-slate-600 hover:bg-slate-100"
+                    }`}
+                  >
+                    {choice ? "Yes" : "No"}
+                  </button>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ============ PREVIEW EDITOR COMPONENT ============
-function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, generationAttempts, aiStatus, focusLabels, phase, session }) {
+function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, generationAttempts, aiStatus, focusLabels, phase, session, teachingDetailOptions, onTeachingDetailOptionsChange }) {
   const s = previewData.sections;
   const [previewScale, setPreviewScale] = React.useState(0.72);
   const SectionHeader = ({ label, enabled, onToggle, count }) => (
@@ -8875,7 +9247,14 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
       <div className="grid gap-4 preview-split-grid" style={{ gridTemplateColumns: "minmax(0, 380px) minmax(0, 1fr)" }}>
         {/* LEFT: controls */}
         <div className="space-y-3" style={{ maxHeight: "calc(100vh - 200px)", overflowY: "auto", paddingRight: "0.5rem" }}>
-          <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider mb-1">Sections</div>
+          <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider mb-1">Teaching detail</div>
+          <TeachingDetailControls
+            value={teachingDetailOptions}
+            onChange={onTeachingDetailOptionsChange}
+            compact
+          />
+
+          <div className="text-xs uppercase font-semibold text-slate-500 tracking-wider mb-1 pt-1">Sections</div>
 
           {/* Session Goal */}
           <div className="bg-white rounded-lg border border-slate-200 overflow-hidden">
@@ -8980,22 +9359,83 @@ function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, 
                             {tc.data.keyLabsAndImaging?.length > 0 && (
                               <div>
                                 <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Documented Results ({tc.data.keyLabsAndImaging.length})</div>
-                                <ul className="mt-0.5 ml-3 list-disc text-slate-600">
-                                  {tc.data.keyLabsAndImaging.map((lab, i) => (
-                                    <li key={i}>
-                                      <b>{lab.study}</b>
-                                      {lab.result ? ` — ${lab.result}` : ""}
-                                    </li>
-                                  ))}
-                                </ul>
+                                <div className="mt-1 space-y-2">
+                                  {tc.data.keyLabsAndImaging.map((lab, i) => {
+                                    const resultType = inferTeachingResultType(lab, lab.study, lab.result);
+                                    return (
+                                      <div key={i} className="rounded border border-slate-200 bg-white p-2">
+                                        <div className="flex items-start justify-between gap-2">
+                                          <div className="text-xs text-slate-700">
+                                            <b>{lab.study}</b>
+                                            {lab.result ? ` — ${lab.result}` : ""}
+                                          </div>
+                                          <select
+                                            value={resultType}
+                                            onChange={e => {
+                                              const nextResults = tc.data.keyLabsAndImaging.map((item, itemIdx) =>
+                                                itemIdx === i ? { ...item, resultType: e.target.value, resultTypeSource: "manual" } : item
+                                              );
+                                              updateTeachingCaseField(idx, "keyLabsAndImaging", nextResults);
+                                            }}
+                                            className="px-1.5 py-1 border border-slate-300 rounded text-xs bg-white"
+                                            aria-label={`Result type for ${lab.study}`}
+                                          >
+                                            <option value="lab">Lab</option>
+                                            <option value="diagnostic">Diagnostic</option>
+                                          </select>
+                                        </div>
+                                        <label className="block text-[0.65rem] font-semibold text-slate-500 uppercase tracking-wide mt-2">
+                                          Student value guide
+                                        </label>
+                                        <textarea
+                                          value={getResultValueExplanation(lab, lab.study, lab.result, resultType)}
+                                          onChange={e => {
+                                            const nextResults = tc.data.keyLabsAndImaging.map((item, itemIdx) =>
+                                              itemIdx === i ? { ...item, valueExplanation: e.target.value } : item
+                                            );
+                                            updateTeachingCaseField(idx, "keyLabsAndImaging", nextResults);
+                                          }}
+                                          rows={2}
+                                          className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-xs"
+                                          placeholder="Define abbreviations, units, scores, or panel components for the student."
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
                               </div>
                             )}
                             {tc.data.treatmentApproach?.firstLine?.length > 0 && (
                               <div>
-                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Treatment ({tc.data.treatmentApproach.firstLine.length} first-line)</div>
-                                <ul className="mt-0.5 ml-3 list-disc text-slate-600">
-                                  {tc.data.treatmentApproach.firstLine.map((t, i) => <li key={i}>{t.treatment}</li>)}
-                                </ul>
+                                <div className="font-semibold text-slate-700 uppercase tracking-wide" style={{fontSize: "0.65rem"}}>Treatment & Consult Teaching ({tc.data.treatmentApproach.firstLine.length})</div>
+                                <div className="mt-1 space-y-2">
+                                  {tc.data.treatmentApproach.firstLine.map((t, i) => (
+                                    <div key={i} className="rounded border border-slate-200 bg-white p-2">
+                                      <div className="text-xs font-semibold text-slate-700">
+                                        {t.treatment}
+                                        {t.dosing ? <span className="font-normal text-slate-500"> — {t.dosing}</span> : null}
+                                      </div>
+                                      <label className="block text-[0.65rem] font-semibold text-slate-500 uppercase tracking-wide mt-2">
+                                        Why it helps / what the consult does
+                                      </label>
+                                      <textarea
+                                        value={getTreatmentTeachingRationale(t)}
+                                        onChange={e => {
+                                          const nextFirstLine = tc.data.treatmentApproach.firstLine.map((item, itemIdx) =>
+                                            itemIdx === i ? { ...item, teachingRationale: e.target.value } : item
+                                          );
+                                          updateTeachingCaseField(idx, "treatmentApproach", {
+                                            ...tc.data.treatmentApproach,
+                                            firstLine: nextFirstLine,
+                                          });
+                                        }}
+                                        rows={3}
+                                        className="w-full mt-1 px-2 py-1 border border-slate-300 rounded text-xs"
+                                        placeholder="Explain the target, expected benefit, and why this treatment or consult fits this patient."
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
                               </div>
                             )}
                             {tc.data.communicationTeaching?.scenario && (
@@ -9163,6 +9603,42 @@ const buildInRoomHtml = (doc, session) => {
   const esc = (str) => String(str ?? "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+  // Pull the AI's value definitions into the main pre-visit laboratory and
+  // diagnostic sections. This keeps the raw chart data easy to scan while
+  // still giving the student a nearby glossary for unfamiliar values.
+  const teachingResultGuides = [];
+  const seenTeachingGuides = new Set();
+  enabledCases.forEach((teachingCase) => {
+    const caseData = teachingCase?.data || teachingCase || {};
+    normalizeTeachingResults(
+      caseData.keyLabsAndImaging,
+      DEFAULT_TEACHING_DETAIL_OPTIONS
+    ).forEach((item) => {
+      if (!item.valueExplanation) return;
+      const key = `${item.resultType}|${item.study}|${item.valueExplanation}`.toLowerCase();
+      if (seenTeachingGuides.has(key)) return;
+      seenTeachingGuides.add(key);
+      teachingResultGuides.push(item);
+    });
+  });
+
+  const renderStudentValueGuide = (resultType) => {
+    const optionEnabled = resultType === "lab"
+      ? doc.teachingDetailOptions?.explainLabValues !== false
+      : doc.teachingDetailOptions?.explainDiagnosticValues !== false;
+    if (!optionEnabled) return "";
+
+    const entries = teachingResultGuides.filter(
+      (item) => item.resultType === resultType
+    );
+    if (entries.length === 0) return "";
+
+    const title = resultType === "lab"
+      ? "Lab value guide"
+      : "Diagnostic value guide";
+    return `<div class="lab-note" style="margin-top:8px;"><div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">${title}</div><ul style="margin:0;padding-left:16px;">${entries.map((item) => `<li style="margin-bottom:4px;"><b>${esc(item.study)}${item.result ? ` — ${esc(item.result)}` : ""}:</b> ${esc(item.valueExplanation)}</li>`).join("")}</ul></div>`;
+  };
 
   // Deterministic prenote parsing
  const parsedPrenote = parsePrenote(
@@ -10634,7 +11110,11 @@ const buildInRoomHtml = (doc, session) => {
     // happened; the smaller gray line teaches what the test does and why it
     // was ordered in this patient's scenario.
     const patientResults = normalizeTeachingResults(
-      c.keyLabsAndImaging
+      c.keyLabsAndImaging,
+      {
+        explainLabValues: false,
+        explainDiagnosticValues: false,
+      }
     );
 
     if (patientResults.length > 0) {
@@ -10686,6 +11166,34 @@ const buildInRoomHtml = (doc, session) => {
           html += `</li>`;
         });
         html += `</ul></div>`;
+      }
+
+      // Management teaching — especially important for consultations and
+      // allied-health referrals, where the discipline name alone does not tell
+      // a student what will happen or why the requested focus matters.
+      const treatmentItems = Array.isArray(c.treatmentApproach?.firstLine)
+        ? c.treatmentApproach.firstLine
+        : [];
+      if (treatmentItems.length > 0) {
+        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-people-group"></i> Treatment &amp; Consult Rationale</div><ul>`;
+        treatmentItems.forEach((item) => {
+          const treatmentName = stripTreatmentVerb(item?.treatment || "Treatment");
+          const dosing = String(item?.dosing || "").trim();
+          const rationale = getTreatmentTeachingRationale(item);
+          const evidence = String(item?.evidence || "").trim();
+          html += `<li><b>${esc(treatmentName)}</b>${dosing ? ` — ${esc(dosing)}` : ""}`;
+          if (rationale) html += `<div style="margin-top:2px;color:#44403c;"><b>Why / what it does:</b> ${esc(rationale)}</div>`;
+          if (evidence) html += `<div style="margin-top:2px;opacity:.75;"><em>${esc(evidence)}</em></div>`;
+          html += `</li>`;
+        });
+        html += `</ul>`;
+        const additionalTreatmentNotes = Array.isArray(c.treatmentApproach?.additional)
+          ? c.treatmentApproach.additional.filter(Boolean)
+          : [];
+        if (additionalTreatmentNotes.length > 0) {
+          html += `<p style="margin-top:5px;"><b>Additional considerations:</b> ${additionalTreatmentNotes.map((item) => esc(item)).join(" | ")}</p>`;
+        }
+        html += `</div>`;
       }
 
       // Don't miss (WARN box)
@@ -10941,6 +11449,14 @@ const buildInRoomHtml = (doc, session) => {
     ) {
       diagnosticsHtml += `<div class="lab-note">${esc(na.diagnosticsSummary)}</div>`;
     }
+  }
+
+  const diagnosticValueGuideHtml = renderStudentValueGuide("diagnostic");
+  if (diagnosticValueGuideHtml) {
+    if (!diagnosticsHtml) {
+      diagnosticsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Imaging / Diagnostics</div><div class="sec-div-line"></div></div>`;
+    }
+    diagnosticsHtml += diagnosticValueGuideHtml;
   }
 
   let labsHtml = "";
@@ -12330,6 +12846,14 @@ const buildInRoomHtml = (doc, session) => {
   if (!hasAnyLabs && !na.labTrendsSummary && labSourceText) {
     labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
     labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(labSourceText)}</pre>`;
+  }
+
+  const labValueGuideHtml = renderStudentValueGuide("lab");
+  if (labValueGuideHtml) {
+    if (!labsHtml) {
+      labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
+    }
+    labsHtml += labValueGuideHtml;
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -14901,7 +15425,8 @@ function DocumentContent({ doc, phase, session }) {
         {enabledCases.map((tc, idx) => {
           const c = tc.data;
           const patientResults = normalizeTeachingResults(
-            c.keyLabsAndImaging
+            c.keyLabsAndImaging,
+            doc.teachingDetailOptions
           );
           return (
             <section key={idx} className="doc-case-wrap">
@@ -15078,7 +15603,7 @@ function DocumentContent({ doc, phase, session }) {
                         <tr>
                           <th style={{ width: "24%" }}>Study</th>
                           <th style={{ width: "32%" }}>Patient Result</th>
-                          <th>What It Does / Why It Was Ordered</th>
+                          <th>Teaching Explanation / Why It Was Ordered</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -15111,22 +15636,26 @@ function DocumentContent({ doc, phase, session }) {
                     <div className="keep-together" style={{ marginBottom: "1rem" }}>
                       <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>First-Line Management</div>
                       <div className="doc-table-scroll">
-                        <table className="doc-table">
+                        <table className="doc-table" style={{ fontSize: "0.78rem" }}>
                           <thead>
                             <tr>
-                              <th>Treatment</th>
-                              <th>Dosing</th>
-                              <th>Evidence</th>
+                              <th style={{ width: "20%" }}>Treatment / Consult</th>
+                              <th style={{ width: "18%" }}>Dose / Plan</th>
+                              <th>Why It Helps / What the Consult Does</th>
+                              <th style={{ width: "20%" }}>Evidence</th>
                             </tr>
                           </thead>
                           <tbody>
                             {c.treatmentApproach.firstLine.map((t, i) => (
-  <tr key={i}>
-    <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{stripTreatmentVerb(t.treatment)}</td>
-    <td>{t.dosing}</td>
-    <td style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
-  </tr>
-))}
+                              <tr key={i}>
+                                <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{stripTreatmentVerb(t.treatment)}</td>
+                                <td>{t.dosing}</td>
+                                <td style={{ color: "var(--doc-warm-gray)" }}>
+                                  {getTreatmentTeachingRationale(t) || "—"}
+                                </td>
+                                <td style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{t.evidence}</td>
+                              </tr>
+                            ))}
                           </tbody>
                         </table>
                       </div>
