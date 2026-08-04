@@ -2473,20 +2473,51 @@ const [customTopics, setCustomTopics] = useState([]);
     const temperature = Number.isFinite(options.temperature)
       ? options.temperature
       : 0.5;
+    // Bound every AI call at 90 seconds. A hung Groq connection otherwise
+    // leaves the user staring at "Generating case 2 of 4..." with no
+    // recovery. On timeout, the existing catch/retry path takes over.
+    const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 90000;
+    const controller = new AbortController();
+    const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
 
-    const res = await fetch(WORKER_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        temperature,
-        max_tokens: maxTokens,
-      }),
-    });
+    let res;
+    try {
+      res = await fetch(WORKER_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: DEFAULT_MODEL,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          temperature,
+          max_tokens: maxTokens,
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      clearTimeout(timeoutHandle);
+      if (err?.name === "AbortError") {
+        // Timeout: transient — allow a retry within the caller's retry budget.
+        if (retryCount < maxRetries) {
+          console.warn(
+            `[callAi] Timed out after ${timeoutMs / 1000}s, retry ${retryCount + 1}/${maxRetries}`
+          );
+          setAiStatus(prev => ({
+            ...prev,
+            progress: `AI request timed out — retrying (attempt ${retryCount + 2})...`,
+          }));
+          await new Promise(r => setTimeout(r, 3000));
+          return callAi(systemPrompt, userPrompt, maxTokens, options, retryCount + 1);
+        }
+        throw new Error(
+          `AI request timed out after ${timeoutMs / 1000}s (${maxRetries + 1} attempts). The service may be unavailable. Try again in a moment.`
+        );
+      }
+      throw err;
+    }
+    clearTimeout(timeoutHandle);
 
     if (!res.ok) {
       const err = await res.text();
@@ -3407,9 +3438,16 @@ Focus on: ${phase.focus}`;
         // Post-visit OR pre-visit-with-empty-deterministic-parser: use AI extraction as-is.
         // The deterministic PMH parser can fail on unfamiliar prenote formats;
         // when that happens we trust the AI's PMH-only extraction rather than
-        // dropping every problem.
+        // dropping every problem. Every problem gets tagged as AI-extracted so
+        // the UI can prompt the attending to verify before generating teaching
+        // content — the AI can hallucinate a problem the patient doesn't have,
+        // and a bogus problem otherwise flows silently into an expensive
+        // teaching-case AI call.
         mergedActiveProblems = Array.isArray(parsed.activeProblems)
-          ? parsed.activeProblems
+          ? parsed.activeProblems.map(p => ({
+              ...p,
+              source: p.source || (isPreVisit ? "prenote+ai" : "ai-extracted"),
+            }))
           : [];
         if (isPreVisit && deterministicProblemNames.length > 0 && mergedActiveProblems.length === 0) {
           // AI didn't return activeProblems but the PMH-only extraction succeeded —
@@ -3679,11 +3717,46 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
     const parsed = extractJson(response);
     console.log("[synthesizeSources] topics:", parsed.topics?.length, "first claim sample:", JSON.stringify(parsed.topics?.[0]?.claims?.[0], null, 2));
 
+    // Post-hoc verification: count how many claims cite each source. The prompt
+    // asks the AI to make every source contribute at least one unique claim,
+    // but the AI can silently ignore that. Compute the actual attribution and
+    // flag any zero-attribution sources so the attending sees the gap in the
+    // Review panel instead of assuming their PDF was integrated.
+    const attributionCounts = {};
+    sourcePackages.forEach(pkg => { attributionCounts[pkg.label] = 0; });
+    (parsed.topics || []).forEach(topic => {
+      (topic.claims || []).forEach(claim => {
+        const provenanceList = claim.provenance || claim.sources || [];
+        provenanceList.forEach(p => {
+          if (attributionCounts.hasOwnProperty(p)) {
+            attributionCounts[p] += 1;
+          }
+        });
+      });
+    });
+    const uncitedSources = Object.entries(attributionCounts)
+      .filter(([, count]) => count === 0)
+      .map(([label]) => label);
+    if (uncitedSources.length > 0) {
+      console.warn(
+        `[synthesizeSources] ${uncitedSources.length} source(s) received zero claim attributions:`,
+        uncitedSources
+      );
+    }
+    // Enrich each sourceContribution row with its actual attribution count so
+    // the preview UI can render an accurate bar chart (was previously
+    // computed on the fly from topics, but is now authoritative here).
+    const enrichedContribution = sourceContribution.map(sc => ({
+      ...sc,
+      attributedClaims: attributionCounts[sc.source] || 0,
+    }));
+
     return {
       synthesized: true,
       ...parsed,
-      sourceContribution,
+      sourceContribution: enrichedContribution,
       allFigures,
+      uncitedSources,
     };
   };
 
@@ -3927,11 +4000,24 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
       const { name: problem, kind } = problemsToTeach[i];
       const isTangential = kind === "tangential";
 
-      // Reuse cached success — avoids re-billing and preserves the exact prior output
-      if (cachedCases[problem]) {
+      // Reuse cached success — avoids re-billing and preserves the exact prior output.
+      // Try exact match first, then a normalized lookup so tiny edits to the problem
+      // string (casing, whitespace, trailing punctuation) still hit the cache.
+      const cacheHit = cachedCases[problem] || (() => {
+        const norm = String(problem || "")
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .replace(/[.,;:!?)\]]+$/g, "")
+          .trim();
+        return norm ? cachedCases[norm] : null;
+      })();
+      if (cacheHit) {
         console.log(`[teachingCase] Reusing cached case for "${problem}"`);
-        teachingCases.push(cachedCases[problem]);
-        caseResults.push({ problem, status: "cached", data: cachedCases[problem] });
+        // If the current problem string differs from the cached version, update
+        // the cached case's .problem field so the rendered doc uses the new name.
+        const reused = cacheHit.problem === problem ? cacheHit : { ...cacheHit, problem };
+        teachingCases.push(reused);
+        caseResults.push({ problem, status: "cached", data: reused });
         continue;
       }
 
@@ -5483,11 +5569,25 @@ Formatting rules:
     let synthesized = null;
 
     // Build cache of previously-successful outputs. Only used when retryFailedOnly is true.
+    // Store under both the exact problem string and a normalized key so trivial
+    // edits (whitespace, casing, trailing punctuation) still hit the cache and
+    // avoid re-billing an unchanged problem.
+    const normalizeProblemCacheKey = (raw) =>
+      String(raw || "")
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .replace(/[.,;:!?)\]]+$/g, "")
+        .trim();
     const cachedSuccessfulCases = {};
     if (retryFailedOnly && aiTeachingContent?.teachingCases) {
       aiTeachingContent.teachingCases.forEach(tc => {
-        // A case is "successful" if it made it into teachingCases (failed ones never do)
+        if (!tc?.problem) return;
+        // Store under the exact string (fast path) and the normalized key.
         cachedSuccessfulCases[tc.problem] = tc;
+        const normKey = normalizeProblemCacheKey(tc.problem);
+        if (normKey && !cachedSuccessfulCases[normKey]) {
+          cachedSuccessfulCases[normKey] = tc;
+        }
       });
     }
 
@@ -5525,6 +5625,14 @@ Formatting rules:
           synthesized = await synthesizeSources();
           setSynthesizedEvidence(synthesized);
           attempt.synthesis = "success";
+          // Surface uncited sources as soft warnings — the synthesis succeeded
+          // but the AI silently ignored some of the attending's inputs.
+          if (synthesized?.uncitedSources?.length > 0) {
+            attempt.errors.push({
+              unit: "synthesis-attribution",
+              message: `The AI didn't cite ${synthesized.uncitedSources.length} of your source(s): ${synthesized.uncitedSources.join(", ")}. The content may have overlapped with other sources, or the AI may have skipped it. Consider re-running synthesis or verifying the missing source added value.`,
+            });
+          }
         } catch (e) {
           attempt.synthesis = "failed";
           attempt.errors.push({ unit: "synthesis", message: e.message });
@@ -7624,6 +7732,18 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                       </span>
                     </div>
                     <p className="text-xs text-slate-600 mb-3 ml-9">Each selected problem generates its own teaching case in the final document.</p>
+                    {/* Post-visit AI verification prompt — post-visit notes have no
+                        deterministic "problem list" section to enforce against, so the
+                        AI extraction is unverified. Warn the attending before they
+                        burn AI calls on a fabricated problem. */}
+                    {sessionMode === "post" && activeProblems.some(p => p.source === "ai-extracted") && (
+                      <div className="ml-9 mb-3 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <strong>Verify against the note before selecting.</strong> The AI extracted these problems from the clinical note but can occasionally invent or over-generalize a problem. Delete any that aren't actually documented — each selected problem costs an AI call for its teaching content.
+                        </div>
+                      </div>
+                    )}
                     <div className="space-y-2 ml-9">
                       {activeProblems.map((p, i) => {
                         const selected = selectedProblems.includes(p.problem);
@@ -7644,6 +7764,21 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                                 <div className="text-sm font-semibold text-slate-900 flex items-center gap-2 flex-wrap">
                                   {p.problem}
                                   {isCustom && <span className="text-[10px] uppercase tracking-wider bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium">You added</span>}
+                                  {p.source === "ai-extracted" && !isCustom && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium" title="Extracted by AI from the note — verify before selecting">
+                                      AI · verify
+                                    </span>
+                                  )}
+                                  {p.source === "prenote" && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-medium" title="Parsed directly from the prenote's Past Medical History">
+                                      From PMH
+                                    </span>
+                                  )}
+                                  {p.source === "prenote+ai" && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full font-medium" title="From the prenote's PMH; details enriched by AI">
+                                      From PMH
+                                    </span>
+                                  )}
                                 </div>
                                 {p.keyIssue && <div className="text-xs text-slate-600 mt-1">{p.keyIssue}</div>}
                                 {p.teachingValue && <div className="text-xs text-indigo-700 mt-1 italic"><span className="font-medium not-italic">Teaching value: </span>{p.teachingValue}</div>}
@@ -15064,8 +15199,32 @@ body.dark .shelf-option-btn.chosen-wrong { background: rgba(239, 68, 68, 0.1); c
 
 // ============ FINAL DOCUMENT COMPONENT ============
 function FinalDocument({ doc, phase, session, onPrint, onEdit, onUpdate }) {
+  // savedHtml holds the attending's in-place edits (bold, highlights, text
+  // changes) so they survive parent re-renders. On mount and whenever the
+  // doc identity changes, we start fresh from the freshly-rendered content.
+  // Every blur snapshots the current DOM into savedHtml.
   const [savedHtml, setSavedHtml] = React.useState(null);
   const editableRef = React.useRef(null);
+
+  // Reset saved edits when we're handed a genuinely new document (new session,
+  // regeneration). Uses sessionId + generatedIso as the identity signal.
+  const docIdentity = `${doc?.sessionId || ""}-${doc?.generatedIso || ""}`;
+  const lastIdentityRef = React.useRef(docIdentity);
+  React.useEffect(() => {
+    if (lastIdentityRef.current !== docIdentity) {
+      setSavedHtml(null);
+      lastIdentityRef.current = docIdentity;
+    }
+  }, [docIdentity]);
+
+  // After React re-renders the initial content, restore any saved edits on
+  // top of the DOM so bold/highlights/text tweaks persist across parent
+  // state changes (theme toggles, focus changes, etc.).
+  React.useLayoutEffect(() => {
+    if (savedHtml && editableRef.current && editableRef.current.innerHTML !== savedHtml) {
+      editableRef.current.innerHTML = savedHtml;
+    }
+  });
 
   if (!doc) return null;
   const s = doc.sections || {};
