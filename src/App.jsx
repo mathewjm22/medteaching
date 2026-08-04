@@ -821,6 +821,24 @@ const extractPrenoteSections = (rawText) => {
     .replace(/```[a-z0-9_-]*\s*/gi, "\n")
     .replace(/```/g, "\n");
 
+  // Strip AI meta-narration that occasionally leaks into generated prenotes.
+  // These are self-referential sentences the model produces while thinking
+  // out loud ("Now I have comprehensive information to..."). They're never
+  // clinically useful and can bleed into whatever section they land beside.
+  // We remove whole sentences that start with these signature phrases,
+  // stopping at the next sentence boundary or blank line.
+  const metaNarrationPatterns = [
+    /(?:^|\n)\s*Now (?:I|I['’]ll)[^\n]{0,300}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*Based on (?:my|the) (?:comprehensive |thorough |detailed )?(?:review|analysis)[^\n]{0,300}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*Let me (?:compile|complete|create|now|proceed|generate)[^\n]{0,300}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*I(?:['’]| ha)?ve (?:now )?(?:completed|reviewed|compiled|gathered)[^\n]{0,300}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*(?:I['’]ll|I will) (?:now )?(?:compile|create|generate|produce)[^\n]{0,300}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*Here(?:['’]s| is) (?:the |a )?(?:complete|comprehensive|full)[^\n]{0,300}(?:\.|:)\s*/gi,
+  ];
+  metaNarrationPatterns.forEach((pattern) => {
+    text = text.replace(pattern, "\n");
+  });
+
   /*
    * Some generated prenotes collapse several headings onto one line:
    *
@@ -10564,6 +10582,140 @@ function PreviewEditor({ previewData, setPreviewData, togglePreviewSection, togg
 //   - doc.sections.teachingCases (with new suggestedQuestions + dontMiss fields)
 //   - doc.medDescriptions, doc.lightweightTeaching, doc.rawPrenote
 // ============================================================================
+
+// ============================================================================
+// KEY DIAGNOSES PARSER
+// ============================================================================
+// Structured prenotes often include a "KEY DIAGNOSES" section that contains
+// much richer per-problem detail than the PAST MEDICAL HISTORY bullets. Each
+// diagnosis in KEY DIAGNOSES is separated by a dashed rule and contains
+// longitudinal history, medication timeline, prior therapies, most recent
+// consultant note review, follow-up plan, and care coordination. We parse
+// these into a map keyed by lowercased problem name so problem cards can
+// pull richer content when a match is found.
+const parseKeyDiagnoses = (rawText) => {
+  if (!rawText || typeof rawText !== "string") return {};
+
+  const blocks = {};
+  const text = String(rawText).replace(/\r\n?/g, "\n");
+
+  // Diagnosis headers in KEY DIAGNOSES look like:
+  //   ATTENTION DEFICIT HYPERACTIVITY DISORDER ..... Active/Changing
+  //   ADJUSTMENT DISORDER WITH ANXIOUS MOOD ..... Active/Changing
+  //   FAMILY HISTORY OF INFLAMMATORY BOWEL DISEASE ..... Stable/Chronic
+  // The pattern: ALL-CAPS heading followed by spaced dots and a status label.
+  // Some prenotes may use ---- ruled boxes before/after the heading.
+  const headerRegex = /(?:^|\n)\s*[-]{4,}\s*\n\s*([A-Z][A-Z0-9 ,'&()/.-]+?)\s*\.{3,}\s*([A-Za-z][A-Za-z /]+?)\s*\n\s*[-]{4,}/g;
+
+  const matches = [];
+  let match;
+  while ((match = headerRegex.exec(text)) !== null) {
+    matches.push({
+      title: match[1].trim(),
+      status: match[2].trim(),
+      startIndex: match.index + match[0].length,
+    });
+  }
+
+  if (matches.length === 0) return {};
+
+  // For each match, its body ends at the next match or at end of text.
+  matches.forEach((m, i) => {
+    const bodyEnd = i + 1 < matches.length ? matches[i + 1].startIndex - (matches[i + 1].startIndex - text.lastIndexOf("----", matches[i + 1].startIndex)) : text.length;
+    const body = text.slice(m.startIndex, bodyEnd > m.startIndex ? bodyEnd : text.length).trim();
+    if (!body) return;
+
+    // Parse the body into structured fields. Each field is introduced by a
+    // label like "- Longitudinal diagnosis history:", "- Most recent consultant
+    // note review:", or sub-bullets like "* Associated Medications", "* Prior
+    // Therapies timeline", "* Diagnostics/Procedures", "* Follow-up / Monitoring",
+    // "* Care Coordination".
+    const extractField = (label) => {
+      const re = new RegExp(
+        `(?:^|\\n)\\s*[-*]\\s*${label}[:\\s]*([\\s\\S]*?)(?=\\n\\s*[-*]\\s+[A-Z]|\\n\\s*\\*\\s+[A-Z]|$)`,
+        "i"
+      );
+      const fieldMatch = body.match(re);
+      return fieldMatch ? fieldMatch[1].trim() : "";
+    };
+
+    blocks[m.title.toLowerCase().trim()] = {
+      rawTitle: m.title,
+      status: m.status,
+      longitudinalHistory: extractField("Longitudinal diagnosis history"),
+      recentConsultReview: extractField("Most recent consultant note review"),
+      associatedMedications: extractField("Associated Medications"),
+      priorTherapies: extractField("Prior Therapies timeline"),
+      diagnosticsProcedures: extractField("Diagnostics/Procedures"),
+      followUpMonitoring: extractField("Follow-up / Monitoring"),
+      careCoordination: extractField("Care Coordination"),
+      rawBody: body,
+    };
+  });
+
+  return blocks;
+};
+
+// Fuzzy-match a PMH problem name to a KEY DIAGNOSES block. Handles the
+// common case where PMH says "Attention Deficit Hyperactivity Disorder,
+// unspecified type (F90.9)" and KEY DIAGNOSES says "ATTENTION DEFICIT
+// HYPERACTIVITY DISORDER".
+const findKeyDiagnosisBlock = (problemName, keyDxBlocks) => {
+  if (!problemName || !keyDxBlocks) return null;
+  const target = String(problemName)
+    .toLowerCase()
+    .replace(/\([^)]*\)/g, "")
+    .replace(/,\s*unspecified\s+type/gi, "")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!target) return null;
+
+  // Exact normalized match first
+  for (const [key, block] of Object.entries(keyDxBlocks)) {
+    const normKey = key
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (normKey === target) return block;
+  }
+
+  // Substring match — either direction
+  for (const [key, block] of Object.entries(keyDxBlocks)) {
+    const normKey = key
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (normKey.includes(target) || target.includes(normKey)) return block;
+  }
+
+  // Token overlap — accept if 70%+ of the shorter side's meaningful tokens
+  // appear in the other side.
+  const stopWords = new Set(["the", "and", "or", "of", "in", "with", "for", "a", "an", "type"]);
+  const tokenize = (s) =>
+    s.split(/\s+/).filter((t) => t.length > 2 && !stopWords.has(t));
+  const targetTokens = new Set(tokenize(target));
+  if (targetTokens.size === 0) return null;
+
+  for (const [key, block] of Object.entries(keyDxBlocks)) {
+    const normKey = key
+      .replace(/[^a-z0-9\s]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const keyTokens = new Set(tokenize(normKey));
+    if (keyTokens.size === 0) continue;
+    const smaller = targetTokens.size <= keyTokens.size ? targetTokens : keyTokens;
+    const larger = smaller === targetTokens ? keyTokens : targetTokens;
+    let shared = 0;
+    smaller.forEach((t) => {
+      if (larger.has(t)) shared++;
+    });
+    if (shared / smaller.size >= 0.7) return block;
+  }
+
+  return null;
+};
+
 // ============================================================================
 // SHARED IN-ROOM DOCUMENT TEMPLATE (long-form layout)
 // ============================================================================
@@ -11013,6 +11165,16 @@ const buildInRoomHtml = (doc, session) => {
     prenoteSections.medRec,
     fallbackSection("MED REC")
   );
+
+  // KEY DIAGNOSES holds longitudinal per-problem detail (medication timeline,
+  // prior therapies, follow-up plan) that's richer than the PMH bullets.
+  // We parse it here so problem cards can pull in structured extras when a
+  // matching block exists.
+  const keyDiagnosesText = firstNonEmptyText(
+    prenoteSections.keyDiagnoses,
+    fallbackSection("KEY DIAGNOSES")
+  );
+  const keyDiagnosesBlocks = parseKeyDiagnoses(keyDiagnosesText);
 
   // Medication extraction (unchanged logic from prior version)
   const stripCcdaForFallback = (text) => {
@@ -12289,6 +12451,75 @@ const buildInRoomHtml = (doc, session) => {
       html += `</div>`;
     }
 
+    // KEY DIAGNOSES enrichment — pull richer longitudinal content when a
+    // matching block exists in the prenote's KEY DIAGNOSES section. Renders
+    // as its own subsections so the student sees the depth the prenote author
+    // provided (history, prior therapy timeline, follow-up plan, coordination).
+    const keyDxBlock = findKeyDiagnosisBlock(problemName, keyDiagnosesBlocks) ||
+                       findKeyDiagnosisBlock(c.primaryDiagnosis?.name, keyDiagnosesBlocks);
+
+    // Helper to render a labeled sub-subsection with an icon. Multi-line
+    // content is preserved (split on newlines into a bulleted list where
+    // appropriate; otherwise rendered as prose).
+    const renderKeyDxField = (icon, label, content) => {
+      if (!content || typeof content !== "string") return "";
+      const trimmed = content.trim();
+      if (!trimmed || /^(?:none documented|none|n\/?a)\.?$/i.test(trimmed)) return "";
+
+      let bodyHtml = "";
+      // Detect whether the field body is a bulleted list or prose.
+      const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const bulletLines = lines.filter(l => /^[\*\-•]/.test(l));
+      if (bulletLines.length >= 2) {
+        // Bulleted list — parse nested structure (some fields use sub-bullets
+        // for "Current:" / "Historical clinically relevant:")
+        bodyHtml = `<ul style="margin:0;padding-left:16px;">`;
+        lines.forEach(l => {
+          const cleaned = l.replace(/^[\*\-•]\s*/, "").trim();
+          if (!cleaned) return;
+          // A "Label:" line followed by items — bold the label.
+          const labelMatch = cleaned.match(/^([A-Z][^:]{1,60}):\s*$/);
+          if (labelMatch) {
+            bodyHtml += `<li style="list-style:none;margin-left:-16px;margin-top:3px;font-weight:600;color:var(--fg);">${esc(labelMatch[1])}:</li>`;
+          } else {
+            bodyHtml += `<li style="margin-bottom:2px;">${esc(cleaned)}</li>`;
+          }
+        });
+        bodyHtml += `</ul>`;
+      } else {
+        // Prose — split on double newlines into paragraphs
+        const paragraphs = trimmed.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+        if (paragraphs.length > 1) {
+          bodyHtml = paragraphs.map(p => `<p style="margin:0 0 4px;">${esc(p)}</p>`).join("");
+        } else {
+          bodyHtml = `<p style="margin:0;">${esc(trimmed)}</p>`;
+        }
+      }
+
+      return `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid ${icon}"></i> ${esc(label)}</div>${bodyHtml}</div>`;
+    };
+
+    if (keyDxBlock) {
+      // Longitudinal history — the story of how this problem developed and was
+      // managed over time. Often the single richest piece of context.
+      html += renderKeyDxField("fa-timeline", "Longitudinal History", keyDxBlock.longitudinalHistory);
+
+      // Most recent consultant note — what the specialist said at the last
+      // encounter. Extremely useful pre-visit context.
+      html += renderKeyDxField("fa-file-medical", "Most Recent Consultant Note", keyDxBlock.recentConsultReview);
+
+      // Prior therapies — what was tried, what failed, what worked. Prevents
+      // the student from suggesting things the patient has already tried.
+      html += renderKeyDxField("fa-clock-rotate-left", "Prior Therapies Tried", keyDxBlock.priorTherapies);
+
+      // Follow-up / Monitoring — the current surveillance plan.
+      html += renderKeyDxField("fa-calendar-check", "Follow-up Plan", keyDxBlock.followUpMonitoring);
+
+      // Care coordination — who is managing this problem, disability rating,
+      // MHTC assignment, etc.
+      html += renderKeyDxField("fa-people-arrows", "Care Coordination", keyDxBlock.careCoordination);
+    }
+
     // Completed patient results only. The bold/black line shows WHAT
     // happened; the smaller gray line teaches what the test does and why it
     // was ordered in this patient's scenario.
@@ -12641,12 +12872,35 @@ const buildInRoomHtml = (doc, session) => {
   const diagnosticNarrative =
     cleanDiagnosticsForDisplay(diagnosticsText);
 
+  // Detect whether the "narrative" is actually a "nothing to see here" placeholder.
+  // Prenotes commonly include lines like "No imaging or diagnostic procedures
+  // documented in the past 10 years" which shouldn't render as a section.
+  const isEmptyDiagnosticNarrative = (text) => {
+    if (!text) return true;
+    const cleaned = String(text)
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    if (cleaned.length < 15) return true;
+    // Common "nothing documented" phrasings
+    const emptyPatterns = [
+      /^no (?:imaging|diagnostic|diagnostics|procedures?|studies?)/,
+      /^(?:none|n\/?a|not documented|not available|not performed) documented/,
+      /^no (?:relevant )?(?:imaging|diagnostic|procedures?|studies?) (?:documented|performed|available|reported)/,
+      /^(?:none|no) (?:relevant )?(?:studies?|imaging|procedures?|scans?) (?:in|documented|performed)/,
+    ];
+    return emptyPatterns.some((pattern) => pattern.test(cleaned));
+  };
+
+  const hasRealDiagnosticContent =
+    diagnosticNarrative && !isEmptyDiagnosticNarrative(diagnosticNarrative);
+
   let diagnosticsHtml = "";
 
-  if (diagnosticNarrative || na.diagnosticsSummary) {
+  if (hasRealDiagnosticContent || na.diagnosticsSummary) {
     diagnosticsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Imaging / Diagnostics</div><div class="sec-div-line"></div></div>`;
 
-    if (diagnosticNarrative) {
+    if (hasRealDiagnosticContent) {
       diagnosticsHtml += renderDiagnosticNarrative(
         diagnosticNarrative
       );
@@ -12654,13 +12908,14 @@ const buildInRoomHtml = (doc, session) => {
 
     if (
       na.diagnosticsSummary &&
-      !diagnosticNarrative
-        .toLowerCase()
-        .includes(
-          String(na.diagnosticsSummary)
-            .toLowerCase()
-            .slice(0, 80)
-        )
+      (!hasRealDiagnosticContent ||
+        !diagnosticNarrative
+          .toLowerCase()
+          .includes(
+            String(na.diagnosticsSummary)
+              .toLowerCase()
+              .slice(0, 80)
+          ))
     ) {
       diagnosticsHtml += `<div class="lab-note">${esc(na.diagnosticsSummary)}</div>`;
     }
