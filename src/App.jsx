@@ -2048,11 +2048,27 @@ const storage = {
     } catch { return { keys: [] }; }
   },
 };
+// ===== Draft persistence key =====
+// Single-slot draft. Overwritten on every save; cleared on explicit user action.
+const DRAFT_STORAGE_KEY = "draft-v1";
+// Rough localStorage cap for a single value. Real limits vary by browser
+// (Chrome ~5MB, Safari lower under some conditions). We stay conservative.
+const DRAFT_MAX_BYTES = 4_000_000;
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("setup");
   const [saved, setSaved] = useState(false);
+  // Draft-restore banner: null = not shown, {payload, meta} = show banner
+  const [draftRestorePrompt, setDraftRestorePrompt] = useState(null);
+  // Save status shown subtly in header: "saving" | "saved" | "error" | null
+  const [draftSaveStatus, setDraftSaveStatus] = useState(null);
   const [copiedPrompt, setCopiedPrompt] = useState(null);
   const [promptViewerFor, setPromptViewerFor] = useState(null); // source key or { key, sourceName, prompt } when open
+  // Ephemeral per-session cache of prompt edits. Keyed by prompt key (source
+  // name for standard sources, "pubmedai-N" for per-topic PubMed AI prompts).
+  // Reset on session clear; not persisted across page loads because prompts
+  // regenerate from problem list + focus areas that may have changed.
+  const [promptEdits, setPromptEdits] = useState({});
   const [expandedSections, setExpandedSections] = useState({});
 
   // AI is enabled by default; user only toggles on/off
@@ -2238,13 +2254,36 @@ const [customTopics, setCustomTopics] = useState([]);
   const [aiTeachingContent, setAiTeachingContent] = useState(null);
   const [generatedDoc, setGeneratedDoc] = useState(null);
   const [synthesizedEvidence, setSynthesizedEvidence] = useState(null);
-  const [pubmedResults, setPubmedResults] = useState(null);
-  const [fetchingPubmed, setFetchingPubmed] = useState(false);
-
+  
   // Preview/edit mode - each section has {enabled, content}
   const [previewMode, setPreviewMode] = useState(false);
   const [previewData, setPreviewData] = useState(null);
   
+  // On mount, check for a saved draft. If one exists, offer to restore it
+  // rather than auto-loading — the attending may have deliberately closed
+  // the tab to start fresh.
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!parsed || !parsed.payload || !parsed.savedAt) return;
+      // Build a lightweight summary for the banner
+      const payload = parsed.payload;
+      const summary = {
+        savedAt: parsed.savedAt,
+        problemCount: (payload.selectedProblems || []).length,
+        sourceCount: Object.values(payload.sources || {}).filter(Boolean).length,
+        hasNote: Boolean(payload.clinicalNote?.trim()),
+        chiefConcern: payload.chiefConcern || payload.workingDx || "",
+        droppedHeavyFields: parsed.droppedHeavyFields || false,
+      };
+      setDraftRestorePrompt({ payload, summary });
+    } catch (e) {
+      console.warn("[draft] Could not read saved draft:", e);
+    }
+  }, []);
+
   // Load only the persistent bits: long-term goals + student name.
   // Everything else starts blank on each page load.
   useEffect(() => {
@@ -2299,24 +2338,173 @@ const [customTopics, setCustomTopics] = useState([]);
     })).catch(() => {});
   }, [session.studentName, session.licStartMonth]);
 
-  // beforeunload warning if there's meaningful in-progress work
+  // Debounced draft auto-save. Writes the full editable state to localStorage
+  // 2s after the last change. Skips if the draft-restore banner is still
+  // showing (avoids overwriting the pending draft while the attending decides).
   useEffect(() => {
-    const hasWork = clinicalNote?.trim() || rawPrenote?.trim() || generatedDoc || previewData;
-    if (!hasWork) return;
+    if (draftRestorePrompt) return;
+    // Skip empty drafts — no point saving a blank workspace
+    const hasContent = clinicalNote?.trim() || rawPrenote?.trim() ||
+      selectedProblems.length > 0 || Object.values(sources).some(Boolean) ||
+      generatedDoc || previewData;
+    if (!hasContent) return;
+
+    const timer = setTimeout(() => {
+      const payload = {
+        // Session config
+        session,
+        sessionMode,
+        // Clinical note + analysis
+        clinicalNote,
+        rawPrenote,
+        chiefConcern,
+        workingDx,
+        noteAnalysis,
+        activeProblems,
+        selectedProblems,
+        patientQuotes,
+        labTrends,
+        teachingLens,
+        // Focus + emphasis
+        focusAreas,
+        previsitEmphasis,
+        teachingDetailOptions,
+        customTopics,
+        // Sources
+        sources,
+        sourceResponses,
+        pdfAttachments,
+        imageAttachments,
+        sessionImageBytes,
+        // Goals
+        sessionGoal,
+        // Generated content
+        aiTeachingContent,
+        synthesizedEvidence,
+        generatedDoc,
+        previewData,
+        previewMode,
+        generationAttempts,
+        // UI position
+        activeTab,
+      };
+      setDraftSaveStatus("saving");
+      try {
+        const serialized = JSON.stringify({
+          payload,
+          savedAt: new Date().toISOString(),
+          droppedHeavyFields: false,
+        });
+        if (serialized.length > DRAFT_MAX_BYTES) {
+          // Too big — retry without the heavy image/PDF payloads. The attending
+          // will have to re-attach them on restore, but everything else survives.
+          const lightPayload = {
+            ...payload,
+            pdfAttachments: [],
+            imageAttachments: [],
+            sourceResponses: Object.fromEntries(
+              Object.entries(payload.sourceResponses || {}).map(([k, v]) => {
+                if (k === "pubmedai") return [k, {}];
+                return [k, { html: v?.html || "", images: [] }];
+              })
+            ),
+            sessionImageBytes: 0,
+          };
+          const lightSerialized = JSON.stringify({
+            payload: lightPayload,
+            savedAt: new Date().toISOString(),
+            droppedHeavyFields: true,
+          });
+          localStorage.setItem(DRAFT_STORAGE_KEY, lightSerialized);
+        } else {
+          localStorage.setItem(DRAFT_STORAGE_KEY, serialized);
+        }
+        setDraftSaveStatus("saved");
+        setTimeout(() => setDraftSaveStatus(null), 2000);
+      } catch (e) {
+        console.warn("[draft] Save failed:", e);
+        setDraftSaveStatus("error");
+        setTimeout(() => setDraftSaveStatus(null), 4000);
+      }
+    }, 2000);
+
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    session, sessionMode, clinicalNote, rawPrenote, chiefConcern, workingDx,
+    noteAnalysis, activeProblems, selectedProblems, patientQuotes, labTrends,
+    teachingLens, focusAreas, previsitEmphasis, teachingDetailOptions,
+    customTopics, sources, sourceResponses, pdfAttachments, imageAttachments,
+    sessionImageBytes, sessionGoal, aiTeachingContent, synthesizedEvidence,
+    generatedDoc, previewData, previewMode, generationAttempts, activeTab,
+    draftRestorePrompt,
+  ]);
+
+  const restoreDraft = (payload) => {
+    // Apply every field from the saved payload. Missing fields fall back to
+    // current state (which is usually initial defaults on a fresh load).
+    if (payload.session) setSession(prev => ({ ...prev, ...payload.session }));
+    if (payload.sessionMode) setSessionMode(payload.sessionMode);
+    if (payload.clinicalNote !== undefined) setClinicalNote(payload.clinicalNote);
+    if (payload.rawPrenote !== undefined) setRawPrenote(payload.rawPrenote);
+    if (payload.chiefConcern !== undefined) setChiefConcern(payload.chiefConcern);
+    if (payload.workingDx !== undefined) setWorkingDx(payload.workingDx);
+    if (payload.noteAnalysis !== undefined) setNoteAnalysis(payload.noteAnalysis);
+    if (payload.activeProblems) setActiveProblems(payload.activeProblems);
+    if (payload.selectedProblems) setSelectedProblems(payload.selectedProblems);
+    if (payload.patientQuotes) setPatientQuotes(payload.patientQuotes);
+    if (payload.labTrends) setLabTrends(payload.labTrends);
+    if (payload.teachingLens) setTeachingLens(payload.teachingLens);
+    if (payload.focusAreas) setFocusAreas(payload.focusAreas);
+    if (payload.previsitEmphasis) setPrevisitEmphasis(payload.previsitEmphasis);
+    if (payload.teachingDetailOptions) setTeachingDetailOptions(payload.teachingDetailOptions);
+    if (payload.customTopics) setCustomTopics(payload.customTopics);
+    if (payload.sources) setSources(payload.sources);
+    if (payload.sourceResponses) setSourceResponses(payload.sourceResponses);
+    if (payload.pdfAttachments) setPdfAttachments(payload.pdfAttachments);
+    if (payload.imageAttachments) setImageAttachments(payload.imageAttachments);
+    if (payload.sessionImageBytes !== undefined) setSessionImageBytes(payload.sessionImageBytes);
+    if (payload.sessionGoal !== undefined) setSessionGoal(payload.sessionGoal);
+    if (payload.aiTeachingContent) setAiTeachingContent(payload.aiTeachingContent);
+    if (payload.synthesizedEvidence) setSynthesizedEvidence(payload.synthesizedEvidence);
+    if (payload.generatedDoc) setGeneratedDoc(payload.generatedDoc);
+    if (payload.previewData) setPreviewData(payload.previewData);
+    if (payload.previewMode !== undefined) setPreviewMode(payload.previewMode);
+    if (payload.generationAttempts) setGenerationAttempts(payload.generationAttempts);
+    if (payload.activeTab) setActiveTab(payload.activeTab);
+    setDraftRestorePrompt(null);
+  };
+
+  const discardDraft = () => {
+    try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
+    setDraftRestorePrompt(null);
+  };
+
+  // beforeunload warning — only fires during the risky window: while a save is
+  // in progress, or if the last save failed. Once the draft is safely persisted,
+  // closing the tab is fine because we auto-restore on next load.
+  useEffect(() => {
+    if (draftSaveStatus !== "saving" && draftSaveStatus !== "error") return;
     const handler = (e) => {
       e.preventDefault();
-      e.returnValue = "You have work in progress that will be lost. Are you sure you want to leave?";
+      e.returnValue = draftSaveStatus === "error"
+        ? "Your latest changes could not be auto-saved. Are you sure you want to leave?"
+        : "Auto-save is still in progress. Are you sure you want to leave?";
       return e.returnValue;
     };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
-  }, [clinicalNote, rawPrenote, generatedDoc, previewData]);
+  }, [draftSaveStatus]);
 
   
   // Clear all editor state to blank defaults. Preserves student name / LIC start
-  // month / long-term goals (those live in their own localStorage keys).
+  // month / long-term goals (those live in their own localStorage keys) and
+  // also purges the auto-saved draft so a fresh start is truly fresh.
   const clearEditor = () => {
-    if (!confirm("Clear all fields and start over? Any unsaved work will be lost.")) return;
+    if (!confirm("Clear all fields and start over? Any auto-saved draft will also be discarded.")) return;
+    try { localStorage.removeItem(DRAFT_STORAGE_KEY); } catch {}
+    setDraftRestorePrompt(null);
+    setPromptEdits({});
     setSessionMode("post");
     setPrevisitEmphasis("auto");
     setTeachingDetailOptions({ ...DEFAULT_TEACHING_DETAIL_OPTIONS });
@@ -2761,65 +2949,7 @@ const [customTopics, setCustomTopics] = useState([]);
     return result;
   };
 
-  // ===== Generate PubMed search queries via AI, then fetch papers =====
-  const fetchPubmedForCase = async () => {
-    if (!aiEnabled) return null;
-    if (!workingDx && selectedProblems.length === 0) return null;
 
-    const problemsList = selectedProblems.length > 0 ? selectedProblems : [workingDx];
-
-    // Step 1: Ask AI to generate optimized MeSH queries
-    const sys = `You generate optimized PubMed search queries using MeSH terms and boolean logic.
-Return ONLY valid JSON (no markdown fences):
-{
-  "queries": [
-    {"problem": "problem name", "query": "MeSH-optimized PubMed query string"}
-  ]
-}
-For each problem, generate ONE focused query prioritizing recent guidelines, landmark trials, and systematic reviews. Use MeSH terms in brackets like [Mesh], article type filters like AND (guideline[pt] OR systematic review[pt] OR randomized controlled trial[pt]), and quotes around exact phrases.`;
-
-    const user = `Generate PubMed queries for these clinical problems (student is at ${phase.name} level):\n${problemsList.map((p, i) => `${i+1}. ${p}`).join("\n")}\n\nContext: ${chiefConcern || "internal medicine encounter"}`;
-
-    let queries = [];
-    try {
-      const resp = await callAi(sys, user, 600);
-      const parsed = extractJson(resp);
-      queries = parsed.queries || [];
-    } catch (e) {
-      throw new Error(`Query generation failed: ${e.message}`);
-    }
-
-    // Step 2: Call PubMed for each query in parallel
-    const pubmedUrl = WORKER_URL.replace(/\/$/, "") + "/pubmed";
-    const results = await Promise.all(queries.map(async (q) => {
-      try {
-        const res = await fetch(pubmedUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ query: q.query, maxResults: 5, dateRange: "10" }),
-        });
-        if (!res.ok) return { problem: q.problem, query: q.query, papers: [], error: `HTTP ${res.status}` };
-        const data = await res.json();
-        return { problem: q.problem, query: q.query, papers: data.papers || [], totalCount: data.totalCount };
-      } catch (e) {
-        return { problem: q.problem, query: q.query, papers: [], error: e.message };
-      }
-    }));
-
-    return results;
-  };
-
-  const runPubmedSearch = async () => {
-    setFetchingPubmed(true);
-    setAiStatus({ ...aiStatus, error: null });
-    try {
-      const results = await fetchPubmedForCase();
-      setPubmedResults(results);
-    } catch (e) {
-      setAiStatus({ ...aiStatus, error: `PubMed search failed: ${e.message}` });
-    }
-    setFetchingPubmed(false);
-  };
   const openDeidentificationReview = async (
     textToReview
   ) => {
@@ -6461,14 +6591,21 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
 
   // Standard sources store just their source key. PubMed AI supplies a custom
   // one-line prompt for each topic, so its viewer stores the prompt directly.
+  // If the attending previously edited this prompt in the viewer, we preload
+  // the edited version so their changes persist across close/reopen cycles.
   const promptViewer = promptViewerFor
     ? (typeof promptViewerFor === "string"
       ? {
           key: promptViewerFor,
           sourceName: sourceLabels[promptViewerFor],
-          prompt: generateSourcePrompt(promptViewerFor),
+          prompt: promptEdits[promptViewerFor] ?? generateSourcePrompt(promptViewerFor),
+          hasEdits: Boolean(promptEdits[promptViewerFor]),
         }
-      : promptViewerFor)
+      : {
+          ...promptViewerFor,
+          prompt: promptEdits[promptViewerFor.key] ?? promptViewerFor.prompt,
+          hasEdits: Boolean(promptEdits[promptViewerFor.key]),
+        })
     : null;
 
   return (
@@ -7250,6 +7387,24 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   </svg>
                 )}
               </button>
+              {draftSaveStatus && (
+                <span
+                  className={`hidden sm:inline text-xs px-2 py-1 rounded transition ${
+                    draftSaveStatus === "saved" ? "text-emerald-700 bg-emerald-50" :
+                    draftSaveStatus === "saving" ? "text-slate-500 bg-slate-50" :
+                    "text-red-700 bg-red-50"
+                  }`}
+                  title={
+                    draftSaveStatus === "saved" ? "Draft auto-saved to this browser" :
+                    draftSaveStatus === "saving" ? "Saving draft..." :
+                    "Draft save failed — your work is in memory only"
+                  }
+                >
+                  {draftSaveStatus === "saved" ? "✓ Saved" :
+                   draftSaveStatus === "saving" ? "Saving..." :
+                   "Save failed"}
+                </span>
+              )}
               <button
                 onClick={clearEditor}
                 className="flex items-center gap-1 sm:gap-2 px-2 sm:px-3 py-2 text-sm bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition flex-shrink-0"
@@ -7293,6 +7448,62 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
       </header>
 
       <main className="max-w-6xl mx-auto px-6 py-8 relative">
+        {/* Draft restore banner — shown on mount if a saved draft exists. The
+            attending chooses to restore or discard; auto-restoring would
+            surprise anyone who deliberately closed the tab. */}
+        {draftRestorePrompt && (
+          <div className="no-print mb-6 bg-gradient-to-r from-amber-50 to-orange-50 border-2 border-amber-300 rounded-lg p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-amber-100 flex items-center justify-center">
+                <Save className="w-5 h-5 text-amber-700" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-semibold text-slate-900 text-sm mb-1">
+                  Restore your previous work?
+                </h3>
+                <div className="text-xs text-slate-700 mb-3">
+                  Auto-saved {new Date(draftRestorePrompt.summary.savedAt).toLocaleString()}.
+                  {draftRestorePrompt.summary.chiefConcern && (
+                    <> Working on: <strong>{draftRestorePrompt.summary.chiefConcern}</strong>.</>
+                  )}
+                  {draftRestorePrompt.summary.problemCount > 0 && (
+                    <> {draftRestorePrompt.summary.problemCount} problem{draftRestorePrompt.summary.problemCount !== 1 ? "s" : ""} selected,</>
+                  )}
+                  {draftRestorePrompt.summary.sourceCount > 0 && (
+                    <> {draftRestorePrompt.summary.sourceCount} source{draftRestorePrompt.summary.sourceCount !== 1 ? "s" : ""} in use.</>
+                  )}
+                  {draftRestorePrompt.summary.droppedHeavyFields && (
+                    <div className="mt-1 text-amber-800 italic">
+                      Note: this draft was too large to save with attachments. You'll need to re-add any PDFs and pasted-source images.
+                    </div>
+                  )}
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <button
+                    onClick={() => restoreDraft(draftRestorePrompt.payload)}
+                    className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium flex items-center gap-1.5"
+                  >
+                    <Check className="w-4 h-4" />
+                    Restore this draft
+                  </button>
+                  <button
+                    onClick={discardDraft}
+                    className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-lg text-sm font-medium"
+                  >
+                    Start fresh (discard)
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={() => setDraftRestorePrompt(null)}
+                className="text-amber-700 hover:text-amber-900 p-1"
+                title="Decide later — banner will reappear on next load"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
 {/* Floating "food for thought" phase sidebar — only on wide screens */}
         <aside
           className="no-print hidden xl:block fixed"
@@ -8905,7 +9116,6 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   onRetryFailed={() => generateDocument({ retryFailedOnly: true })}
                   onRegenerateSingleCase={regenerateSingleCase}
                   generationAttempts={generationAttempts}
-                  fetchingPubmed={fetchingPubmed}
                   aiStatus={aiStatus}
                   focusLabels={focusLabels}
                   phase={phase}
@@ -8947,8 +9157,19 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             key={promptViewer.key}
             sourceName={promptViewer.sourceName}
             initialPrompt={promptViewer.prompt}
+            hasEdits={promptViewer.hasEdits}
             compact={Boolean(promptViewer.compact)}
             onClose={() => setPromptViewerFor(null)}
+            onSaveEdits={(editedText) => {
+              setPromptEdits(prev => ({ ...prev, [promptViewer.key]: editedText }));
+            }}
+            onResetToOriginal={() => {
+              setPromptEdits(prev => {
+                const next = { ...prev };
+                delete next[promptViewer.key];
+                return next;
+              });
+            }}
           />
         )}
         {attachmentLightbox && (
@@ -9438,8 +9659,7 @@ function TeachingDetailControls({
 }
 
 // ============ PREVIEW EDITOR COMPONENT ============
-function PreviewEditor({ previewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, onRegenerateSingleCase, generationAttempts, aiStatus, focusLabels, phase, session, teachingDetailOptions, onTeachingDetailOptionsChange }) {
-  const s = previewData.sections;
+function PreviewEditor({ previewData, setPreviewData, togglePreviewSection, toggleTeachingCase, updatePreviewField, updateTeachingCaseField, commitPreviewToDocument, onBack, onRegenerate, onRetryFailed, onRegenerateSingleCase, generationAttempts, aiStatus, focusLabels, phase, session, teachingDetailOptions, onTeachingDetailOptionsChange }) {  const s = previewData.sections;
   const [previewScale, setPreviewScale] = React.useState(0.72);
   const SectionHeader = ({ label, enabled, onToggle, count }) => (
     <div className="flex items-center justify-between bg-slate-100 px-4 py-2 border-b border-slate-200">
@@ -16991,30 +17211,55 @@ function ImageLightbox({ src, alt, onClose }) {
 }
 
 // ============ PROMPT VIEWER MODAL ============
-function PromptViewer({ sourceName, initialPrompt, compact = false, onCopy, onClose }) {
+// Edits made here are cached in the parent's promptEdits map and reload on
+// reopen. Callbacks: onSaveEdits stashes the current text; onResetToOriginal
+// drops the cached edit so the freshly-generated prompt shows again.
+function PromptViewer({ sourceName, initialPrompt, hasEdits = false, compact = false, onCopy, onClose, onSaveEdits, onResetToOriginal }) {
   const [editedPrompt, setEditedPrompt] = React.useState(initialPrompt);
   const [copied, setCopied] = React.useState(false);
+  // Track whether the current text differs from what was initially loaded,
+  // so we know if there's anything worth saving on close.
+  const initialPromptRef = React.useRef(initialPrompt);
+  const hasUnsavedChanges = editedPrompt !== initialPromptRef.current;
 
   React.useEffect(() => {
-    const handleKey = (e) => { if (e.key === "Escape") onClose(); };
+    const handleKey = (e) => {
+      if (e.key === "Escape") {
+        // Persist any in-flight edits before closing
+        if (hasUnsavedChanges && onSaveEdits) onSaveEdits(editedPrompt);
+        onClose();
+      }
+    };
     document.addEventListener("keydown", handleKey);
     document.body.style.overflow = "hidden";
     return () => {
       document.removeEventListener("keydown", handleKey);
       document.body.style.overflow = "";
     };
-  }, [onClose]);
+  }, [onClose, editedPrompt, hasUnsavedChanges, onSaveEdits]);
 
   const handleCopy = () => {
     navigator.clipboard.writeText(editedPrompt).then(() => {
       setCopied(true);
+      // Copying implicitly confirms the current text — persist any edits
+      if (hasUnsavedChanges && onSaveEdits) onSaveEdits(editedPrompt);
       setTimeout(() => setCopied(false), 2000);
     });
   };
 
+  const handleClose = () => {
+    if (hasUnsavedChanges && onSaveEdits) onSaveEdits(editedPrompt);
+    onClose();
+  };
+
+  const handleReset = () => {
+    if (onResetToOriginal) onResetToOriginal();
+    onClose();
+  };
+
   return (
     <div
-      onClick={onClose}
+      onClick={handleClose}
       className="no-print prompt-viewer-overlay"
       style={{
         position: "fixed",
@@ -17107,9 +17352,25 @@ function PromptViewer({ sourceName, initialPrompt, compact = false, onCopy, onCl
           </button>
         </div>
 
-        <div style={{ padding: "0.75rem 1.25rem", background: "#fef3c7", borderBottom: "1px solid #fde68a", fontSize: "0.8rem", color: "#78350f", display: "flex", alignItems: "start", gap: "0.5rem" }}>
-          <AlertCircle style={{ width: "1rem", height: "1rem", flexShrink: 0, marginTop: "0.1rem" }} />
-          <div>You can edit this prompt before copying, but edits won't persist across sessions. The saved template will regenerate next time you view it.</div>
+        <div style={{ padding: "0.75rem 1.25rem", background: hasEdits ? "#e0f2fe" : "#fef3c7", borderBottom: `1px solid ${hasEdits ? "#7dd3fc" : "#fde68a"}`, fontSize: "0.8rem", color: hasEdits ? "#075985" : "#78350f", display: "flex", alignItems: "start", justifyContent: "space-between", gap: "0.5rem" }}>
+          <div style={{ display: "flex", alignItems: "start", gap: "0.5rem", flex: 1 }}>
+            <AlertCircle style={{ width: "1rem", height: "1rem", flexShrink: 0, marginTop: "0.1rem" }} />
+            <div>
+              {hasEdits
+                ? <><strong>Showing your edited version.</strong> Your edits persist until you clear the session or reset to original.</>
+                : <>You can edit this prompt. Your edits will persist across viewer opens (until you clear the session).</>
+              }
+            </div>
+          </div>
+          {hasEdits && onResetToOriginal && (
+            <button
+              onClick={handleReset}
+              style={{ padding: "0.25rem 0.6rem", background: "white", border: "1px solid #7dd3fc", borderRadius: "4px", fontSize: "0.72rem", color: "#075985", cursor: "pointer", whiteSpace: "nowrap", fontWeight: 500 }}
+              title="Discard your edits and show the freshly-generated prompt"
+            >
+              Reset to original
+            </button>
+          )}
         </div>
 
         <textarea
@@ -17145,7 +17406,7 @@ function PromptViewer({ sourceName, initialPrompt, compact = false, onCopy, onCl
           </div>
           <div style={{ display: "flex", gap: "0.5rem" }}>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               style={{
                 padding: "0.5rem 1rem",
                 background: "white",
@@ -17156,7 +17417,7 @@ function PromptViewer({ sourceName, initialPrompt, compact = false, onCopy, onCl
                 cursor: "pointer",
               }}
             >
-              Close
+              Close{hasUnsavedChanges ? " (save edits)" : ""}
             </button>
             <button
               onClick={handleCopy}
