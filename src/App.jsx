@@ -1801,9 +1801,9 @@ const parseCprsPharmacyDump = (text) => {
       const bodyParts = [];
       if (formattedSig) bodyParts.push(formattedSig);
       if (cleanIndication) bodyParts.push(`(${cleanIndication})`);
-      const body = bodyParts.join(" ");
-      const line = body
-        ? `**${formattedName}** — ${body} · issued ${monthYear}`
+      const displayBody = bodyParts.join(" ");
+      const line = displayBody
+        ? `**${formattedName}** — ${displayBody} · issued ${monthYear}`
         : `**${formattedName}** · issued ${monthYear}`;
 
       if (cur.status === "ACTIVE") {
