@@ -828,12 +828,22 @@ const extractPrenoteSections = (rawText) => {
   // We remove whole sentences that start with these signature phrases,
   // stopping at the next sentence boundary or blank line.
   const metaNarrationPatterns = [
-    /(?:^|\n)\s*Now (?:I|I['’]ll)[^\n]{0,300}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*Based on (?:my|the) (?:comprehensive |thorough |detailed )?(?:review|analysis)[^\n]{0,300}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*Let me (?:compile|complete|create|now|proceed|generate)[^\n]{0,300}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*I(?:['’]| ha)?ve (?:now )?(?:completed|reviewed|compiled|gathered)[^\n]{0,300}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*(?:I['’]ll|I will) (?:now )?(?:compile|create|generate|produce)[^\n]{0,300}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*Here(?:['’]s| is) (?:the |a )?(?:complete|comprehensive|full)[^\n]{0,300}(?:\.|:)\s*/gi,
+    // Standard first-person openers about compiling / generating / continuing
+    /(?:^|\n)\s*Now (?:I|I['’]ll)[^\n]{0,400}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*Based on (?:my|the) (?:comprehensive |thorough |detailed )?(?:review|analysis)[^\n]{0,400}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*Let me (?:compile|complete|create|now|proceed|generate|continue|finish)[^\n]{0,400}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*I(?:['’]| ha)?ve (?:now )?(?:completed|reviewed|compiled|gathered|sufficient)[^\n]{0,400}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*(?:I['’]ll|I will) (?:now )?(?:compile|create|generate|produce|continue|finish|complete)[^\n]{0,400}(?:\.|:)\s*/gi,
+    /(?:^|\n)\s*Here(?:['’]s| is) (?:the |a )?(?:complete|comprehensive|full)[^\n]{0,400}(?:\.|:)\s*/gi,
+    // Section-continuation prose ("Looking at the current note, I can see it ends mid-sentence at line 38")
+    /(?:^|\n)\s*Looking at (?:the|this) (?:current |previous |prior )?(?:note|section|prenote|chart)[^\n]{0,400}(?:\.|:)\s*/gi,
+    // "This section is/was cut off" style comments
+    /(?:^|\n)\s*This (?:section|note|content|response) (?:is|was|has been) (?:cut off|truncated|incomplete)[^\n]{0,400}(?:\.|:)\s*/gi,
+    // Chunk boundary markers left by streaming or chunked output
+    /(?:^|\n)\s*<<>>\s*(?:\n|$)/g,
+    /(?:^|\n)\s*\[?(?:continued|continuing|CONT|CONTINUED)[^\n]{0,30}\]?\s*(?:\n|$)/gi,
+    // "Now I have [X] to [Y]" — variant
+    /(?:^|\n)\s*Now I have (?:sufficient |comprehensive |enough |all the )?information[^\n]{0,400}(?:\.|:)\s*/gi,
   ];
   metaNarrationPatterns.forEach((pattern) => {
     text = text.replace(pattern, "\n");
@@ -11399,11 +11409,50 @@ const buildInRoomHtml = (doc, session) => {
       const content = bulletMatch[1].trim();
       if (looksLikeDiagnosticReportLine(content)) continue;
 
-      // Split on last " (" to separate name from status.
+      // Try multiple status patterns in order of specificity:
+      //   1. "Name (status)"     — "Influenza (due)"
+      //   2. "Name: STATUS"      — "Influenza: DUE NOW", "AUDIT-C: due 08/2026"
+      //   3. "Name — status"     — "Influenza — due"
+      //   4. Fallback: name only, use group context for isDue
+
+      let name = "";
+      let rawStatus = "";
+      let matched = false;
+
+      // Pattern 1: parenthetical status
       const parenMatch = content.match(/^(.+?)\s*\((.+)\)\s*$/);
       if (parenMatch) {
-        const name = parenMatch[1].trim();
-        const rawStatus = parenMatch[2].trim();
+        name = parenMatch[1].trim();
+        rawStatus = parenMatch[2].trim();
+        matched = true;
+      }
+
+      // Pattern 2: colon-separated status ("Influenza: DUE NOW", "AUDIT-C: due 08/2026")
+      if (!matched) {
+        const colonMatch = content.match(/^(.+?)\s*:\s*(.+)$/);
+        if (colonMatch) {
+          const candidateStatus = colonMatch[2].trim();
+          // Accept as status only if it looks like a status phrase
+          // (avoids capturing "screening: PHQ-2 score 0" as a status)
+          if (/^(?:due|overdue|up\s+to\s+date|completed|negative|declined|not\s+documented|not\s+due|current|done|recommended|scheduled|status)/i.test(candidateStatus)) {
+            name = colonMatch[1].trim();
+            rawStatus = candidateStatus;
+            matched = true;
+          }
+        }
+      }
+
+      // Pattern 3: em-dash / en-dash / hyphen-separated status
+      if (!matched) {
+        const dashMatch = content.match(/^(.+?)\s*[—–-]\s*(due|overdue|up\s+to\s+date|completed|declined|not\s+documented|not\s+due|scheduled)\b.*$/i);
+        if (dashMatch) {
+          name = dashMatch[1].trim();
+          rawStatus = dashMatch[2].trim();
+          matched = true;
+        }
+      }
+
+      if (matched) {
         const statusLower = rawStatus.toLowerCase();
         const isDue = /^(due|overdue|not documented|not up)/i.test(statusLower) ||
                       (currentGroup && /unclear/i.test(currentGroup));
@@ -11413,6 +11462,17 @@ const buildInRoomHtml = (doc, session) => {
           isDue,
           group: currentGroup,
         });
+      } else {
+        const isDue = currentGroup && /unclear|due/i.test(currentGroup);
+        items.push({
+          name: content,
+          status: currentGroup && /up to date/i.test(currentGroup)
+            ? "Up to Date"
+            : (currentGroup || ""),
+          isDue,
+          group: currentGroup,
+        });
+      }
       } else {
         const isDue = currentGroup && /unclear|due/i.test(currentGroup);
         items.push({
@@ -11504,61 +11564,256 @@ const buildInRoomHtml = (doc, session) => {
     return chips;
   };
 
-  // Parse current medications text into structured rows
+  // Parse current medications text into structured rows. Handles every med
+  // format we've seen across prenote styles:
+  //   A. CPRS pharmacy dump (handled upstream in parseCprsPharmacyDump)
+  //   B. "### CURRENT MEDICATIONS (grouped by specialty)" with `- Specialty:`
+  //      groups and `* Drug dose freq (indication) - started MM/YYYY` items
+  //   C. Plain-heading groups ("Psychiatric / Sleep") with `- Drug dose freq
+  //      - started ...` items and separate `Indication: X` lines below
+  //   D. Sub-bulleted format: `* Drug dose (form details)` with indented
+  //      `- Started MM/YYYY`, `- Indication: X`, `- Notes: X` on subsequent
+  //      lines
+  //   E. Any mix of the above
+  //
+  // Approach: two-pass parser.
+  //   Pass 1: collect "med units" — one primary line plus any indented
+  //   detail lines beneath it, up to the next primary line or blank line.
+  //   Pass 2: extract structured fields from each unit's combined text.
   const parseMedRows = (text) => {
     if (!text) return [];
-    const rows = [];
-    const lines = text.split(/\r?\n/);
+
+    const rawLines = text.split(/\r?\n/);
+
+    // Pass 1: group into units.
+    // A "primary line" starts with a bullet or asterisk and has no leading
+    // indent OR is the first item under a specialty group heading. A
+    // "continuation line" is indented deeper than its primary or starts with
+    // "- Label:" style prose (Started, Indication, Sig, Note, Notes, etc.).
+    const units = [];
     let currentSpecialty = "";
-    for (const line of lines) {
+    let currentUnit = null;
+
+    // Track the indentation depth of the current primary line so we can
+    // detect continuations reliably regardless of the source's spacing.
+    let currentPrimaryIndent = -1;
+
+    const isGroupHeading = (line) => {
+      // "- Cardiology:", "Cardiovascular:", "Psychiatric / Sleep",
+      // "- Psychiatry/Mental Health:"
+      const trimmed = line.trim().replace(/^[\-\*]?\s*/, "");
+      if (!/^[A-Z][A-Za-z /&+]+:?\s*$/.test(trimmed)) return null;
+      // Reject if it looks like a med (has digits) or is too long
+      if (/\d/.test(trimmed) || trimmed.length > 60) return null;
+      return trimmed.replace(/:$/, "").trim();
+    };
+
+    const isPrimaryMedLine = (line, indent) => {
       const trimmed = line.trim();
-      if (!trimmed) continue;
-      // Specialty group heading (e.g., "- Cardiology:" or "Cardiac / Vascular:")
-      const groupMatch = trimmed.match(/^[\-\*]?\s*([A-Z][A-Za-z /&]+):\s*$/);
-      if (groupMatch && !/^\d/.test(groupMatch[1])) {
-        currentSpecialty = groupMatch[1].trim();
+      if (!trimmed) return false;
+      // Must start with a bullet marker
+      if (!/^[\*\-•●○▪▫►◆·]\s+/.test(trimmed)) return false;
+      // After stripping the bullet, must not be a "Started"/"Indication"/etc
+      // detail label (those are continuation lines).
+      const afterBullet = trimmed.replace(/^[\*\-•●○▪▫►◆·]\s+/, "");
+      if (/^(?:Started?|Start date|Indication|Sig|Note|Notes|Reason|Purpose|For|Adherence|Tolerability|Excellent response|Poor response|Response|Dose|Route|Frequency)\s*[:\-]/i.test(afterBullet)) {
+        return false;
+      }
+      // Must contain a drug-name-like start: capitalized word, or contain a
+      // dose-unit pattern, or be a known med-form keyword.
+      const hasNameShape = /^[A-Z][A-Za-z0-9\-\/]+/.test(afterBullet);
+      const hasDose = /\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)/i.test(afterBullet);
+      return hasNameShape || hasDose;
+    };
+
+    const getIndent = (line) => {
+      const match = line.match(/^(\s*)/);
+      return match ? match[1].length : 0;
+    };
+
+    for (const rawLine of rawLines) {
+      if (!rawLine.trim()) {
+        // Blank line — close current unit
+        if (currentUnit) {
+          units.push(currentUnit);
+          currentUnit = null;
+          currentPrimaryIndent = -1;
+        }
         continue;
       }
-      // Med line: starts with * or -
-      const medMatch = trimmed.match(/^[\*\-•]\s*(.+)$/);
-      if (!medMatch) continue;
-      const medLine = medMatch[1].trim();
-      // Extract name + dose + freq + indication + start
-      // Pattern: NAME DOSE FREQ (for INDICATION) - started MM/YYYY
-      // Or: NAME DOSE (INDICATION) FREQ ...
-      const nameMatch = medLine.match(/^([A-Z][A-Za-z0-9\-\/\s]+?)\s+(\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)[^,]*?)/i);
-      if (!nameMatch) {
-        // Not a parseable med line; skip
+
+      // Skip markdown sub-headers like "### CURRENT MEDICATIONS"
+      if (/^\s*#{1,6}\s+/.test(rawLine)) continue;
+
+      // Check for group heading (specialty)
+      const groupName = isGroupHeading(rawLine);
+      if (groupName) {
+        // Close current unit before switching groups
+        if (currentUnit) {
+          units.push(currentUnit);
+          currentUnit = null;
+          currentPrimaryIndent = -1;
+        }
+        currentSpecialty = groupName;
         continue;
       }
-      const name = nameMatch[1].trim();
-      const rest = medLine.slice(nameMatch[0].length - nameMatch[2].length);
-      // Dose + route
-      const doseMatch = rest.match(/^(\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)[^,()]*?)(?:\s+(?:PO|IV|IM|SQ|SL|topical|inhaled|nebulized)\b)?/i);
-      const dose = doseMatch ? doseMatch[0].trim() : "";
-      // Frequency
-      const freqMatch = rest.match(/\b(daily|BID|TID|QID|QHS|QAM|QPM|PRN|q\d+h|every \d+ (?:hours?|hrs?|days?)|weekly|monthly)\b/i);
-      const freq = freqMatch ? freqMatch[0] : "";
-      // Indication (in parens)
-      const indMatch = medLine.match(/\(([^)]+)\)/);
-      const indication = indMatch ? indMatch[1].trim() : "";
-      // Start date
-      const startMatch = medLine.match(/started\s+(\d{1,2}\/\d{4})/i);
-      const start = startMatch ? startMatch[1] : "";
-      // Notes: anything after " - " that isn't the start date
-      const notesMatch = medLine.match(/\-\s*([^\-][^\-].*)$/);
-      const notes = notesMatch ? notesMatch[1].replace(/started\s+\d{1,2}\/\d{4}(\s+and\s+still\s+ongoing)?\s*/i, "").trim() : "";
+
+      const indent = getIndent(rawLine);
+
+      // Check if this is a primary med line
+      if (isPrimaryMedLine(rawLine, indent)) {
+        // Close any open unit
+        if (currentUnit) {
+          units.push(currentUnit);
+        }
+        // Start a new unit
+        currentUnit = {
+          primary: rawLine.trim().replace(/^[\*\-•●○▪▫►◆·]\s+/, ""),
+          continuations: [],
+          specialty: currentSpecialty,
+        };
+        currentPrimaryIndent = indent;
+        continue;
+      }
+
+      // Continuation line — attach to current unit if we have one.
+      // Detect by: deeper indent than the primary, OR starts with "- Label:"
+      // style prose, OR starts with just text at any indent under a unit.
+      if (currentUnit) {
+        const isDeeperIndent = indent > currentPrimaryIndent;
+        const isDetailLabel = /^\s*[\*\-•]?\s*(?:Started?|Start date|Indication|Sig|Note|Notes|Reason|Purpose|For|Adherence|Tolerability|Excellent response|Poor response|Response|Dose|Route|Frequency)\s*[:\-]/i.test(rawLine);
+        if (isDeeperIndent || isDetailLabel) {
+          currentUnit.continuations.push(rawLine.trim().replace(/^[\*\-•]\s*/, ""));
+          continue;
+        }
+      }
+      // Otherwise: unrelated prose line, ignore
+    }
+    // Flush the last unit
+    if (currentUnit) units.push(currentUnit);
+
+    // Pass 2: extract fields from each unit.
+    const rows = [];
+    for (const unit of units) {
+      const combined = [unit.primary, ...unit.continuations].join(" | ");
+
+      // NAME + DOSE UNIT — try to grab the name up to the first dose-unit pattern.
+      // If no dose-unit pattern, grab up to the first parenthesis or comma.
+      let name = "";
+      let dose = "";
+
+      const nameWithDose = unit.primary.match(/^([A-Z][A-Za-z0-9\-\/\s]*?)\s+(\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)(?:\s*\/\s*\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%))?)/i);
+      if (nameWithDose) {
+        name = nameWithDose[1].trim();
+        dose = nameWithDose[2].trim();
+      } else {
+        // No dose-unit pattern — try grabbing capitalized name up to comma/paren/hyphen
+        const nameOnly = unit.primary.match(/^([A-Z][A-Za-z0-9\-\/]+(?:\s+[A-Za-z][A-Za-z0-9\-\/]*)?)/);
+        if (nameOnly) name = nameOnly[1].trim();
+      }
+
+      if (!name) continue; // Not parseable, skip
+
+      // ROUTE — look for PO/IV/IM/SQ/SL/topical/inhaled/nebulized/SC anywhere
+      const routeMatch = combined.match(/\b(PO|IV|IM|SQ|SC|SL|topical|inhaled|nebulized|nasal|ophthalmic|otic|transdermal|rectal|vaginal|buccal|subcutaneous|intramuscular|intravenous)\b/i);
+      const route = routeMatch ? routeMatch[1] : "";
+
+      // FREQUENCY — several patterns
+      const freqPatterns = [
+        /\b(daily|BID|TID|QID|QHS|QAM|QPM|PRN|q\d+h|q\.?\d+\.?h|every\s+\d+\s+(?:hours?|hrs?|days?)|weekly|monthly|once\s+a\s+day|twice\s+a\s+day|three\s+times\s+a\s+day|four\s+times\s+a\s+day|at\s+bedtime|nightly|in\s+the\s+morning|in\s+the\s+evening)\b/i,
+      ];
+      let freq = "";
+      for (const pattern of freqPatterns) {
+        const m = combined.match(pattern);
+        if (m) { freq = m[1]; break; }
+      }
+
+      // INDICATION — try multiple sources:
+      //   1. Explicit "Indication: X" label (continuation line)
+      //   2. Parenthetical after dose "(for X)" or "(X)"
+      //   3. "for X" phrase before " - started" or end of primary
+      let indication = "";
+      const explicitInd = combined.match(/(?:^|\|)\s*Indication\s*[:\-]\s*([^|]+?)(?:\s*\||$)/i);
+      if (explicitInd) {
+        indication = explicitInd[1].trim();
+      } else {
+        const parenInd = unit.primary.match(/\((?:for\s+)?([^)]+?)\)/i);
+        if (parenInd) {
+          const candidate = parenInd[1].trim();
+          // Reject if it looks like dose form details ("40 mg tab, take one-half tablet")
+          if (!/\d+\s*(?:mg|mcg|g|mL|IU|units?)/i.test(candidate) && !/^take\s+/i.test(candidate)) {
+            indication = candidate;
+          }
+        }
+        if (!indication) {
+          const forMatch = unit.primary.match(/\bfor\s+([A-Za-z][A-Za-z0-9\s\/\-,]+?)(?:\s+-\s+started|\s*$)/i);
+          if (forMatch) indication = forMatch[1].trim();
+        }
+      }
+
+      // START DATE — accept "started MM/YYYY", "Started MM/YYYY", "Start MM/YYYY",
+      // in primary or continuation lines. Also accept "start date not listed"
+      // and "started date unclear" (both → empty start).
+      let start = "";
+      const startPatterns = [
+        /(?:^|\s|\-|\|)\s*[Ss]tarted?\s+(\d{1,2}\/\d{2,4})/,
+        /(?:^|\s|\-|\|)\s*[Ss]tart\s+date\s*[:\-]?\s*(\d{1,2}\/\d{2,4})/i,
+      ];
+      for (const pattern of startPatterns) {
+        const m = combined.match(pattern);
+        if (m) { start = m[1]; break; }
+      }
+
+      // SIG — pull the SIG line if present (CPRS or explicit label). This
+      // captures dosing instructions we want to preserve as notes.
+      const sigMatch = combined.match(/\bSig\s*[:\-]\s*([^|]+?)(?:\s*\||$)/i);
+      const sig = sigMatch ? sigMatch[1].trim() : "";
+
+      // NOTES — everything else that adds clinical value. Strategy:
+      //   - Take the primary line, strip name, dose, route, freq, parenthetical indication, "started MM/YYYY", "and still ongoing..." boilerplate
+      //   - Take continuation lines that aren't already captured as start/indication/sig
+      //   - Include the SIG if present
+      let notesFromPrimary = unit.primary;
+      if (name) notesFromPrimary = notesFromPrimary.replace(name, "");
+      if (dose) notesFromPrimary = notesFromPrimary.replace(dose, "");
+      if (route) notesFromPrimary = notesFromPrimary.replace(new RegExp(`\\b${route}\\b`, "i"), "");
+      if (freq) notesFromPrimary = notesFromPrimary.replace(new RegExp(`\\b${freq}\\b`, "i"), "");
+      if (indication) {
+        notesFromPrimary = notesFromPrimary.replace(new RegExp(`\\(\\s*(?:for\\s+)?${indication.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\)`, "i"), "");
+      }
+      notesFromPrimary = notesFromPrimary
+        .replace(/(?:^|\s|\-|\|)\s*[Ss]tarted?\s+\d{1,2}\/\d{2,4}(?:\s+and\s+still\s+ongoing(?:\s+with\s+no\s+recent\s+change\s+documented)?)?/g, "")
+        .replace(/\band\s+still\s+ongoing(?:\s+with\s+no\s+recent\s+change\s+documented)?/gi, "")
+        .replace(/^[\s\-,;|]+|[\s\-,;|]+$/g, "")
+        .replace(/\s{2,}/g, " ")
+        .trim();
+
+      // Filter continuation lines: keep ones with clinical detail (Sig/Notes/
+      // Response/Adherence text), drop ones that just restated Start/Indication.
+      const notesFromContinuations = unit.continuations
+        .filter(c => !/^\s*(?:Started?|Start date|Indication|Sig)\s*[:\-]/i.test(c))
+        .map(c => c.replace(/^\s*[\-\*•]\s*/, "").trim())
+        .filter(Boolean);
+
+      const noteParts = [];
+      if (notesFromPrimary && notesFromPrimary.length > 3) noteParts.push(notesFromPrimary);
+      if (sig) noteParts.push(`Sig: ${sig}`);
+      notesFromContinuations.forEach(c => noteParts.push(c));
+
+      const notes = noteParts.join("; ").replace(/\s{2,}/g, " ").trim();
 
       rows.push({
         name,
         dose,
+        route,
         freq,
         indication,
         start,
         notes,
-        specialty: currentSpecialty,
+        specialty: unit.specialty || "",
       });
     }
+
     return rows;
   };
 
@@ -11995,7 +12250,103 @@ const buildInRoomHtml = (doc, session) => {
     if (!contentHtml) return "";
     return `<div class="ref-subsection"><div class="ref-subsection-title"><i class="fa-solid ${icon}"></i> ${esc(label)}</div><div class="ref-subsection-body">${contentHtml}</div></div>`;
   };
+// Helper: render a hospitalization / specialty-care / consult list with
+  // hierarchical bullets. Detects three types of lines:
+  //   1. Section headers ("Hospitalizations", "Emergency Department Visits",
+  //      "Active Consults", "Completed Consults (Past Year)") — render as
+  //      small caps subheading
+  //   2. Dated encounter openers ("11/2025: Bozeman Health – chest pain") —
+  //      render as top-level bullets in the group's list
+  //   3. Continuation lines describing the encounter — render as nested
+  //      sub-bullets under the most recent top-level bullet
+  // This keeps distinct encounters visually separated and their details
+  // scannable at a smaller font size.
+  const renderHierarchicalEncounterList = (text) => {
+    if (!text) return "";
+    const rawLines = text.split(/\r?\n/)
+      .map(l => l.replace(/^[\s]*[-*•●○▪▫►◆·]\s*/, "").trim())
+      .filter(Boolean);
+    if (rawLines.length === 0) return "";
 
+    // A line is a section header if it's short, capitalized, no colon in the
+    // middle, and matches known section labels.
+    const sectionHeaderRegex = /^(?:Hospitalizations?|Emergency Department Visits?|ER Visits?|Urgent Care|Active Consults?|Completed Consults?(?:\s*\([^)]*\))?|Pending Consults?|Recent Encounters?|Past Encounters?|Inpatient Stays?|Outpatient Visits?)$/i;
+
+    // A line is a "dated encounter opener" if it starts with a date pattern
+    // followed by a colon (e.g., "11/2025: Bozeman Health – chest pain").
+    const encounterOpenerRegex = /^(\d{1,2}\/\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})[\s]*:\s*/i;
+
+    // A line is a "consult opener" like "Neurology (09/2025): consult #3786680"
+    // or "Community Care Neurology (06/2026): consult #4043670"
+    const consultOpenerRegex = /^[A-Z][A-Za-z\s&/-]+\s*\((\d{1,2}\/\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2,4})\)\s*:/;
+
+    const isEncounterOpener = (line) =>
+      encounterOpenerRegex.test(line) || consultOpenerRegex.test(line);
+
+    // Walk the lines and build a nested structure: sections → encounters → details
+    const sections = [];
+    let currentSection = { header: null, encounters: [] };
+    let currentEncounter = null;
+
+    const commitSection = () => {
+      if (currentSection.encounters.length > 0 || currentSection.header) {
+        sections.push(currentSection);
+      }
+    };
+
+    for (const line of rawLines) {
+      if (sectionHeaderRegex.test(line)) {
+        // New section header — commit prior, start fresh
+        commitSection();
+        currentSection = { header: line, encounters: [] };
+        currentEncounter = null;
+        continue;
+      }
+      if (isEncounterOpener(line)) {
+        // New encounter — attach to current section
+        currentEncounter = { opener: line, details: [] };
+        currentSection.encounters.push(currentEncounter);
+        continue;
+      }
+      // Continuation line — attach to current encounter as a detail.
+      // If there's no current encounter yet, treat it as a standalone item.
+      if (currentEncounter) {
+        currentEncounter.details.push(line);
+      } else {
+        currentSection.encounters.push({ opener: line, details: [] });
+        currentEncounter = null;
+      }
+    }
+    commitSection();
+
+    if (sections.length === 0) return "";
+
+    // Render each section
+    let html = "";
+    sections.forEach((section, si) => {
+      if (section.header) {
+        html += `<div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin:${si === 0 ? "0" : "10px"} 0 4px;">${esc(section.header)}</div>`;
+      }
+      if (section.encounters.length === 0) return;
+      html += `<ul style="margin:0;padding-left:16px;list-style:disc;">`;
+      section.encounters.forEach(enc => {
+        html += `<li style="margin-bottom:5px;font-size:9pt;line-height:1.45;">`;
+        html += `<span style="font-weight:500;color:var(--fg);">${esc(enc.opener)}</span>`;
+        if (enc.details.length > 0) {
+          // Sub-bullets, smaller font, muted color for hierarchy contrast
+          html += `<ul style="margin:2px 0 0;padding-left:14px;list-style:circle;">`;
+          enc.details.forEach(detail => {
+            html += `<li style="font-size:8pt;color:var(--fg-d);line-height:1.4;margin-bottom:1px;">${esc(detail)}</li>`;
+          });
+          html += `</ul>`;
+        }
+        html += `</li>`;
+      });
+      html += `</ul>`;
+    });
+
+    return html;
+  };
   // Helper: convert a text block into a bulleted list, splitting on line breaks
   const renderAsBulletList = (text) => {
     if (!text) return "";
@@ -12065,19 +12416,16 @@ const buildInRoomHtml = (doc, session) => {
     refGridHtml += `<div class="specialty-hosp-grid" style="display:grid;grid-template-columns:${(specialtyCareText && hospitalizationsText) ? "1fr 1fr" : "1fr"};gap:10px;margin-bottom:10px;">`;
 
     if (specialtyCareText) {
-      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-stethoscope"></i> Specialty Care &amp; Consults</div><div class="ref-body">${renderAsBulletList(specialtyCareText)}</div></div>`;
+      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-stethoscope"></i> Specialty Care &amp; Consults</div><div class="ref-body">${renderHierarchicalEncounterList(specialtyCareText)}</div></div>`;
     }
 
     if (hospitalizationsText) {
-      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-hospital"></i> Hospitalizations &amp; ER Visits</div><div class="ref-body">${renderAsBulletList(hospitalizationsText)}</div></div>`;
+      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-hospital"></i> Hospitalizations &amp; ER Visits</div><div class="ref-body">${renderHierarchicalEncounterList(hospitalizationsText)}</div></div>`;
     }
 
     refGridHtml += `</div>`;
 
-    // Assessment & Plan Summary gets its own full-width box if present
-    if (assessmentPlanText) {
-      refGridHtml += `<div class="ref-box" style="margin-bottom:10px;"><div class="ref-head"><i class="fa-solid fa-clipboard-list"></i> Assessment &amp; Plan Summary</div><div class="ref-body">${renderAsProse(assessmentPlanText)}</div></div>`;
-    }
+    
   }
 
 
@@ -12179,14 +12527,17 @@ const buildInRoomHtml = (doc, session) => {
     : parseMedRows(currentMedsText);
 
   // Measure parse quality: percentage of non-empty structured cells.
+  // Lower the threshold from 40% to 30% since some formats legitimately omit
+  // start dates and indications, and we'd rather show a slightly sparse
+  // structured table than fall back to a bullet dump.
   const measureParseQuality = (rows) => {
     if (rows.length === 0) return 0;
     let filled = 0;
     let total = 0;
     rows.forEach(r => {
-      // Count only the columns that carry real per-med info (name is always
-      // filled if the row exists, so we count dose/freq/indication/start).
-      const cells = [r.dose, r.freq, r.indication, r.start];
+      // Count only the columns that carry real per-med info. Name is always
+      // filled by definition, so we score dose/freq/indication/start/route.
+      const cells = [r.dose, r.freq, r.indication, r.start, r.route];
       cells.forEach(c => {
         total++;
         if (c && c.trim()) filled++;
@@ -12197,7 +12548,10 @@ const buildInRoomHtml = (doc, session) => {
 
   const parseQuality = measureParseQuality(medRows);
   const rowsCoverNames = currentMedNames.length === 0 || medRows.length >= currentMedNames.length * 0.6;
-  const useStructuredTable = medRows.length > 0 && parseQuality >= 0.4 && rowsCoverNames;
+  // 30% threshold is a deliberate lowering: formats C and D commonly omit
+  // start dates or indications, but the name/dose/freq/route content they
+  // do provide is genuinely useful in a structured table.
+  const useStructuredTable = medRows.length > 0 && parseQuality >= 0.3 && rowsCoverNames;
 
   // Extract med bullets from the raw text, one per line, cleaned up.
   // Used for both the "bullet list" fallback and any structured table.
@@ -12304,13 +12658,16 @@ const buildInRoomHtml = (doc, session) => {
       medsSectionHtml += `<div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:6px;">Current Medications</div>`;
 
       if (useStructuredTable) {
-        // Full structured table — parsing was good enough
+        // Full structured table — parsing was good enough. Merge dose+route
+        // into one column since they naturally read together and always occupy
+        // the same conceptual field ("20 mg PO").
         medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Dose/Route</th><th>Freq</th><th>Indication</th><th>Start</th><th>Notes</th></tr></thead><tbody>`;
         medRows.forEach(m => {
           const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(m.name)}`;
+          const doseRoute = [m.dose, m.route].filter(Boolean).join(" ");
           medsSectionHtml += `<tr>`;
           medsSectionHtml += `<td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(m.name)}</a></td>`;
-          medsSectionHtml += `<td>${esc(m.dose || "—")}</td>`;
+          medsSectionHtml += `<td>${esc(doseRoute || "—")}</td>`;
           medsSectionHtml += `<td>${esc(m.freq || "—")}</td>`;
           medsSectionHtml += `<td class="med-ind">${esc(m.indication || "—")}</td>`;
           medsSectionHtml += `<td>${esc(m.start || "—")}</td>`;
@@ -12318,6 +12675,7 @@ const buildInRoomHtml = (doc, session) => {
           medsSectionHtml += `</tr>`;
         });
         medsSectionHtml += `</tbody></table>`;
+      }
       } else if (currentMedNames.length > 0) {
         // AI-descriptions table
         medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
