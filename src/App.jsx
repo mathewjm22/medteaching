@@ -12214,7 +12214,7 @@ const buildInRoomHtml = (doc, session) => {
   const updatesRecentVisitsHtml = updatesText
     ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-clock-rotate-left"></i> Updates &amp; Recent Visits</div><div class="narrative-body">${renderNarrativeBody(updatesText, "updates")}</div></div>`
     : "";
-    
+
   const topNarrativeHtml =
     aboutPatientHtml || updatesRecentVisitsHtml
       ? `<div class="narrative-stack">${aboutPatientHtml}${updatesRecentVisitsHtml}</div>`
@@ -12245,9 +12245,20 @@ const buildInRoomHtml = (doc, session) => {
   // Right: Clinical Reference Data — organized by section, each with its own heading
   refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-database"></i> Clinical Reference Data</div><div class="ref-body">`;
 
-  // Helper: render a subsection with a title + body (either bulleted or prose)
+  // Helper: render a subsection with a title + body (either bulleted or prose).
+  // When the body is short and single-line (e.g., a date, a single status
+  // word), render it inline with the title so it doesn't waste a full row.
+  // "Short" means no HTML list/paragraph tags and under ~30 characters of
+  // visible text.
   const renderRefSubsection = (icon, label, contentHtml) => {
     if (!contentHtml) return "";
+    // Detect single-line short content: a bare <div>text</div> wrapper with
+    // no nested block elements, under 30 chars of text.
+    const singleDivMatch = contentHtml.match(/^\s*<div>([^<]{1,30})<\/div>\s*$/);
+    if (singleDivMatch) {
+      const inlineValue = singleDivMatch[1].trim();
+      return `<div class="ref-subsection"><div class="ref-subsection-title" style="display:flex;align-items:baseline;gap:8px;"><span><i class="fa-solid ${icon}"></i> ${esc(label)}</span><span style="font-size:9pt;font-weight:400;color:var(--fg-m);text-transform:none;letter-spacing:normal;">${esc(inlineValue)}</span></div></div>`;
+    }
     return `<div class="ref-subsection"><div class="ref-subsection-title"><i class="fa-solid ${icon}"></i> ${esc(label)}</div><div class="ref-subsection-body">${contentHtml}</div></div>`;
   };
 // Helper: render a hospitalization / specialty-care / consult list with
@@ -15160,14 +15171,13 @@ body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca
   overflow-wrap: anywhere;
 }
 .narrative-inline-date {
-  display: inline-block;
-  padding: 0 3px;
-  border-radius: 3px;
-  background: #eff6ff;
-  color: #1d4ed8;
+  /* Subtle in-prose date — enough weight to spot when scanning, but no
+     background, no color shift, no pill. Reserves the strong pill styling
+     for .narrative-date (the anchor date on standalone bulleted rows). */
   font-family: 'JetBrains Mono', monospace;
-  font-size: .92em;
-  font-weight: 650;
+  font-size: .88em;
+  font-weight: 500;
+  color: var(--fg-m);
   white-space: nowrap;
 }
 body.dark .narrative-date {
@@ -15176,8 +15186,7 @@ body.dark .narrative-date {
   color: #93c5fd;
 }
 body.dark .narrative-inline-date {
-  background: rgba(59,130,246,.14);
-  color: #93c5fd;
+  color: var(--fg-m);
 }
 @media (max-width: 640px) {
   .narrative-row {
