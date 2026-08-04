@@ -8796,6 +8796,92 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                 }}
                 style={{ outline: "none" }}
               >
+                {/* Auto-detected images pulled from pasted source responses.
+                    Shown here so the attending can confirm the images survived
+                    the paste and see what will land in the final Figure Gallery.
+                    Read-only — to remove one, clear it from its source's rich
+                    text box above. */}
+                {(() => {
+                  const detectedFigures = [];
+                  // Standard sources (OpenEvidence, UpToDate, DynaMed, DoxGPT, Other)
+                  Object.entries(sourceResponses || {}).forEach(([srcKey, resp]) => {
+                    if (srcKey === "pubmedai") return;
+                    const label = sourceLabels[srcKey] || srcKey;
+                    (resp?.images || []).forEach(img => {
+                      if (img?.dataUrl) {
+                        detectedFigures.push({
+                          dataUrl: img.dataUrl,
+                          alt: img.alt || label,
+                          source: label,
+                          key: img.id || `${srcKey}-${detectedFigures.length}`,
+                        });
+                      }
+                    });
+                  });
+                  // PubMed AI (per-topic map)
+                  Object.entries(sourceResponses.pubmedai || {}).forEach(([topic, v]) => {
+                    (v?.images || []).forEach(img => {
+                      if (img?.dataUrl) {
+                        detectedFigures.push({
+                          dataUrl: img.dataUrl,
+                          alt: img.alt || `PubMed AI: ${topic}`,
+                          source: `PubMed AI · ${topic}`,
+                          key: img.id || `pubmed-${topic}-${detectedFigures.length}`,
+                        });
+                      }
+                    });
+                  });
+                  if (detectedFigures.length === 0) return null;
+                  return (
+                    <div className="mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded-lg">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-1.5 text-xs font-semibold text-indigo-900">
+                          <Check className="w-3.5 h-3.5" />
+                          Images detected from pasted sources ({detectedFigures.length})
+                        </div>
+                        <span className="text-[10px] uppercase tracking-wider text-indigo-700 bg-indigo-100 px-1.5 py-0.5 rounded">
+                          Auto-added to gallery
+                        </span>
+                      </div>
+                      <p className="text-xs text-indigo-800 mb-2">
+                        These images were extracted from your pasted source responses and will appear in the final document's Figure Gallery. To remove one, edit or clear the image from its source's response box above.
+                      </p>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                        {detectedFigures.map(fig => (
+                          <div key={fig.key} className="bg-white rounded border border-indigo-200 overflow-hidden">
+                            <button
+                              onClick={() => setAttachmentLightbox({ dataUrl: fig.dataUrl, alt: fig.alt })}
+                              className="block w-full cursor-zoom-in group"
+                              title={`Click to view full size · Source: ${fig.source}`}
+                            >
+                              <div className="relative">
+                                <img
+                                  src={fig.dataUrl}
+                                  alt={fig.alt}
+                                  className="w-full h-24 object-contain bg-slate-50"
+                                />
+                                <div className="absolute inset-0 flex items-center justify-center bg-black/0 group-hover:bg-black/30 transition pointer-events-none">
+                                  <div className="opacity-0 group-hover:opacity-100 transition bg-white/95 text-slate-800 text-[10px] font-medium px-1.5 py-0.5 rounded shadow">
+                                    🔍 View
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="px-1.5 py-1 border-t border-indigo-100">
+                                <div className="text-[10px] font-semibold text-indigo-800 uppercase tracking-wide truncate">
+                                  {fig.source}
+                                </div>
+                                {fig.alt && fig.alt !== fig.source && (
+                                  <div className="text-[10px] text-slate-500 truncate">{fig.alt}</div>
+                                )}
+                              </div>
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
+
                 <div className="flex items-center justify-between mb-2">
                   <label className="text-sm font-medium text-slate-700">Reference images</label>
                   <label className="cursor-pointer inline-flex items-center gap-1 text-xs px-3 py-1.5 bg-indigo-600 text-white hover:bg-indigo-700 rounded transition">
