@@ -814,316 +814,143 @@ const normalizeTeachingResults = (
 const extractPrenoteSections = (rawText) => {
   if (!rawText || typeof rawText !== "string") return {};
 
-  let text = rawText
+  let text = String(rawText)
     .replace(/\r\n?/g, "\n")
     .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
     .replace(/\u00a0/g, " ")
     .replace(/```[a-z0-9_-]*\s*/gi, "\n")
     .replace(/```/g, "\n")
-    // Normalize ordinary Markdown horizontal rules too. The source can also
-    // glue a rule directly to the next heading ("---## Laboratory Results").
+    // Markdown headings may be glued directly to the preceding sentence.
+    .replace(/([^\n])(?=#{1,6}\s*[A-Za-z0-9])/g, "$1\n")
+    // Normalize both Markdown rules and EHR divider runs. Long runs are safe
+    // to split even when the source has been flattened into one physical line.
     .replace(/^[ \t]*(?:[-=_]{3,}|[─━═—–]{3,})[ \t]*$/gm, "\n")
-    .replace(/[ \t]*(?:[-=_]{3,}|[─━═—–]{3,})[ \t]*(?=#{1,6}\s*)/g, "\n");
+    .replace(/[ \t]*(?:[-=_]{8,}|[─━═—–]{8,})[ \t]*/g, "\n")
+    .replace(/[ \t]*---[ \t]*(?=#{1,6}\s*)/g, "\n");
 
-  // Strip AI meta-narration that occasionally leaks into generated prenotes.
-  // These are self-referential sentences the model produces while thinking
-  // out loud ("Now I have comprehensive information to..."). They're never
-  // clinically useful and can bleed into whatever section they land beside.
-  // We remove whole sentences that start with these signature phrases,
-  // stopping at the next sentence boundary or blank line.
-  const metaNarrationPatterns = [
-    // Standard first-person openers about compiling / generating / continuing
-    /(?:^|\n)\s*Now (?:I|I['’]ll)[^\n]{0,400}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*Based on (?:my|the) (?:comprehensive |thorough |detailed )?(?:review|analysis)[^\n]{0,400}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*Let me (?:compile|complete|create|now|proceed|generate|continue|finish)[^\n]{0,400}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*I(?:['’]| ha)?ve (?:now )?(?:completed|reviewed|compiled|gathered|sufficient)[^\n]{0,400}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*(?:I['’]ll|I will) (?:now )?(?:compile|create|generate|produce|continue|finish|complete)[^\n]{0,400}(?:\.|:)\s*/gi,
-    /(?:^|\n)\s*Here(?:['’]s| is) (?:the |a )?(?:complete|comprehensive|full)[^\n]{0,400}(?:\.|:)\s*/gi,
-    // Section-continuation prose ("Looking at the current note, I can see it ends mid-sentence at line 38")
-    /(?:^|\n)\s*Looking at (?:the|this) (?:current |previous |prior )?(?:note|section|prenote|chart)[^\n]{0,400}(?:\.|:)\s*/gi,
-    // "This section is/was cut off" style comments
-    /(?:^|\n)\s*This (?:section|note|content|response) (?:is|was|has been) (?:cut off|truncated|incomplete)[^\n]{0,400}(?:\.|:)\s*/gi,
-    // Chunk boundary markers left by streaming or chunked output
-    /(?:^|\n)\s*<<>>\s*(?:\n|$)/g,
-    /(?:^|\n)\s*\[?(?:continued|continuing|CONT|CONTINUED)[^\n]{0,30}\]?\s*(?:\n|$)/gi,
-    // "Now I have [X] to [Y]" — variant
-    /(?:^|\n)\s*Now I have (?:sufficient |comprehensive |enough |all the )?information[^\n]{0,400}(?:\.|:)\s*/gi,
+  // Remove generation chatter and chunk-boundary artifacts without relying on
+  // any patient, facility, or note-specific wording.
+  const isMetaNarrationLine = (value) => {
+    const line = String(value || "")
+      .replace(/^#{1,6}\s*/, "")
+      .trim();
+    if (!line || /^<<>>$/.test(line)) return true;
+
+    const opener = /^(?:perfect[.!]?\s*)?(?:now\b|next\b|let me\b|based on\b|looking at\b|i(?:['’]ll| will| have| can)\b|this (?:section|note|content|response)\b)/i;
+    const workWord = /\b(?:compile|create|generate|complete|continue|finish|review|information|template|section|chart|prenote|output|ends?|cut off|truncated|sufficient|comprehensive)\b/i;
+    return opener.test(line) && workWord.test(line);
+  };
+
+  text = text
+    .split("\n")
+    .filter((line) => !isMetaNarrationLine(line))
+    .join("\n")
+    .replace(/<<>>/g, "\n");
+
+  // Insert boundaries for the small set of section names that are commonly
+  // concatenated to their first field when an EHR or LLM flattens whitespace.
+  // These are semantic section labels, not note-specific phrases.
+  const gluedHeadingRules = [
+    [/SOCIAL(?:\s+HISTORY)?(?=Living\s+status:|Marital\s+status:|Occupation:)/gi, "\nSOCIAL HISTORY\n"],
+    [/FAMILY\s+HISTORY(?=No\s+relevant|Father:|Mother:|Relevant\s+family)/gi, "\nFAMILY HISTORY\n"],
+    [/ALLERGIES(?=(?:[A-Z][a-z]+|NKDA|NKA|None)[^\n]{0,80}:|None\b|NKDA\b|NKA\b)/gi, "\nALLERGIES\n"],
+    [/SURGICAL\s+HISTORY(?=\d|Remote:|No\s+|[-*•])/gi, "\nSURGICAL HISTORY\n"],
+    [/MILITARY\s+HISTORY(?=Branch:|Era:|Deploy|Service|[-*•])/gi, "\nMILITARY HISTORY\n"],
+    [/MED(?:ICATION)?\s+REC(?:ONCILIATION)?(?=(?:###\s*)?CURRENT\s+(?:ACTIVE|MEDICATIONS?))/gi, "\nMEDICATION RECONCILIATION\n"],
+    [/PREVENTIVE(?:\s+CARE\s*&\s*HEALTH\s+MAINTENANCE|\s+MEDICINE)(?=(?:###\s*)?Immunizations?)/gi, "\nPREVENTIVE MEDICINE\n"],
+    [/VITAL\s+SIGNS?\s+TRENDS?(?=BP:|Last\s+Visit)/gi, "\nVITAL SIGNS TRENDS\n"],
+    [/KEY\s+DIAGNOSES(?=[A-Z])/g, "\nKEY DIAGNOSES\n"],
+    [/DIAGNOSTICS(?=Vital\s+Signs|Recent\s+Labs|Imaging|Scope\s+Notes)/g, "\nDIAGNOSTICS\n"],
   ];
-  metaNarrationPatterns.forEach((pattern) => {
-    text = text.replace(pattern, "\n");
+  gluedHeadingRules.forEach(([pattern, replacement]) => {
+    text = text.replace(pattern, replacement);
   });
 
-  /*
-   * Some generated prenotes collapse several headings onto one line:
-   *
-   * SOCIALLiving status: ...
-   * FAMILY HISTORYFather: ...
-   * MED RECCURRENT MEDICATIONS ...
-   *
-   * Insert explicit line breaks around those known combinations.
-   */
-  const gluedHeadingRules = [
-    [
-      /SOCIAL(?=Living\s+status:|Marital\s+status:)/g,
-      "\nSOCIAL\n",
-    ],
-    [
-      /FAMILY\s+HISTORY(?=Heart\s+murmur|No\s+relevant|Father:|Mother:|Relevant\s+family)/g,
-      "\nFAMILY HISTORY\n",
-    ],
-    [
-      /ALLERGIES(?=(?:[A-Z][a-z]+|NKDA|None)[^\n]{0,80}:|None\b|NKDA\b)/g,
-      "\nALLERGIES\n",
-    ],
-    [
-      /SURGICAL\s+HISTORY(?=\d|Remote:|No\s+|[-*])/g,
-      "\nSURGICAL HISTORY\n",
-    ],
-    [
-      /MILITARY\s+HISTORY(?=Long-term|Branch:|Specific\s+branch|[-*])/g,
-      "\nMILITARY HISTORY\n",
-    ],
-    [
-      /MED(?:ICATION)?\s+REC(?:ONCILIATION)?(?=(?:###\s*)?CURRENT\s+MEDICATIONS?)/g,
-      "\nMED REC\n",
-    ],
-    [
-      /PREVENTIVE\s+MEDICINE(?=(?:###\s*)?Immunizations?)/g,
-      "\nPREVENTIVE MEDICINE\n",
-    ],
-    [
-      /VITAL\s+SIGNS?\s+TRENDS?(?=BP:|Last\s+Visit)/g,
-      "\nVITAL SIGNS TRENDS\n",
-    ],
-    [
-      /KEY\s+DIAGNOSES(?=[A-Z])/g,
-      "\nKEY DIAGNOSES\n",
-    ],
-    [
-      /DIAGNOSTICS(?=Vital\s+Signs|Recent\s+Labs|Imaging|Scope\s+Notes)/g,
-      "\nDIAGNOSTICS\n",
-    ],
-  ];
-
-  for (const [pattern, replacement] of gluedHeadingRules) {
-    text = text.replace(pattern, replacement);
-  }
-
-  /*
-   * Stop before raw CPRS/chart exports appended after the generated
-   * prenote. Otherwise later raw headings such as ALLERGIES: can overwrite
-   * or pollute the generated prenote sections.
-   */
+  // Generated prenotes are sometimes followed by a raw EHR export. Truncate
+  // only on explicit export markers; do not infer an appendix from a person's
+  // name or an ordinary clinical sentence.
   const appendixMarkers = [
-    /NOTE\s+ENCOUNTER\s+FOR:/i,
-    /LOCAL\s+TITLE:/i,
-    /(?:^|\n)[ \t]*(?!THE PATIENT\b)[A-Z][A-Z,.' -]{2,80}\s+is\s+a\s+\d{1,3}\s+year\s+old\b/m,
-    /<<>>/,
+    /(?:^|\n)\s*NOTE\s+ENCOUNTER\s+FOR\s*:/i,
+    /(?:^|\n)\s*LOCAL\s+TITLE\s*:/i,
+    /(?:^|\n)\s*Information\s*:\s*\n\s*Computed\s+Finding\s*:/i,
   ];
-
   const appendixIndexes = appendixMarkers
     .map((pattern) => text.search(pattern))
     .filter((index) => index > 0);
-
   if (appendixIndexes.length > 0) {
     text = text.slice(0, Math.min(...appendixIndexes));
   }
 
-  /*
-   * Convert all supported horizontal rules into newlines, even when the
-   * rule appears in the middle of one giant line.
-   */
-  text = text.replace(
-    /[ \t]*(?:[-=_]{10,}|[─━═—–]{10,})[ \t]*/g,
-    "\n"
-  );
-
-  /*
-   * Only explicit, known headings are accepted. This prevents diagnosis
-   * names such as:
-   *
-   * MYOPIC REFRACTIVE ERROR WITH ASTIGMATISM ..... New
-   *
-   * from being mistaken for top-level sections.
-   */
   const headingDefinitions = [
-    {
-      title: "WHAT TO KNOW ABOUT",
-      regex:
-        /^WHAT\s+TO\s+KNOW\s+ABOUT(?:\s+[A-Z][A-Z .,'’\-]{1,80})?/i,
-    },
-    {
-      title: "UPDATES / RECENT VISITS",
-      regex: /^UPDATES?\s*\/\s*RECENT\s+VISITS?/i,
-    },
-    {
-      title: "PAST MEDICAL HISTORY",
-      regex: /^PAST\s+MEDICAL\s+HISTORY/i,
-    },
-    {
-      title: "RECENT LABS SUMMARY MOST RECENT FIRST",
-      regex:
-        /^RECENT\s+LABS?\s+SUMMARY(?:\s*\(\s*MOST\s+RECENT\s+FIRST\s*\))?/i,
-    },
-    {
-      title: "KEY LABS IMAGING RESULTS WITH TRENDS",
-      regex:
-        /^KEY\s+LABS?\s*(?:\/|AND)?\s*IMAGING\s+RESULTS?\s+WITH\s+TRENDS/i,
-    },
-    {
-      title: "IMAGING AND DIAGNOSTIC PROCEDURES",
-      regex: /^IMAGING\s+AND\s+(?:DIAGNOSTIC\s+PROCEDURES|RADIOLOGIC\s+STUDIES)/i,
-    },
-    {
-      title: "LABORATORY TRENDS KEY ABNORMALITIES",
-      regex:
-        /^LABORATORY\s+TRENDS\s*\(?\s*KEY\s+ABNORMALITIES\s*\)?/i,
-    },
-    {
-      title: "LAB TREND TABLES",
-      regex: /^LAB(?:ORATORY)?\s+TREND\s+TABLES?/i,
-    },
-    {
-      title: "DATED SINGLE-RESULT BLOCKS",
-      regex: /^DATED\s+SINGLE[- ]RESULT\s+BLOCKS?/i,
-    },
-    {
-      title: "RECENT LABS",
-      regex:
-        /^(?:MOST\s+)?RECENT\s+(?:LABS?|LABORATORY\s+RESULTS?)(?:\s*\([^)]*\))?/i,
-    },
-    {
-      title: "LABORATORY DATA",
-      regex:
-        /^LABORATORY\s+(?:DATA|STUDIES|RESULTS|TRENDS)/i,
-    },
-    {
-      title: "VITAL SIGNS TRENDS",
-      regex: /^VITAL\s+SIGNS?\s+TRENDS?/i,
-    },
-    {
-      title: "PREVENTIVE MEDICINE",
-      regex: /^PREVENTIVE\s+MEDICINE/i,
-    },
-    {
-      title: "SURGICAL HISTORY",
-      regex: /^SURGICAL\s+HISTORY/i,
-    },
-    {
-      title: "MILITARY HISTORY",
-      regex: /^MILITARY\s+HISTORY/i,
-    },
-    {
-      title: "FAMILY HISTORY",
-      regex: /^FAMILY\s+HISTORY/i,
-    },
-    {
-      title: "SOCIAL HISTORY",
-      regex: /^SOCIAL\s+HISTORY/i,
-    },
-    {
-      title: "MED REC",
-      regex:
-        /^MED(?:ICATION)?\s+REC(?:ONCILIATION)?/i,
-    },
-    {
-      title: "KEY DIAGNOSES",
-      regex: /^KEY\s+DIAGNOSES/i,
-    },
-    {
-      title: "DIAGNOSTICS",
-      regex: /^DIAGNOSTICS(?!\s+SELF[- ]?CHECK)/i,
-    },
-    {
-      title: "FOLLOW-UP",
-      regex: /^FOLLOW[- ]?UP/i,
-    },
-    {
-      title: "ALLERGIES",
-      regex: /^ALLERGIES/i,
-    },
-    {
-      title: "SOCIAL",
-      regex: /^SOCIAL/i,
-    },
-    {
-      title: "PRENOTE",
-      regex: /^PRENOTE/i,
-    },
+    { title: "SUMMARY & CLINICAL IMPRESSION", regex: /^SUMMARY\s*(?:&|AND)\s*CLINICAL\s+IMPRESSION/i },
+    { title: "PRENOTE", regex: /^PRENOTE\b/i },
+    { title: "WHAT TO KNOW ABOUT", regex: /^WHAT\s+TO\s+KNOW\s+ABOUT(?:\s+[A-Z][A-Z .,'’\-]{1,80})?/i },
+    { title: "UPDATES / RECENT VISITS", regex: /^UPDATES?\s*\/\s*RECENT\s+VISITS?/i },
+    { title: "PAST MEDICAL HISTORY", regex: /^PAST\s+MEDICAL\s+HISTORY/i },
+    { title: "KEY DIAGNOSES", regex: /^KEY\s+DIAGNOSES/i },
+    { title: "VITAL SIGNS TRENDS", regex: /^VITAL\s+SIGNS?\s+TRENDS?/i },
+    { title: "RECENT LABS SUMMARY MOST RECENT FIRST", regex: /^RECENT\s+LABS?\s+SUMMARY(?:\s*\(\s*MOST\s+RECENT\s+FIRST\s*\))?/i },
+    { title: "KEY LABS IMAGING RESULTS WITH TRENDS", regex: /^KEY\s+LABS?\s*(?:\/|AND)?\s*IMAGING\s+RESULTS?\s+WITH\s+TRENDS/i },
+    { title: "LABORATORY TRENDS KEY ABNORMALITIES", regex: /^LABORATORY\s+TRENDS\s*\(?\s*KEY\s+ABNORMALITIES\s*\)?/i },
+    { title: "LAB TREND TABLES", regex: /^LAB(?:ORATORY)?\s+TREND\s+TABLES?(?:\s*\([^)]*\))?/i },
+    { title: "DATED SINGLE-RESULT BLOCKS", regex: /^DATED\s+SINGLE[- ]RESULT\s+BLOCKS?/i },
+    { title: "RECENT LABS", regex: /^(?:MOST\s+)?RECENT\s+(?:LABS?|LABORATORY\s+RESULTS?)(?:\s*\([^)]*\))?/i },
+    { title: "LABORATORY DATA", regex: /^LABORATORY\s+(?:DATA|STUDIES|RESULTS|TRENDS)/i },
+    { title: "IMAGING AND DIAGNOSTIC PROCEDURES", regex: /^(?:IMAGING\s*(?:\/|AND)\s*(?:DIAGNOSTIC\s+PROCEDURES?|RADIOLOGIC\s+STUDIES|DIAGNOSTICS?)|DIAGNOSTIC\s+PROCEDURES?,?\s*IMAGING,?\s*(?:AND|&)\s*PULMONARY\s+FUNCTION\s+TESTING|DIAGNOSTIC\s+PROCEDURES?\s*(?:&|AND)\s*RADIOLOGIC\s+IMAGING)/i },
+    { title: "PATHOLOGY", regex: /^PATHOLOGY\b/i },
+    { title: "DIAGNOSTICS", regex: /^DIAGNOSTICS(?!\s+SELF[- ]?CHECK)/i },
+    { title: "MED REC", regex: /^MED(?:ICATION)?\s+REC(?:ONCILIATION)?/i },
+    { title: "PREVENTIVE MEDICINE", regex: /^PREVENTIVE(?:\s+MEDICINE|\s+CARE\s*(?:&|AND)\s*HEALTH\s+MAINTENANCE)/i },
+    { title: "SOCIAL HISTORY", regex: /^SOCIAL\s+HISTORY(?:\s*(?:&|AND)\s*FUNCTIONAL\s+STATUS)?/i },
+    { title: "SOCIAL", regex: /^SOCIAL\b/i },
+    { title: "FAMILY HISTORY", regex: /^FAMILY\s+HISTORY/i },
+    { title: "ALLERGIES", regex: /^ALLERGIES\b/i },
+    { title: "SURGICAL HISTORY", regex: /^SURGICAL\s+HISTORY/i },
+    { title: "MILITARY HISTORY", regex: /^MILITARY\s+HISTORY/i },
+    { title: "CARE COORDINATION", regex: /^CARE\s+COORDINATION(?:\s*(?:&|AND)\s*COMMUNITY\s+CARE)?/i },
+    { title: "ASSESSMENT AND PLAN CONSIDERATIONS", regex: /^ASSESSMENT\s*(?:&|AND)\s*PLAN\s+CONSIDERATIONS/i },
+    { title: "FOLLOW-UP", regex: /^FOLLOW[- ]?UP/i },
+    { title: "ADVANCE DIRECTIVES", regex: /^ADVANCE\s+DIRECTIVES/i },
+    { title: "ACTIVE ORDERS", regex: /^ACTIVE\s+ORDERS/i },
+    { title: "CONSULTS", regex: /^CONSULTS\b/i },
   ];
 
   const matchKnownHeading = (rawLine) => {
     const original = String(rawLine || "").trim();
-
     if (!original) return null;
 
     const hadMarkdownHeading = /^#{1,6}\s*/.test(original);
-    const line = original
-      .replace(/^#{1,6}\s*/, "")
-      .trim();
+    const line = original.replace(/^#{1,6}\s*/, "").trim();
 
     for (const definition of headingDefinitions) {
       const match = line.match(definition.regex);
-
       if (!match || match.index !== 0) continue;
 
       const matchedText = match[0].trim();
-      const remainder = line
-        .slice(match[0].length)
-        .trim();
-
-      const letters =
-        matchedText.match(/[A-Za-z]/g) || [];
-
-      const uppercaseLetters =
-        matchedText.match(/[A-Z]/g) || [];
-
-      /*
-       * A heading with content attached is accepted only when the heading
-       * itself is clearly uppercase or marked as Markdown. This avoids
-       * treating ordinary prose beginning with "Social" as a section.
-       */
+      const remainder = line.slice(match[0].length).trim();
+      const letters = matchedText.match(/[A-Za-z]/g) || [];
+      const uppercaseLetters = matchedText.match(/[A-Z]/g) || [];
       const looksExplicit =
         !remainder ||
         hadMarkdownHeading ||
-        (
-          letters.length > 0 &&
-          uppercaseLetters.length / letters.length >= 0.8
-        );
-
+        (letters.length > 0 && uppercaseLetters.length / letters.length >= 0.8);
       if (!looksExplicit) continue;
 
-      /*
-       * Patient names are part of the WHAT TO KNOW heading, not section
-       * content.
-       */
       if (
         definition.title === "WHAT TO KNOW ABOUT" &&
         remainder &&
         /^[A-Z][A-Z .,'’\-]{1,80}$/.test(remainder)
       ) {
-        return {
-          title: definition.title,
-          remainder: "",
-        };
+        return { title: definition.title, remainder: "" };
       }
 
-      return {
-        title: definition.title,
-        remainder,
-      };
+      return { title: definition.title, remainder };
     }
-
     return null;
   };
 
-  const sections = {};
-
-  let currentTitle = null;
-  let currentBody = [];
-
-  const normalizeForCompare = (text) =>
-    String(text || "")
+  const normalizeForCompare = (value) =>
+    String(value || "")
       .toLowerCase()
       .replace(/[^\w\s]/g, "")
       .replace(/\s+/g, " ")
@@ -1132,89 +959,91 @@ const extractPrenoteSections = (rawText) => {
   const bodiesAreSimilar = (a, b) => {
     const normA = normalizeForCompare(a);
     const normB = normalizeForCompare(b);
-
     if (!normA || !normB) return false;
-
-    // Fast path: exact match after normalization
     if (normA === normB) return true;
-
-    // Containment: one fully contains the other (common when a shorter
-    // duplicate paste is embedded in a longer version, or vice versa)
     const shorter = normA.length <= normB.length ? normA : normB;
     const longer = shorter === normA ? normB : normA;
-    if (longer.includes(shorter)) return true;
+    if (shorter.length > 120 && longer.includes(shorter)) return true;
 
-    // Similarity by shared token ratio (cheap, no external library)
-    const tokensA = new Set(normA.split(" ").filter((t) => t.length > 2));
-    const tokensB = new Set(normB.split(" ").filter((t) => t.length > 2));
-    if (tokensA.size === 0 || tokensB.size === 0) return false;
-
+    const tokensA = new Set(normA.split(" ").filter((token) => token.length > 2));
+    const tokensB = new Set(normB.split(" ").filter((token) => token.length > 2));
+    if (!tokensA.size || !tokensB.size) return false;
     const smaller = tokensA.size <= tokensB.size ? tokensA : tokensB;
     const larger = smaller === tokensA ? tokensB : tokensA;
     let shared = 0;
-    smaller.forEach((t) => {
-      if (larger.has(t)) shared++;
+    smaller.forEach((token) => {
+      if (larger.has(token)) shared += 1;
     });
-
-    const ratio = shared / smaller.size;
-    return ratio >= 0.85;
+    return shared / smaller.size >= 0.88;
   };
+
+  const sectionCandidates = new Map();
+  let currentTitle = null;
+  let currentBody = [];
+  let order = 0;
 
   const saveCurrentSection = () => {
     if (!currentTitle) return;
-
     const body = currentBody.join("\n").trim();
     if (!body) return;
-
     const key = normalizeSectionTitle(currentTitle);
     if (!key) return;
 
-    // First-write-wins with similarity-based dedup. If the new body is a
-    // near-duplicate of what's already stored, drop it silently. This handles
-    // Part 1 / Part 2 style paste artifacts where the same section appears
-    // multiple times with minor whitespace differences.
-    if (sections[key]) {
-      if (bodiesAreSimilar(sections[key], body)) {
-        // Silently drop duplicate
-        return;
-      }
-      // Genuinely different content for the same section key — still keep
-      // first-write-wins, but log so we can investigate if this is common.
-      console.log(
-        `[extractPrenoteSections] Duplicate key "${key}" with different content — keeping first, dropping second.`
-      );
-      return;
+    const existing = sectionCandidates.get(key) || [];
+    if (!existing.some((candidate) => bodiesAreSimilar(candidate.body, body))) {
+      existing.push({ body, order: order++ });
+      sectionCandidates.set(key, existing);
     }
-
-    sections[key] = body;
   };
 
   for (const rawLine of text.split("\n")) {
     const heading = matchKnownHeading(rawLine);
-
     if (heading) {
       saveCurrentSection();
-
       currentTitle = heading.title;
-      currentBody = heading.remainder
-        ? [heading.remainder]
-        : [];
-
-      continue;
-    }
-
-    if (currentTitle) {
+      currentBody = heading.remainder ? [heading.remainder] : [];
+    } else if (currentTitle) {
       currentBody.push(rawLine);
     }
   }
-
   saveCurrentSection();
 
-  console.log(
-    "[extractPrenoteSections] sections found:",
-    Object.keys(sections)
-  );
+  const scoreCandidate = (key, body) => {
+    const value = String(body || "");
+    const lines = value.split("\n").filter((line) => line.trim());
+    let score = Math.min(value.length, 24000) / 35 + Math.min(lines.length, 300);
 
+    const metaCount = (value.match(/\b(?:let me|now i|i['’]ll|based on the comprehensive|looking at the note)\b/gi) || []).length;
+    score -= metaCount * 80;
+
+    if (/IMAGING|DIAGNOSTIC|RADIOLOGIC|PATHOLOGY/.test(key)) {
+      const noContent = /^(?:[-*•]\s*)?(?:no|none)\s+(?:relevant\s+)?(?:imaging|diagnostic|procedures?|studies?)/im.test(value);
+      if (noContent) score -= 5000;
+      score += (value.match(/\b(?:CT|CTA|MRI|MRA|PET(?:\/CT)?|X-?RAY|XR|RADIOGRAPH|ULTRASOUND|SONOGRAM|DOPPLER|ECHOCARDIOGRAM|ECG|EKG|EEG|EMG|NERVE\s+CONDUCTION|HOLTER|ZIO|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|POLYSOMNOGRAPHY|SLEEP\s+STUDY|COLONOSCOPY|ENDOSCOPY|EGD|MAMMOGRAM|DEXA|BONE\s+DENSITY|BIOPSY|PATHOLOGY|ANGIOGRAM|AORTOGRAM)\b/gi) || []).length * 55;
+      score += (value.match(/\b(?:FINDINGS?|IMPRESSION|CONCLUSION|INTERPRETATION|RESULTS?|TECHNIQUE|INDICATION)\s*:/gi) || []).length * 25;
+      score += (value.match(/\b(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}\b/g) || []).length * 5;
+    } else if (/LAB|LABORATORY/.test(key)) {
+      score += (value.match(/\|/g) || []).length * 4;
+      score += (value.match(/\bCOLLECTION\b/gi) || []).length * 30;
+    } else if (/PAST_MEDICAL_HISTORY|KEY_DIAGNOSES/.test(key)) {
+      score += (value.match(/\bCurrent\s+status\s*:/gi) || []).length * 20;
+      score += (value.match(/\bMedications?\s*-\s*Current\s*:/gi) || []).length * 10;
+    }
+    return score;
+  };
+
+  const sections = {};
+  sectionCandidates.forEach((candidates, key) => {
+    const best = [...candidates].sort((a, b) => {
+      const scoreDiff = scoreCandidate(key, b.body) - scoreCandidate(key, a.body);
+      if (Math.abs(scoreDiff) > 0.001) return scoreDiff;
+      if (b.body.length !== a.body.length) return b.body.length - a.body.length;
+      return a.order - b.order;
+    })[0];
+    if (best) sections[key] = best.body;
+  });
+
+  console.log("[extractPrenoteSections] sections found:", Object.keys(sections));
   return sections;
 };
 
@@ -10974,15 +10803,107 @@ const buildInRoomHtml = (doc, session) => {
     fallbackSection("VITAL SIGNS TRENDS")
   );
 
+  // Select diagnostics by semantic section type and content quality. This does
+  // not depend on a particular generated heading sentence, facility, patient,
+  // or community-care template.
+  const diagnosticStudySignal = /\b(?:CT|CTA|MRI|MRA|PET(?:\/CT)?|X-?RAY|XR|RADIOGRAPH|ULTRASOUND|SONOGRAM|DOPPLER|ECHOCARDIOGRAM|ECG|EKG|EEG|EMG|NERVE\s+CONDUCTION|HOLTER|ZIO|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|POLYSOMNOGRAPHY|SLEEP\s+STUDY|COLONOSCOPY|ENDOSCOPY|ESOPHAGOGASTRODUODENOSCOPY|EGD|MAMMOGRAM|DEXA|BONE\s+DENSITY|BIOPSY|PATHOLOGY|ANGIOGRAM|AORTOGRAM|LAVAGE|CULTURES?)\b/i;
+
+  const isEmptyDiagnosticText = (value) => {
+    const cleaned = String(value || "")
+      .replace(/^\s*(?:[-*•]|#{1,6})\s*/gm, "")
+      .replace(/(?:[-=_]{3,}|[─━═—–]{3,})/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    if (!cleaned) return true;
+    return /^(?:no|none|n\/?a)\s+(?:relevant\s+)?(?:imaging|diagnostic|diagnostics|procedures?|studies?|scans?)(?:\s+or\s+diagnostic\s+procedures?)?\s+(?:available|documented|performed|reported|found|in\s+the\s+.+)?[.!]?$/.test(cleaned);
+  };
+
+  const extractDiagnosticSubsection = (value) => {
+    const source = String(value || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+      .replace(/([^\n])(?=#{1,6}\s*[A-Za-z0-9])/g, "$1\n")
+      .replace(/[ \t]*(?:[-=_]{8,}|[─━═—–]{8,})[ \t]*/g, "\n");
+    if (!source.trim()) return "";
+
+    const headingRegex = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:IMAGING\s*(?:\/|AND)\s*(?:DIAGNOSTIC\s+PROCEDURES?|RADIOLOGIC\s+STUDIES|DIAGNOSTICS?)|DIAGNOSTIC\s+PROCEDURES?,?\s*IMAGING,?\s*(?:AND|&)\s*PULMONARY\s+FUNCTION\s+TESTING|DIAGNOSTIC\s+PROCEDURES?\s*(?:&|AND)\s*RADIOLOGIC\s+IMAGING)\s*(?:\n|$)/i;
+    const headingMatch = headingRegex.exec(source);
+    if (headingMatch) return source.slice(headingMatch.index + headingMatch[0].length).trim();
+
+    // A generic DIAGNOSTICS section can contain labs before imaging. Start at
+    // the first report-like line rather than passing the entire mixed block.
+    const lines = source.split("\n");
+    const firstReport = lines.findIndex((line) => {
+      const candidate = line.replace(/^\s*[-*•]\s*/, "").trim();
+      return diagnosticStudySignal.test(candidate) && !candidate.includes("|");
+    });
+    return firstReport >= 0 ? lines.slice(firstReport).join("\n").trim() : "";
+  };
+
+  const diagnosticCandidateScore = (value) => {
+    const textValue = String(value || "");
+    if (!textValue.trim()) return -Infinity;
+    if (isEmptyDiagnosticText(textValue)) return -10000 + textValue.length;
+    let score = Math.min(textValue.length, 30000) / 25;
+    score += (textValue.match(new RegExp(diagnosticStudySignal.source, "gi")) || []).length * 70;
+    score += (textValue.match(/\b(?:FINDINGS?|IMPRESSION|CONCLUSION|INTERPRETATION|RESULTS?|TECHNIQUE|INDICATION)\s*:/gi) || []).length * 30;
+    score += (textValue.match(/\b(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}\b/g) || []).length * 5;
+    score -= (textValue.match(/\bCOLLECTION\s*\|/gi) || []).length * 100;
+    return score;
+  };
+
+  const selectBestDiagnosticCandidate = (values) => {
+    const unique = [];
+    const seen = new Set();
+    values.forEach((value) => {
+      if (typeof value !== "string" || !value.trim()) return;
+      const cleaned = value.trim();
+      const signature = cleaned.toLowerCase().replace(/\s+/g, " ");
+      if (seen.has(signature)) return;
+      seen.add(signature);
+      unique.push(cleaned);
+    });
+    return unique.sort((a, b) => diagnosticCandidateScore(b) - diagnosticCandidateScore(a))[0] || "";
+  };
+
+  const extractDedicatedDiagnosticsFromRaw = (rawText) => {
+    const sections = extractPrenoteSections(rawText);
+    const dedicated = Object.entries(sections)
+      .filter(([key, value]) =>
+        typeof value === "string" &&
+        value.trim() &&
+        /IMAGING|DIAGNOSTIC|RADIOLOGIC|PATHOLOGY/.test(key) &&
+        !/LAB|LABORATORY/.test(key) &&
+        key !== "DIAGNOSTICS"
+      )
+      .map(([, value]) => value);
+
+    const bestDedicated = selectBestDiagnosticCandidate(dedicated);
+    if (bestDedicated && !isEmptyDiagnosticText(bestDedicated)) return bestDedicated;
+
+    const generic = getSection(sections, "DIAGNOSTICS");
+    const extracted = extractDiagnosticSubsection(generic);
+    if (extracted) return extracted;
+    return bestDedicated;
+  };
+
   // Keep imaging/diagnostic narrative separate from laboratory content.
-  const diagnosticsText = firstNonEmptyText(
-    prenoteSections.imagingAndDiagnosticProcedures,
-    prenoteSections.imagingDiagnostics,
-    prenoteSections.imaging,
-    fallbackSection("IMAGING AND DIAGNOSTIC PROCEDURES"),
-    prenoteSections.diagnostics,
-    fallbackSection("DIAGNOSTICS")
-  );
+  const parsedDiagnosticCandidates = Object.entries(prenoteSections)
+    .filter(([key, value]) =>
+      typeof value === "string" &&
+      value.trim() &&
+      /imaging|diagnostic|radiolog|patholog/i.test(key) &&
+      !/lab|laboratory/i.test(key)
+    )
+    .map(([, value]) => extractDiagnosticSubsection(value));
+
+  const diagnosticsText = selectBestDiagnosticCandidate([
+    extractDedicatedDiagnosticsFromRaw(rawPrenoteForNarratives),
+    ...parsedDiagnosticCandidates,
+    extractDiagnosticSubsection(prenoteSections.diagnostics),
+    extractDiagnosticSubsection(fallbackSection("DIAGNOSTICS")),
+  ]);
 
   // Collect only lab-specific sections. Do not use the generic DIAGNOSTICS
   // narrative as a raw laboratory fallback.
@@ -11404,7 +11325,7 @@ const buildInRoomHtml = (doc, session) => {
     let currentGroup = null;
 
     const diagnosticFieldRegex = /^(?:EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE|FINDINGS|IMPRESSION|CONCLUSION|LOWER\s+CHEST|LIVER|GALLBLADDER\/?BILIARY|PANCREAS|SPLEEN|ADRENALS?|KIDNEYS?\/?URETERS?|BOWEL\/?MESENTERY|VASCULATURE|LYMPHATICS|BLADDER|MUSCULOSKELETAL|ADDITIONAL\s+FINDINGS)\s*:/i;
-    const diagnosticTitleRegex = /^(?:CT|MRI|PET(?:\/CT)?|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY)\b/i;
+    const diagnosticTitleRegex = /^(?:CT|MRI|PET(?:\/CT)?|X-?RAY|XR|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY)\b/i;
     const preventiveStatusRegex = /\((?:due|overdue|up\s+to\s+date|completed|negative|declined|not\s+documented|not\s+due|current|done|recommended)\)\s*$/i;
 
     const looksLikeDiagnosticReportLine = (value) => {
@@ -12380,7 +12301,7 @@ const buildInRoomHtml = (doc, session) => {
     return html;
   };
   const isFormattingArtifactLine = (value) =>
-    /^(?:(?:[-=_]{3,}|[─━═—–]{3,})(?:\s*#{1,6})?|#{1,6})$/.test(
+    /^(?:(?:[-=_]{2,}|[─━═—–]{2,})(?:\s*#{1,6})?|#{1,6})$/.test(
       String(value || "").trim()
     );
 
@@ -13133,34 +13054,102 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // IMAGING / DIAGNOSTICS
   // ──────────────────────────────────────────────────────────────
-  const cleanDiagnosticsForDisplay = (text) => {
+  const cleanDiagnosticDisplayText = (value) =>
+    String(value || "")
+      .replace(/\bthe patient(?:\s+the patient)+\b/gi, "the patient")
+      .replace(/\s+/g, " ")
+      .replace(/\s*[-–—]\s*$/, "")
+      .trim();
+
+  const normalizeDiagnosticMarkup = (text) => {
     let output = String(text || "")
       .replace(/\r\n?/g, "\n")
+      .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
+      .replace(/\u00a0/g, " ")
+      .replace(/```[a-z0-9_-]*\s*/gi, "\n")
+      .replace(/```/g, "\n")
       .trim();
 
-    if (!output) return "";
+    if (!output) return [];
 
-    const stopPatterns = [
-      /^\s*#{0,6}\s*DIAGNOSTICS\s+self[- ]?check\b/im,
-      /^\s*Notes:\s*$/im,
-      /^\s*Now I(?:'|’)ll compile\b/im
-    ];
+    output = output
+      // Divider runs and glued Markdown headings become real line boundaries.
+      .replace(
+        /[ \t]*(?:[-=_]{8,}|[─━═—–]{8,})[ \t]*/g,
+        "\n"
+      )
+      .replace(/[ \t]*---[ \t]*(?=#{1,6}\s*)/g, "\n")
+      .replace(/([^\n#])(?=#{1,6}\s*)/g, "$1\n")
+      // A generated one-line export commonly glues "- NAME:", "- DATE:",
+      // and "- RESULT IN FULL:" directly to the preceding text.
+      .replace(
+        /-\s+(?=(?:NAME|DATE|RESULT(?:S)?(?:\s+IN\s+FULL)?(?:\s*\([^)]*\))?)\s*:)/gi,
+        "\n"
+      )
+      // Preserve ordinary bullets while placing each one on its own line.
+      .replace(/\s+-\s+(?=[A-Za-z0-9("“])/g, "\n- ")
+      // Numbered impression items are often separated only by several spaces.
+      .replace(/[ \t]{2,}(?=\d+[.)]\s+[A-Z])/g, "\n");
 
-    const stopIndexes = stopPatterns
-      .map((pattern) => output.search(pattern))
-      .filter((index) => index >= 0);
+    const labelSource = [
+      "NAME",
+      "DATE",
+      "RESULT(?:S)?(?:\\s+IN\\s+FULL)?(?:\\s*\\([^)]*\\))?",
+      "INDICATIONS?",
+      "HISTORY",
+      "COMPARISON",
+      "TECHNIQUE",
+      "FINDINGS?",
+      "IMPRESSION",
+      "CONCLUSION",
+      "RECOMMENDATIONS?",
+      "INTERPRETATION",
+      "COMPLICATIONS?",
+      "SPECIMEN",
+      "FINAL\\s+DIAGNOSIS",
+      "ESOPHAGUS",
+      "STOMACH",
+      "DUODENUM(?:\\/PROXIMAL\\s+JEJUNUM)?",
+      "LUNGS?",
+      "PLEURA",
+      "MEDIASTINUM(?:\\/HILUM\\/LOWER\\s+NECK)?",
+      "CARDIOVASCULAR",
+      "UPPER\\s+ABDOMEN",
+      "CHEST\\s+WALL\\s*(?:&|AND)\\s*MUSCULOSKELETAL",
+      "SPIROMETRY",
+      "LUNG\\s+VOLUMES",
+      "BRONCHODILATOR\\s+RESPONSE",
+      "DIFFUSING\\s+CAPACITY",
+      "NONVASCULAR\\s+FINDINGS",
+      "VASCULAR\\s+FINDINGS",
+      "RENAL\\s+ARTERIES",
+      "AORTA\\s+AND\\s+ILIAC\\s+SYSTEM",
+      "RIGHT\\s+LEG",
+      "LEFT\\s+LEG",
+    ].join("|");
 
-    if (stopIndexes.length > 0) {
-      output = output.slice(0, Math.min(...stopIndexes));
-    }
+    output = output.replace(
+      new RegExp(
+        `\\s+(?=(?:-\\s*)?(?:${labelSource})\\s*:)`,
+        "gi"
+      ),
+      "\n"
+    );
 
     return output
-      .replace(
-        /^\s*Imaging\s+and\s+Diagnostic\s+Procedures\s*/i,
-        ""
-      )
-      .replace(/^[=_-]{5,}\s*$/gm, "")
-      .trim();
+      .split("\n")
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => line !== "-")
+      .filter((line) => {
+        const opener = /^(?:perfect[.!]?\s*)?(?:now\b|next\b|let me\b|based on\b|looking at\b|i(?:['’]ll| will| have| can)\b|this (?:section|note|content|response)\b)/i;
+        const workWord = /\b(?:compile|create|generate|complete|continue|finish|review|information|template|section|chart|prenote|output|consolidat(?:e|ed))\b/i;
+        return !(opener.test(line) && workWord.test(line));
+      })
+      .filter(
+        (line) =>
+          !/^\(?NAME\s*\/\s*DATE\s*\/\s*RESULT/i.test(line)
+      );
   };
 
   const stripDiagnosticMarker = (value) =>
@@ -13170,121 +13159,465 @@ const buildInRoomHtml = (doc, session) => {
       .trim();
 
   const isDiagnosticStudyTitle = (value) => {
-    const candidate = stripDiagnosticMarker(value);
-    if (!candidate || candidate.length > 150 || /:\s*$/.test(candidate)) {
+    const candidate = stripDiagnosticMarker(value)
+      .replace(/^#{1,6}\s*/, "")
+      .trim();
+
+    if (
+      !candidate ||
+      candidate.length > 190 ||
+      /:\s*$/.test(candidate)
+    ) {
       return false;
     }
 
-    if (/^(?:EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE|FINDINGS|IMPRESSION|RESULTS?|CONCLUSION|INDICATIONS?)\s*:/i.test(candidate)) {
+    if (
+      /^(?:Avoid|Continue|Start|Resume|Hold|No\s+|Recommendation|Plan\b|Confirms?\b)/i.test(
+        candidate
+      )
+    ) {
       return false;
     }
 
-    const hasStudyTerm = /\b(?:CT|MRI|PET(?:\/CT)?|SCAN|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP\s+APNEA\s+TEST|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY|BIOPSY|PATHOLOGY)\b/i.test(candidate);
+    if (
+      /^(?:NAME|DATE|PROCEDURE|REPORT|HISTORY|COMPARISON|TECHNIQUE|FINDINGS|IMPRESSION|RESULTS?|CONCLUSION|INDICATIONS?|RECOMMENDATIONS?)\s*:/i.test(
+        candidate
+      )
+    ) {
+      return false;
+    }
+
+    const hasStudyTerm =
+      /\b(?:CT|CTA|MRI|MRA|PET(?:\/CT)?|SCAN|X-?RAY|XR|RADIOGRAPH|ULTRASOUND|SONOGRAM|DOPPLER|ECHOCARDIOGRAM|ECG|EKG|EEG|EMG|NERVE\s+CONDUCTION|HOLTER|ZIO|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|POLYSOMNOGRAPHY|SLEEP\s+STUDY|HOME\s+SLEEP\s+APNEA\s+TEST|HSAT|COLONOSCOPY|ENDOSCOPY|ESOPHAGOGASTRODUODENOSCOPY|EGD|MAMMOGRAM|DEXA|BONE\s+DENSITY|BIOPSY|PATHOLOGY|ANGIOGRAM|AORTOGRAM)\b/i.test(
+        candidate
+      );
+
     if (!hasStudyTerm) return false;
 
     const letters = candidate.match(/[A-Za-z]/g) || [];
     const capitals = candidate.match(/[A-Z]/g) || [];
-    const mostlyUppercase = letters.length > 0 && capitals.length / letters.length >= 0.65;
+    const mostlyUppercase =
+      letters.length > 0 && capitals.length / letters.length >= 0.62;
+    const numbered = /^\d+[.)]\s+/.test(candidate);
+    const titleCaseWithDate =
+      /\b\d{1,2}\/\d{4}\b/.test(candidate) &&
+      !/[.!?]$/.test(candidate);
+    const conciseTitleCase =
+      candidate.length < 90 && !/[.!?]$/.test(candidate);
 
-    return mostlyUppercase || !/[.!?]$/.test(candidate);
+    return (
+      numbered ||
+      mostlyUppercase ||
+      titleCaseWithDate ||
+      conciseTitleCase
+    );
   };
 
-  const renderDiagnosticNarrative = (text) => {
-    const lines = String(text || "")
-      .replace(/\r\n?/g, "\n")
-      .split("\n")
-      .map((line) => line.trim())
-      .filter(Boolean);
-
-    if (lines.length === 0) return "";
-
+  const parseDiagnosticBlocks = (text) => {
+    const lines = normalizeDiagnosticMarkup(text);
     const blocks = [];
-    let current = {
-      title: "Diagnostic Result",
-      lines: [],
+    let category = "";
+    let current = null;
+
+    const genericHeading = /^(?:DIAGNOSTIC\s+PROCEDURES,?\s+IMAGING,?\s+AND\s+PULMONARY\s+FUNCTION\s+TESTING|IMAGING\s*(?:\/|AND)\s*(?:DIAGNOSTIC\s+PROCEDURES?|RADIOLOGIC\s+STUDIES|DIAGNOSTICS?)|DIAGNOSTIC\s+PROCEDURES?\s*(?:&|AND)\s*RADIOLOGIC\s+IMAGING)$/i;
+    const dateSource = "(?:0?[1-9]|1[0-2])\\/(?:0?[1-9]|[12]\\d|3[01])\\/(?:19|20)\\d{2}|(?:0?[1-9]|1[0-2])\\/(?:19|20)\\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+(?:19|20)\\d{2}";
+    const datedEntryRegex = new RegExp(`^(${dateSource})(?:\\s*(?::|[–—-])\\s*(.*)|\\s*)$`, "i");
+
+    const flush = () => {
+      if (current && (current.title || current.lines.length > 0)) blocks.push(current);
+      current = null;
     };
 
-    const flushBlock = () => {
-      if (!current.title && current.lines.length === 0) return;
-      if (current.lines.length === 0 && current.title === "Diagnostic Result") return;
-      blocks.push(current);
+    const splitInlineEntry = (payload) => {
+      const value = cleanDiagnosticDisplayText(payload);
+      if (!value) return { title: "Diagnostic Study", detail: "" };
+
+      const dash = value.match(/^(.{3,180}?)\s+[–—-]\s+(.+)$/);
+      if (dash) return { title: dash[1].trim(), detail: dash[2].trim() };
+
+      const fieldBoundary = value.match(/^(.{3,150}?)\s*:\s*((?:Findings?|Impression|Result|Report|Note|Conclusion)\b.*)$/i);
+      if (fieldBoundary) return { title: fieldBoundary[1].trim(), detail: fieldBoundary[2].trim() };
+
+      // Compact date-first summaries often use an action/facility phrase in
+      // place of punctuation: "MRI cervical spine at ..." or "blood cultures
+      // drawn in the ED ...". Keep the study name as the card title and move
+      // the operational detail into the body.
+      const actionBoundary = value.match(/^(.{3,110}?)\s+(at|performed|completed|obtained|ordered|reviewed|drawn|acquired)\b\s*(.*)$/i);
+      if (actionBoundary) {
+        return {
+          title: actionBoundary[1].trim(),
+          detail: `${actionBoundary[2]} ${actionBoundary[3]}`.trim(),
+        };
+      }
+
+      return { title: value, detail: "" };
     };
 
     lines.forEach((rawLine) => {
+      const heading = rawLine.match(/^(#{1,6})\s*(.+)$/);
+      if (heading) {
+        const level = heading[1].length;
+        const headingText = cleanDiagnosticDisplayText(heading[2]);
+        if (!headingText || genericHeading.test(headingText)) return;
+
+        const numberedStudy = /^\d+[.)]\s*/.test(headingText);
+        const letteredCategory = /^[A-Z]\.[ \t]+/.test(headingText);
+        if (!letteredCategory && (level >= 4 || numberedStudy || isDiagnosticStudyTitle(headingText))) {
+          flush();
+          current = {
+            title: headingText.replace(/^\d+[.)]\s*/, "").trim(),
+            category,
+            dateHint: "",
+            lines: [],
+          };
+        } else {
+          category = headingText.replace(/^[A-Z]\.[ \t]*/, "").trim();
+        }
+        return;
+      }
+
       const candidate = stripDiagnosticMarker(rawLine);
-      if (!candidate) return;
+      if (!candidate || genericHeading.test(candidate) || isFormattingArtifactLine(candidate)) return;
+
+      const datedEntry = candidate.match(datedEntryRegex);
+      if (datedEntry) {
+        const dateHint = datedEntry[1];
+        const payload = String(datedEntry[2] || "").trim();
+        if (!payload) {
+          if (current) current.dateHint = current.dateHint || dateHint;
+          return;
+        }
+
+        // Date-first bullets are standalone study summaries in many prenotes.
+        // A date line under an already-named report instead supplies that
+        // report's date when the payload begins with a report field.
+        if (current && /^(?:Findings?|Impression|Result|Report|Note|Conclusion|Indication|Technique)\s*:/i.test(payload)) {
+          current.dateHint = current.dateHint || dateHint;
+          current.lines.push(payload);
+          return;
+        }
+
+        flush();
+        const inline = splitInlineEntry(payload);
+        current = {
+          title: inline.title,
+          category,
+          dateHint,
+          lines: inline.detail ? [inline.detail] : [],
+        };
+        return;
+      }
 
       if (isDiagnosticStudyTitle(candidate)) {
-        flushBlock();
+        flush();
         current = {
-          title: candidate,
+          title: cleanDiagnosticDisplayText(candidate.replace(/^\d+[.)]\s*/, "")),
+          category,
+          dateHint: "",
           lines: [],
         };
         return;
       }
 
-      current.lines.push(candidate);
+      if (!current) {
+        current = { title: "Diagnostic Summary", category, dateHint: "", lines: [] };
+      }
+      current.lines.push(rawLine);
     });
 
-    flushBlock();
+    flush();
 
-    const dateOnlyRegex = /^(\d{1,2}\/\d{4}|\d{1,2}\/\d{1,2}\/\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+\d{4})\s*:?$/i;
-    const majorHeadingRegex = /^(FINDINGS|IMPRESSION|RESULTS?|CONCLUSION|INDICATIONS?)\s*:\s*(.*)$/i;
-    const metadataRegex = /^(EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE)\s*:\s*(.*)$/i;
-    const numberedRegex = /^(\d+)[.)]\s*(.+)$/;
-    const labeledFindingRegex = /^([^:]{2,45})\s*:\s*(.+)$/;
-
-    const renderedBlocks = blocks.map((block) => {
-      const bodyLines = [...block.lines];
-      let dateLabel = "";
-
-      const standaloneDateIndex = bodyLines.findIndex((line) =>
-        dateOnlyRegex.test(line)
-      );
-
-      if (standaloneDateIndex >= 0) {
-        dateLabel = bodyLines[standaloneDateIndex]
-          .replace(/:\s*$/, "")
-          .trim();
-        bodyLines.splice(standaloneDateIndex, 1);
-      }
-
-      const bodyHtml = bodyLines.map((line) => {
-        const majorHeading = line.match(majorHeadingRegex);
-        if (majorHeading) {
-          const trailingText = majorHeading[2].trim();
-          return `<div class="diag-section-title">${esc(majorHeading[1])}</div>${trailingText ? `<div class="diag-text">${esc(trailingText)}</div>` : ""}`;
-        }
-
-        const metadata = line.match(metadataRegex);
-        if (metadata) {
-          if (metadata[1].toUpperCase() === "DATE" && metadata[2].trim()) {
-            dateLabel = metadata[2].trim();
-          }
-          return `<div class="diag-row diag-meta-row"><div class="diag-key">${esc(metadata[1])}</div><div class="diag-value">${esc(metadata[2])}</div></div>`;
-        }
-
-        const numbered = line.match(numberedRegex);
-        if (numbered) {
-          return `<div class="diag-numbered"><span class="diag-number">${esc(numbered[1])}.</span><span>${esc(numbered[2])}</span></div>`;
-        }
-
-        const labeledFinding = line.match(labeledFindingRegex);
-        if (labeledFinding) {
-          return `<div class="diag-row"><div class="diag-key">${esc(labeledFinding[1])}</div><div class="diag-value">${esc(labeledFinding[2])}</div></div>`;
-        }
-
-        return `<div class="diag-text">${esc(line)}</div>`;
-      }).join("");
-
-      return `<article class="diag-card"><div class="diag-card-head"><div class="diag-card-title">${esc(block.title || "Diagnostic Result")}</div>${dateLabel ? `<span class="diag-date">${esc(dateLabel)}</span>` : ""}</div><div class="diag-card-body">${bodyHtml}</div></article>`;
-    }).join("");
-
-    return `<div class="diag-stack">${renderedBlocks}</div>`;
+    const seen = new Set();
+    return blocks.filter((block) => {
+      if (!block.lines.length && !block.dateHint && !isDiagnosticStudyTitle(block.title)) return false;
+      const signature = `${block.title}|${block.dateHint}|${block.lines.join(" ")}`
+        .toLowerCase()
+        .replace(/\s+/g, " ")
+        .slice(0, 700);
+      if (seen.has(signature)) return false;
+      seen.add(signature);
+      return true;
+    });
   };
 
-  const diagnosticNarrative =
-    cleanDiagnosticsForDisplay(diagnosticsText);
+  const extractDiagnosticDate = (value) => {
+    const match = String(value || "").match(
+      /\b(?:0?[1-9]|1[0-2])\/(?:0?[1-9]|[12]\d|3[01])\/(?:19|20)\d{2}\b|\b(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}\b|\b(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(?:19|20)\d{2}\b/i
+    );
+    return match ? match[0] : "";
+  };
+
+  const friendlyDiagnosticCategory = (category) => {
+    const value = cleanDiagnosticDisplayText(category);
+    if (/\bLDCT\b/i.test(value)) return "Lung Cancer Screening";
+    if (/\bPULMONARY\s+FUNCTION\b/i.test(value)) {
+      return "Pulmonary Function Testing";
+    }
+    return value;
+  };
+
+  const friendlyDiagnosticTitle = (title, category) => {
+    let value = cleanDiagnosticDisplayText(title)
+      .replace(
+        /^(?:0?[1-9]|1[0-2])\/(?:0?[1-9]|[12]\d|3[01])\/(?:19|20)\d{2}\s*[:–—-]?\s*|^(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}\s*[:–—-]?\s*/,
+        ""
+      )
+      .replace(
+        /\s*[–—-]\s*(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}(?:\s*\([^)]*\))?\s*$/,
+        ""
+      )
+      .trim();
+
+    if (
+      /\bCT\b/i.test(value) &&
+      /\bLOW[‐‑‒–— -]?DOSE\b/i.test(value)
+    ) {
+      return "Low-Dose CT Chest";
+    }
+    if (/\bPOC\b/i.test(value) && /\bULTRASOUND\b/i.test(value)) {
+      return "Point-of-Care Ultrasound";
+    }
+    if (!value || /^the patient$/i.test(value)) {
+      return cleanDiagnosticDisplayText(category) || "Diagnostic Study";
+    }
+    return value;
+  };
+
+  const parseDiagnosticBlockDetails = (block) => {
+    let dateLabel = block.dateHint || extractDiagnosticDate(block.title);
+    let subtitle = "";
+    const metaRows = [];
+    const sections = [];
+    let currentSection = null;
+
+    const startSection = (label) => {
+      currentSection = {
+        label: cleanDiagnosticDisplayText(label),
+        items: [],
+      };
+      sections.push(currentSection);
+      return currentSection;
+    };
+
+    const addItem = (item) => {
+      if (!currentSection) startSection("Details");
+      currentSection.items.push(item);
+    };
+
+    const majorLabels = new Set([
+      "FINDINGS",
+      "IMPRESSION",
+      "CONCLUSION",
+      "RECOMMENDATION",
+      "RECOMMENDATIONS",
+      "INTERPRETATION",
+      "COMPLICATION",
+      "COMPLICATIONS",
+      "FINAL DIAGNOSIS",
+      "ESOPHAGUS",
+      "STOMACH",
+      "DUODENUM/PROXIMAL JEJUNUM",
+      "SPIROMETRY",
+      "LUNG VOLUMES",
+      "BRONCHODILATOR RESPONSE",
+      "DIFFUSING CAPACITY",
+      "NONVASCULAR FINDINGS",
+      "VASCULAR FINDINGS",
+      "RENAL ARTERIES",
+      "AORTA AND ILIAC SYSTEM",
+      "RIGHT LEG",
+      "LEFT LEG",
+    ]);
+
+    block.lines.forEach((rawLine) => {
+      const isBullet = /^[-*•]\s+/.test(rawLine.trim());
+      const line = cleanDiagnosticDisplayText(
+        rawLine.replace(/^[-*•]\s+/, "")
+      );
+      if (!line) return;
+
+      const dateOnly = line.match(/^(?:[-*•]\s*)?((?:0?[1-9]|1[0-2])\/(?:0?[1-9]|[12]\d|3[01])\/(?:19|20)\d{2}|(?:0?[1-9]|1[0-2])\/(?:19|20)\d{2}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Sept(?:ember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\s+(?:19|20)\d{2})\s*:?$/i);
+      if (dateOnly) {
+        dateLabel = dateOnly[1];
+        return;
+      }
+
+      const dateField = line.match(/^DATE\s*:\s*(.*)$/i);
+      if (dateField) {
+        dateLabel = extractDiagnosticDate(dateField[1]) || dateField[1].trim();
+        return;
+      }
+
+      const nameField = line.match(/^NAME\s*:\s*(.*)$/i);
+      if (nameField) {
+        const candidate = cleanDiagnosticDisplayText(nameField[1]);
+        const normalizedTitle = friendlyDiagnosticTitle(
+          block.title,
+          block.category
+        ).toLowerCase();
+        if (
+          candidate &&
+          !normalizedTitle.includes(candidate.toLowerCase()) &&
+          !candidate.toLowerCase().includes(normalizedTitle)
+        ) {
+          subtitle = candidate;
+        }
+        return;
+      }
+
+      if (/^RESULT(?:S)?(?:\s+IN\s+FULL)?(?:\s*\([^)]*\))?\s*:\s*$/i.test(line)) {
+        if (!currentSection) startSection("Results");
+        return;
+      }
+
+      const labeled = line.match(/^([^:]{2,55})\s*:\s*(.*)$/);
+      if (labeled) {
+        const rawLabel = cleanDiagnosticDisplayText(labeled[1]);
+        const labelKey = rawLabel.toUpperCase();
+        const value = cleanDiagnosticDisplayText(labeled[2]);
+
+        if (["INDICATION", "INDICATIONS", "HISTORY", "COMPARISON", "TECHNIQUE", "SPECIMEN", "PROCEDURE", "REPORT", "FACILITY"].includes(labelKey)) {
+          if (value) metaRows.push({ label: rawLabel, value });
+          return;
+        }
+
+        if (majorLabels.has(labelKey)) {
+          startSection(rawLabel);
+          if (value) addItem({ type: "text", value });
+          return;
+        }
+
+        if (!currentSection) {
+          metaRows.push({ label: rawLabel, value });
+        } else if (value) {
+          addItem({ type: "row", label: rawLabel, value });
+        }
+        return;
+      }
+
+      const numbered = line.match(/^(\d+)[.)]\s*(.+)$/);
+      if (numbered) {
+        addItem({
+          type: "bullet",
+          value: numbered[2],
+          number: numbered[1],
+        });
+        return;
+      }
+
+      addItem({
+        type: isBullet ? "bullet" : "text",
+        value: line,
+      });
+    });
+
+    return {
+      title: friendlyDiagnosticTitle(block.title, block.category),
+      category: friendlyDiagnosticCategory(block.category),
+      dateLabel,
+      subtitle,
+      metaRows,
+      sections: sections.filter((section) => section.items.length > 0),
+    };
+  };
+
+  const renderDiagnosticItems = (items) => {
+    let html = "";
+    let bullets = [];
+
+    const flushBullets = () => {
+      if (bullets.length === 0) return;
+      html += `<ul class="diag-list">${bullets
+        .map(
+          (item) =>
+            `<li>${
+              item.number
+                ? `<span class="diag-list-number">${esc(item.number)}.</span>`
+                : ""
+            }<span>${esc(item.value)}</span></li>`
+        )
+        .join("")}</ul>`;
+      bullets = [];
+    };
+
+    items.forEach((item) => {
+      if (item.type === "bullet") {
+        bullets.push(item);
+        return;
+      }
+
+      flushBullets();
+
+      if (item.type === "row") {
+        html += `<div class="diag-row"><div class="diag-key">${esc(
+          item.label
+        )}</div><div class="diag-value">${esc(item.value)}</div></div>`;
+      } else {
+        html += `<p class="diag-text">${esc(item.value)}</p>`;
+      }
+    });
+
+    flushBullets();
+    return html;
+  };
+
+  const renderDiagnosticNarrative = (text) => {
+    const reports = parseDiagnosticBlocks(text)
+      .map(parseDiagnosticBlockDetails)
+      .filter(
+        (report) =>
+          report.metaRows.length > 0 || report.sections.length > 0
+      );
+
+    if (reports.length === 0) return "";
+
+    const rendered = reports
+      .map((report) => {
+        const categoryHtml = report.category
+          ? `<div class="diag-category">${esc(report.category)}</div>`
+          : "";
+        const subtitleHtml = report.subtitle
+          ? `<div class="diag-card-subtitle">${esc(report.subtitle)}</div>`
+          : "";
+        const metaHtml = report.metaRows.length
+          ? `<div class="diag-meta-grid">${report.metaRows
+              .map(
+                (row) =>
+                  `<div class="diag-meta-item"><div class="diag-key">${esc(
+                    row.label
+                  )}</div><div class="diag-value">${esc(
+                    row.value
+                  )}</div></div>`
+              )
+              .join("")}</div>`
+          : "";
+        const sectionsHtml = report.sections
+          .map((section) => {
+            const emphasis = /^(?:IMPRESSION|CONCLUSION|FINAL DIAGNOSIS)$/i.test(
+              section.label
+            )
+              ? " diag-report-section-emphasis"
+              : "";
+            return `<section class="diag-report-section${emphasis}"><div class="diag-section-title">${esc(
+              section.label
+            )}</div>${renderDiagnosticItems(section.items)}</section>`;
+          })
+          .join("");
+
+        return `<article class="diag-card"><div class="diag-card-head"><div class="diag-card-heading">${categoryHtml}<div class="diag-card-title">${esc(
+          report.title
+        )}</div>${subtitleHtml}</div>${
+          report.dateLabel
+            ? `<span class="diag-date">${esc(report.dateLabel)}</span>`
+            : ""
+        }</div><div class="diag-card-body">${metaHtml}${sectionsHtml}</div></article>`;
+      })
+      .join("");
+
+    return `<div class="diag-stack">${rendered}</div>`;
+  };
+
+  const diagnosticNarrative = String(diagnosticsText || "").trim();
 
   // Detect whether the "narrative" is actually a "nothing to see here" placeholder.
   // Prenotes commonly include lines like "No imaging or diagnostic procedures
@@ -13292,16 +13625,15 @@ const buildInRoomHtml = (doc, session) => {
   const isEmptyDiagnosticNarrative = (text) => {
     if (!text) return true;
     const cleaned = String(text)
+      .replace(/^\s*(?:[-*•]|#{1,6})\s*/gm, "")
+      .replace(/(?:[-=_]{3,}|[─━═—–]{3,})/g, " ")
       .replace(/\s+/g, " ")
       .trim()
       .toLowerCase();
-    if (cleaned.length < 15) return true;
-    // Common "nothing documented" phrasings
+    if (!cleaned || cleaned.length < 8) return true;
     const emptyPatterns = [
-      /^no (?:imaging|diagnostic|diagnostics|procedures?|studies?)/,
-      /^(?:none|n\/?a|not documented|not available|not performed) documented/,
-      /^no (?:relevant )?(?:imaging|diagnostic|procedures?|studies?) (?:documented|performed|available|reported)/,
-      /^(?:none|no) (?:relevant )?(?:studies?|imaging|procedures?|scans?) (?:in|documented|performed)/,
+      /^(?:none|n\/?a|not documented|not available|not performed)[.!]?$/,
+      /^(?:no|none)\s+(?:relevant\s+)?(?:imaging|diagnostic|diagnostics|procedures?|studies?|scans?)(?:\s+or\s+diagnostic\s+procedures?)?\s+(?:documented|performed|available|reported|found|in\s+the\s+.+)?[.!]?$/,
     ];
     return emptyPatterns.some((pattern) => pattern.test(cleaned));
   };
@@ -13832,7 +14164,7 @@ const buildInRoomHtml = (doc, session) => {
       "i"
     );
 
-    const diagnosticReportBoundaryRegex = /^(?:CT|MRI|PET(?:\/CT)?|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY|EXAM\s*:|HISTORY\s*:|COMPARISON\s*:|TECHNIQUE\s*:|FINDINGS\s*:|IMPRESSION\s*:)/i;
+    const diagnosticReportBoundaryRegex = /^(?:CT|MRI|PET(?:\/CT)?|X-?RAY|XR|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY|EXAM\s*:|HISTORY\s*:|COMPARISON\s*:|TECHNIQUE\s*:|FINDINGS\s*:|IMPRESSION\s*:)/i;
 
     for (const rawLine of lines) {
       const trimmed = String(rawLine || "").trim();
@@ -13950,7 +14282,7 @@ const buildInRoomHtml = (doc, session) => {
   // Toxicology panels remain valid laboratory data even when their values are
   // categorical rather than numeric.
   const diagnosticReportFieldRegex = /^(?:EXAM|DATE|HISTORY|COMPARISON|TECHNIQUE|FINDINGS|IMPRESSION|CONCLUSION|LOWER\s+CHEST|LIVER|GALLBLADDER\/?BILIARY|PANCREAS|SPLEEN|ADRENALS?|KIDNEYS?\/?URETERS?|BOWEL\/?MESENTERY|VASCULATURE|LYMPHATICS|BLADDER|MUSCULOSKELETAL|ADDITIONAL\s+FINDINGS)$/i;
-  const diagnosticStudyTitleRegex = /\b(?:CT|MRI|PET(?:\/CT)?|X-?RAY|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY)\b/i;
+  const diagnosticStudyTitleRegex = /\b(?:CT|MRI|PET(?:\/CT)?|X-?RAY|XR|RADIOGRAPH|ULTRASOUND|SONOGRAM|ECHOCARDIOGRAM|ECG|EKG|PULMONARY\s+FUNCTION|PFT|SPIROMETRY|HOME\s+SLEEP|HSAT|COLONOSCOPY|ENDOSCOPY|MAMMOGRAM|DEXA|BONE\s+DENSITY)\b/i;
   const toxicologySignalRegex = /\b(?:AMPHETAMINES?|BARBITURATES?|BENZODIAZEPINES?|CANNABINOIDS?|COCAINE|OPIATES?|OXYCODONE|OXYMORPHONE|METHADONE|PHENCYCLIDINE|PROPOXYPHENE|ETHANOL)\b/i;
 
   const isDiagnosticReportRowLabel = (value) => {
@@ -15666,34 +15998,51 @@ body.dark .lab-ok { color: #86efac !important; }
 /* Imaging / diagnostics cards */
 .diag-stack {
   display: grid;
-  gap: 8px;
-  margin-bottom: 8px;
+  gap: 10px;
+  margin-bottom: 10px;
 }
 .diag-card {
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
   overflow: hidden;
   background: var(--bg);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
   page-break-inside: avoid;
 }
 .diag-card-head {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
-  padding: 6px 9px;
-  background: var(--panel-h);
+  gap: 12px;
+  padding: 8px 10px;
+  background: linear-gradient(180deg, var(--panel-h) 0%, var(--panel) 100%);
   border-bottom: 1px solid var(--border);
+}
+.diag-card-heading { min-width: 0; }
+.diag-category {
+  margin-bottom: 2px;
+  color: var(--accent);
+  font-size: 6.5pt;
+  font-weight: 800;
+  letter-spacing: .075em;
+  line-height: 1.25;
+  text-transform: uppercase;
 }
 .diag-card-title {
   color: var(--fg);
-  font-size: 9pt;
-  font-weight: 700;
+  font-size: 9.5pt;
+  font-weight: 750;
   line-height: 1.3;
+}
+.diag-card-subtitle {
+  margin-top: 2px;
+  color: var(--fg-m);
+  font-size: 7.3pt;
+  line-height: 1.35;
 }
 .diag-date {
   flex-shrink: 0;
-  padding: 2px 6px;
+  padding: 2px 7px;
   border: 1px solid #bfdbfe;
   border-radius: 999px;
   background: #eff6ff;
@@ -15708,63 +16057,114 @@ body.dark .diag-date {
   background: rgba(59,130,246,.14);
   color: #93c5fd;
 }
-.diag-card-body { padding: 7px 9px; }
+.diag-card-body { padding: 8px 10px 9px; }
+.diag-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.diag-meta-item {
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid var(--border-vl);
+  border-radius: 4px;
+  background: var(--panel);
+}
 .diag-row {
   display: grid;
-  grid-template-columns: minmax(105px, 18%) minmax(0, 1fr);
+  grid-template-columns: minmax(105px, 20%) minmax(0, 1fr);
   gap: 8px;
-  padding: 3px 0;
+  padding: 4px 0;
   border-bottom: 1px solid var(--border-vl);
-  line-height: 1.4;
+  line-height: 1.42;
 }
 .diag-row:last-child { border-bottom: 0; }
-.diag-meta-row { background: var(--panel); }
 .diag-key {
   color: var(--fg-d);
-  font-size: 7.25pt;
-  font-weight: 700;
+  font-size: 7pt;
+  font-weight: 750;
   text-transform: uppercase;
   letter-spacing: .035em;
 }
 .diag-value,
 .diag-text,
-.diag-numbered {
+.diag-list {
   color: var(--fg-m);
-  font-size: 8.5pt;
-  line-height: 1.45;
+  font-size: 8.35pt;
+  line-height: 1.48;
 }
-.diag-value { min-width: 0; overflow-wrap: anywhere; }
-.diag-text { padding: 3px 0; }
-.diag-section-title {
-  margin: 7px 0 2px;
-  padding-top: 5px;
+.diag-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.diag-text {
+  margin: 0;
+  padding: 2px 0;
+}
+.diag-report-section {
+  margin-top: 8px;
+  padding-top: 7px;
   border-top: 1px solid var(--border-l);
-  color: var(--fg-d);
-  font-size: 7.5pt;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .06em;
 }
-.diag-section-title:first-child {
+.diag-report-section:first-child {
   margin-top: 0;
   padding-top: 0;
   border-top: 0;
 }
-.diag-numbered {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr);
-  gap: 4px;
-  padding: 3px 0;
+.diag-report-section-emphasis {
+  margin: 8px -2px 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(37, 99, 235, .18);
+  border-radius: 4px;
+  background: rgba(37, 99, 235, .045);
 }
-.diag-number {
+body.dark .diag-report-section-emphasis {
+  border-color: rgba(96, 165, 250, .25);
+  background: rgba(59, 130, 246, .08);
+}
+.diag-section-title {
+  margin-bottom: 3px;
+  color: var(--fg-d);
+  font-size: 7.2pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .065em;
+}
+.diag-list {
+  margin: 2px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.diag-list li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px;
+  position: relative;
+  margin: 0;
+  padding: 2px 0 2px 12px;
+}
+.diag-list li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: .72em;
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--accent);
+  opacity: .72;
+}
+.diag-list-number {
   color: var(--fg-d);
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
 }
 @media (max-width: 640px) {
+  .diag-card-head { align-items: flex-start; }
+  .diag-meta-grid { grid-template-columns: 1fr; }
   .diag-row { grid-template-columns: 1fr; gap: 2px; }
 }
-
 /* Social grid */
 .soc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
 .soc-card {
