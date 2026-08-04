@@ -1994,10 +1994,22 @@ const parseProblemBlocks = (pmhText) => {
   if (/^#{1,6}\s+/.test(value)) return false;
   if (/^[A-Z][A-Z0-9 /&,\-()]+$/.test(value)) return false;
 
+  // Reject phrases that begin a subsection or a common non-problem context.
+  // "medications" catches "Medications - Current" and similar sub-labels.
+  // "current medications" catches the med-section header explicitly.
   if (
-    /^(current|past|lab|recent|imaging|complications|care|what|status|consult|medications|perfect|now|the patient|this patient)\b/i.test(
+    /^(current|past|lab|recent|imaging|complications|care|what|status|consult|medications|perfect|now|the patient|this patient|active|inactive|recently|historical|significant|advance|preventive|hospitalizations?|specialty|allergies|social|family|surgical|military|health|assessment|plan|follow)\b/i.test(
       value
     )
+  ) {
+    return false;
+  }
+
+  // Reject headers that ARE med / preventive section labels even with a
+  // parenthetical (e.g., "Current Medications (Active)", "Recently
+  // Discontinued (Past 6 Months)", "Historical Medications (Timeline)").
+  if (
+    /^(?:current|recently|historical|significant|active|inactive|past)\s+(?:medications?|meds)\b/i.test(value)
   ) {
     return false;
   }
@@ -2228,15 +2240,25 @@ const mergePrenoteProblemsForUi = (
   pmhProblems,
   aiProblems
 ) => {
+  // Reject "problems" that are actually section headers or administrative
+  // labels rather than clinical diagnoses. These sometimes slip through when
+  // either the deterministic PMH parser or the AI extraction misreads a
+  // capitalized subsection header like "Current Medications (Active)" as a
+  // problem header.
+  const isNonProblemLabel = (name) => {
+    const value = String(name || "").trim();
+    if (!value) return true;
+    return /^(?:current|recently|historical|significant|active|inactive|past)\s+(?:medications?|meds)\b/i.test(value) ||
+           /^(?:medication|preventive|hospitalizations?|specialty|allergies|social|family|surgical|military|health|assessment|plan|follow[- ]?up)\b/i.test(value);
+  };
+
   const deterministicProblems =
-    Array.isArray(pmhProblems)
-      ? pmhProblems
-      : [];
+    (Array.isArray(pmhProblems) ? pmhProblems : [])
+      .filter(p => !isNonProblemLabel(p.rawHeader || p.name));
 
   const aiProblemList =
-    Array.isArray(aiProblems)
-      ? aiProblems
-      : [];
+    (Array.isArray(aiProblems) ? aiProblems : [])
+      .filter(p => !isNonProblemLabel(p.problem || p.name || p.rawHeader));
 
   const usedAiIndexes = new Set();
 
@@ -13056,9 +13078,20 @@ const buildInRoomHtml = (doc, session) => {
   enabledCases.forEach((tc, idx) => {
     problemsHtml += buildProblemCard(tc, idx, true);
   });
-  // Non-selected problems
+  // Non-selected problems — with defense against section-header labels
+  // that slipped through upstream ("Current Medications", "Recently
+  // Discontinued", etc.). These sometimes get parsed as PMH problems by
+  // the deterministic parser and would otherwise render as empty cards.
+  const isNonClinicalHeader = (label) => {
+    const value = String(label || "").trim();
+    if (!value) return true;
+    return /^(?:current|recently|historical|significant|active|inactive|past)\s+(?:medications?|meds)\b/i.test(value) ||
+           /^(?:medication|preventive|hospitalizations?|specialty|allergies|social|family|surgical|military|health|assessment|plan|follow[- ]?up)\b/i.test(value);
+  };
+
   const selectedNames = new Set(enabledCases.map(tc => (tc.data?.problem || tc.problem || "").toLowerCase().trim()));
   Object.entries(problemBlocks).forEach(([key, block], idx) => {
+    if (isNonClinicalHeader(block.rawHeader)) return;
     const headerLower = block.rawHeader.toLowerCase().trim();
     let alreadyCovered = false;
     for (const selectedName of selectedNames) {
