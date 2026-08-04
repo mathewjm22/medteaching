@@ -16472,8 +16472,8 @@ function DocumentContent({ doc, phase, session }) {
                     <table className="doc-table" style={{ fontSize: "0.82rem" }}>
                       <thead>
                         <tr>
-                          <th style={{ width: "24%" }}>Study</th>
-                          <th style={{ width: "32%" }}>Patient Result</th>
+                          <th style={{ width: "18%" }}>Study</th>
+                          <th style={{ width: "18%", whiteSpace: "nowrap" }}>Patient Result</th>
                           <th>Teaching Explanation / Why It Was Ordered</th>
                         </tr>
                       </thead>
