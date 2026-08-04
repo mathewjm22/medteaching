@@ -819,7 +819,11 @@ const extractPrenoteSections = (rawText) => {
     .replace(/[\u000b\u000c\u0085\u2028\u2029]/g, "\n")
     .replace(/\u00a0/g, " ")
     .replace(/```[a-z0-9_-]*\s*/gi, "\n")
-    .replace(/```/g, "\n");
+    .replace(/```/g, "\n")
+    // Normalize ordinary Markdown horizontal rules too. The source can also
+    // glue a rule directly to the next heading ("---## Laboratory Results").
+    .replace(/^[ \t]*(?:[-=_]{3,}|[─━═—–]{3,})[ \t]*$/gm, "\n")
+    .replace(/[ \t]*(?:[-=_]{3,}|[─━═—–]{3,})[ \t]*(?=#{1,6}\s*)/g, "\n");
 
   // Strip AI meta-narration that occasionally leaks into generated prenotes.
   // These are self-referential sentences the model produces while thinking
@@ -913,7 +917,7 @@ const extractPrenoteSections = (rawText) => {
   const appendixMarkers = [
     /NOTE\s+ENCOUNTER\s+FOR:/i,
     /LOCAL\s+TITLE:/i,
-    /[A-Z][A-Z,.' -]{2,80}\s+is\s+a\s+\d{1,3}\s+year\s+old\b/i,
+    /(?:^|\n)[ \t]*(?!THE PATIENT\b)[A-Z][A-Z,.' -]{2,80}\s+is\s+a\s+\d{1,3}\s+year\s+old\b/m,
     /<<>>/,
   ];
 
@@ -968,7 +972,7 @@ const extractPrenoteSections = (rawText) => {
     },
     {
       title: "IMAGING AND DIAGNOSTIC PROCEDURES",
-      regex: /^IMAGING\s+AND\s+DIAGNOSTIC\s+PROCEDURES/i,
+      regex: /^IMAGING\s+AND\s+(?:DIAGNOSTIC\s+PROCEDURES|RADIOLOGIC\s+STUDIES)/i,
     },
     {
       title: "LABORATORY TRENDS KEY ABNORMALITIES",
@@ -10871,6 +10875,12 @@ const buildInRoomHtml = (doc, session) => {
         /[ \t]*(?:[-=_]{10,}|[─━═—–]{10,})[ \t]*/g,
         "\n"
       )
+      // Remove Markdown-only remnants left immediately before a stop heading,
+      // such as "---", "##", or "--- ##". These are formatting, not content.
+      .replace(
+        /^[ \t]*(?:(?:[-=_]{3,}|[─━═—–]{3,})(?:[ \t]*#{1,6})?|#{1,6})[ \t]*$/gm,
+        "\n"
+      )
       // De-identification can produce "Mr. The patient". Remove the
       // redundant title in these display-only narrative sections.
       .replace(
@@ -12369,12 +12379,25 @@ const buildInRoomHtml = (doc, session) => {
 
     return html;
   };
-  // Helper: convert a text block into a bulleted list, splitting on line breaks
+  const isFormattingArtifactLine = (value) =>
+    /^(?:(?:[-=_]{3,}|[─━═—–]{3,})(?:\s*#{1,6})?|#{1,6})$/.test(
+      String(value || "").trim()
+    );
+
+  // Helper: convert a text block into a bulleted list, splitting on line breaks.
+  // Divider runs and orphaned Markdown heading markers are formatting artifacts,
+  // so remove them before and after stripping the source bullet marker.
   const renderAsBulletList = (text) => {
     if (!text) return "";
     const items = text.split(/\r?\n/)
-      .map(line => line.replace(/^[\s]*[-*•●○▪▫►◆·]\s*/, "").trim())
-      .filter(Boolean);
+      .map((line) => line.trim())
+      .filter((line) => line && !isFormattingArtifactLine(line))
+      .map((line) =>
+        line
+          .replace(/^[\s]*[-*•●○▪▫►◆·]+\s*/, "")
+          .trim()
+      )
+      .filter((line) => line && !isFormattingArtifactLine(line));
     if (items.length === 0) return "";
     if (items.length === 1) return `<div>${esc(items[0])}</div>`;
     return `<ul class="ref-bullet-list">${items.map(item => `<li>${esc(item)}</li>`).join("")}</ul>`;
@@ -13322,29 +13345,69 @@ const buildInRoomHtml = (doc, session) => {
 
   let labsHtml = "";
 
-  // Use AI-extracted tables when available, then combine them with tables
-  // found deterministically in lab-specific sections.
+  // Combine AI-extracted and deterministic tables. A nonempty but unusable
+  // AI table must never suppress a valid deterministic parse. Normalize array
+  // rows into objects so both source shapes reach the pivot renderer.
+  const normalizeLabTableShape = (table) => {
+    if (!table || typeof table !== "object") return null;
+
+    const rawRows = Array.isArray(table.rows) ? table.rows : [];
+    let columns = Array.isArray(table.columns)
+      ? table.columns.map((column, index) =>
+          String(column || (index === 0 ? "Test" : `Column ${index + 1}`)).trim()
+        )
+      : [];
+
+    if (columns.length === 0) {
+      const firstObjectRow = rawRows.find(
+        (row) => row && typeof row === "object" && !Array.isArray(row)
+      );
+      if (firstObjectRow) columns = Object.keys(firstObjectRow);
+    }
+
+    if (columns.length === 0) return null;
+
+    const rows = rawRows
+      .map((row) => {
+        if (Array.isArray(row)) {
+          return Object.fromEntries(
+            columns.map((column, index) => [column, row[index] ?? ""])
+          );
+        }
+        return row && typeof row === "object" ? row : null;
+      })
+      .filter(Boolean);
+
+    return {
+      ...table,
+      title: table.title || table.panel || "Labs",
+      columns,
+      rows,
+    };
+  };
+
   let structuredTables = [];
 
-  if (structured.labTables?.length > 0) {
-    structuredTables = structured.labTables.map((table) => ({
-      title: table.panel || "Labs",
-      columns: table.columns || [],
-      rows: table.rows || []
-    }));
-  } else {
-    const deterministicTableSources = [
-      parsedPrenote?.diagnostics?.tables,
-      parsedPrenote?.labs?.tables,
-      parsedPrenote?.labTables
-    ];
-
-    deterministicTableSources.forEach((tables) => {
-      if (Array.isArray(tables)) {
-        structuredTables.push(...tables);
-      }
-    });
+  if (Array.isArray(structured.labTables)) {
+    structuredTables.push(
+      ...structured.labTables
+        .map(normalizeLabTableShape)
+        .filter(Boolean)
+    );
   }
+
+  const deterministicTableSources = [
+    parsedPrenote?.diagnostics?.tables,
+    parsedPrenote?.labs?.tables,
+    parsedPrenote?.labTables,
+  ];
+
+  deterministicTableSources.forEach((tables) => {
+    if (!Array.isArray(tables)) return;
+    structuredTables.push(
+      ...tables.map(normalizeLabTableShape).filter(Boolean)
+    );
+  });
 
   // Universal deterministic lab parsing.
   //
@@ -13561,13 +13624,18 @@ const buildInRoomHtml = (doc, session) => {
       .replace(/\r\n?/g, "\n")
       .replace(/\u00a0/g, " ");
 
-    const tableStartRegex = /\b(?:COLLECTION|DATE)\s*\|/gi;
+    // The source may glue the panel title directly to COLLECTION
+    // (for example, "CBCCOLLECTION | ..."), so do not require a word boundary.
+    const tableStartRegex = /(?:COLLECTION|DATE)\s*\|/gi;
     const tableStarts = Array.from(source.matchAll(tableStartRegex));
 
     if (tableStarts.length === 0) return [];
 
+    // Row boundaries may also be glued to the preceding header or value
+    // ("RDW01/2026 |" or "21.2H01/2026 |"). The following pipe is the
+    // high-confidence delimiter, so a leading word boundary is unnecessary.
     const dateBeforePipeRegex = new RegExp(
-      `\\b(?:${LAB_DATE_TOKEN_SOURCE})\\b(?=\\s*\\|)`,
+      `(?:${LAB_DATE_TOKEN_SOURCE})(?=\\s*\\|)`,
       "gi"
     );
 
@@ -14706,8 +14774,12 @@ const buildInRoomHtml = (doc, session) => {
   // into a readable list rather than dumping it as monospaced code.
   // Splits on blank lines to get logical groups, then on newlines within
   // each group to get analyte lines.
-  if (!hasAnyLabs && !na.labTrendsSummary && labSourceText) {
-    labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
+  if (!hasAnyLabs && labSourceText) {
+    // A summary should not hide the source results. The heading already exists
+    // when labTrendsSummary is present, so add it only when needed.
+    if (!na.labTrendsSummary) {
+      labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
+    }
     labsHtml += `<div class="lab-note" style="font-style:italic;margin-bottom:8px;">Structured table parsing was not available for these results. The text is shown below as reported in the source.</div>`;
 
     const groups = labSourceText.split(/\n\s*\n/).map(g => g.trim()).filter(Boolean);
