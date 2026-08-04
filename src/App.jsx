@@ -11495,17 +11495,6 @@ const buildInRoomHtml = (doc, session) => {
           group: currentGroup,
         });
       }
-      } else {
-        const isDue = currentGroup && /unclear|due/i.test(currentGroup);
-        items.push({
-          name: content,
-          status: currentGroup && /up to date/i.test(currentGroup)
-            ? "Up to Date"
-            : (currentGroup || ""),
-          isDue,
-          group: currentGroup,
-        });
-      }
     }
 
     return items;
