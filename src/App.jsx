@@ -7995,7 +7995,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
             <div className="bg-white rounded-xl border border-slate-200 p-6">
               {sessionImageBytes > 0 && (
                 <div className="mb-3 flex items-center gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded px-3 py-1.5">
-                  <span>Session images: {(sessionImageBytes / 1024 / 1024).toFixed(2)} MB / 8 MB</span>
+                  <span>Session images: {(sessionImageBytes / 1024 / 1024).toFixed(2)} MB / 20 MB</span>
                   <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden max-w-xs">
                     <div className="h-full bg-indigo-500" style={{ width: `${Math.min(100, (sessionImageBytes / IMG_SESSION_TOTAL_BYTES) * 100)}%` }}></div>
                   </div>
@@ -8099,6 +8099,9 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                             onClick={e => {
                               e.stopPropagation();
                               copyPrompt(src);
+                              if (!expandedSections[src]) {
+                                setExpandedSections(prev => ({ ...prev, [src]: true }));
+                              }
                               if (sourceUrls[src]) {
                                 const win = window.open(sourceUrls[src], "_blank", "noreferrer");
                                 // Popup blocker returns null (or an unusable window). Flip to
@@ -8182,6 +8185,9 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                                     <button
                                       onClick={() => {
                                         copyPubmedPrompt();
+                                        if (!expandedSections.pubmedai) {
+                                          setExpandedSections(prev => ({ ...prev, pubmedai: true }));
+                                        }
                                         const win = window.open(sourceUrls.pubmedai, "_blank", "noreferrer");
                                         if (!win || win.closed || typeof win.closed === "undefined") {
                                           setPopupBlocked(true);
@@ -8852,10 +8858,13 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
 }
 
 // ============ IMAGE UTILITIES ============
-const IMG_MAX_BYTES = 1_000_000; // 1MB per image
-const IMG_SESSION_TOTAL_BYTES = 8_000_000; // 8MB total
-const IMG_COMPRESS_THRESHOLD = 500_000; // compress if over 500KB
-const IMG_MAX_DIMENSION = 1200;
+// Higher quality settings — most clinical figures (tables, algorithms) sit well
+// under the threshold, so the majority of pastes retain pixel-exact originals.
+// Compression only fires on large screenshots and is now gentler.
+const IMG_MAX_BYTES = 2_000_000; // 2MB per image
+const IMG_SESSION_TOTAL_BYTES = 20_000_000; // 20MB total per session
+const IMG_COMPRESS_THRESHOLD = 1_000_000; // compress only if over 1MB
+const IMG_MAX_DIMENSION = 1600;
 
 const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
   const reader = new FileReader();
@@ -8887,7 +8896,7 @@ const compressDataUrl = (dataUrl) => new Promise((resolve) => {
     ctx.fillStyle = "#ffffff";
     ctx.fillRect(0, 0, width, height);
     ctx.drawImage(img, 0, 0, width, height);
-    resolve(canvas.toDataURL("image/jpeg", 0.8));
+    resolve(canvas.toDataURL("image/jpeg", 0.9));
   };
   img.onerror = () => resolve(dataUrl); // fall back to original
   img.src = dataUrl;
@@ -15759,27 +15768,43 @@ function DocumentContent({ doc, phase, session }) {
           </section>
         )}
 
-        {/* Phase-Aligned Framing */}
-        {s.phaseFraming?.enabled && (
-          <section className="keep-together" style={{ marginBottom: "2rem" }}>
-            <h2 className="doc-h2">Phase-Aligned Framing</h2>
-            <p style={{ margin: 0, fontSize: "0.9rem", marginBottom: "0.5rem" }}>
-              <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Where you are. </span>
-              {doc.phase.focus}
-            </p>
-            {doc.phase.pace && (
-              <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic", marginBottom: "0.5rem" }}>
-                <span style={{ fontWeight: 600 }}>Pace: </span>{doc.phase.pace}
+        {/* What This Document Focuses On — replaces the old phase framing.
+            Students want to know what the document covers, not their phase pace. */}
+        {s.phaseFraming?.enabled && doc.focusAreas?.length > 0 && (() => {
+          const focusReadable = {
+            history: { label: "History Taking & Documentation", desc: "how to gather and organize the story" },
+            physicalExam: { label: "Physical Exam", desc: "which maneuvers matter and how to interpret them" },
+            differential: { label: "Differential Diagnosis", desc: "building and narrowing the differential" },
+            workup: { label: "Diagnostic Workup", desc: "which tests to order and how to interpret them" },
+            management: { label: "Management", desc: "treatment reasoning, dosing, and monitoring" },
+            patientContext: { label: "Patient Context", desc: "social, cultural, and structural factors" },
+            ebm: { label: "Evidence-Based Medicine", desc: "guideline application and evidence appraisal" },
+            communication: { label: "Communication", desc: "conversations with patients and presentations to team" },
+          };
+          const focusItems = doc.focusAreas.map(f => focusReadable[f]).filter(Boolean);
+          if (focusItems.length === 0) return null;
+          return (
+            <section className="keep-together" style={{ marginBottom: "2rem" }}>
+              <h2 className="doc-h2">What This Document Focuses On</h2>
+              <p style={{ margin: "0 0 0.85rem", fontSize: "0.9rem", color: "var(--doc-warm-gray)" }}>
+                Your attending selected the following teaching areas for this case. Each section below is built around these focuses.
               </p>
-            )}
-            {doc.phase.workingToward && (
-              <div style={{ marginTop: "0.75rem", padding: "0.75rem 1rem", background: "var(--doc-paper)", borderLeft: "2px solid var(--doc-navy-mid)", fontSize: "0.85rem" }}>
-                <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.14em", color: "var(--doc-navy)", display: "block", marginBottom: "0.35rem" }}>Working Toward</span>
-                {doc.phase.workingToward}
-              </div>
-            )}
-          </section>
-        )}
+              <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
+                {focusItems.map((item, i) => (
+                  <li key={i} style={{ display: "flex", gap: "0.75rem", marginBottom: "0.5rem", paddingLeft: "0.5rem" }}>
+                    <span style={{ flexShrink: 0, fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: "0.7rem", color: "var(--doc-navy-mid)", letterSpacing: "0.1em", minWidth: "1.5rem", paddingTop: "0.15rem" }}>
+                      {String(i + 1).padStart(2, "0")}
+                    </span>
+                    <div style={{ fontSize: "0.9rem" }}>
+                      <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{item.label}. </span>
+                      <span style={{ color: "var(--doc-warm-gray)" }}>{item.desc}</span>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          );
+        })()}
 
         {/* Teaching Cases */}
         {enabledCases.map((tc, idx) => {
@@ -16113,6 +16138,7 @@ function DocumentContent({ doc, phase, session }) {
                   </ol>
                 </div>
               )}
+            
               {(() => {
                 const dontMissItems = Array.isArray(c.dontMiss)
                   ? c.dontMiss.filter(item => item && String(item).trim())
@@ -16251,12 +16277,101 @@ function DocumentContent({ doc, phase, session }) {
           </section>
         )}
 
-        {/* Evidence Deep-Dive */}
-{s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (
-          <div style={{ marginTop: "2.5rem" }}>
-            <EvidenceDeepDive content={s.synthesizedEvidence.content} allSourceImages={doc.allSourceImages} isPreview={doc.isPreview} />
-          </div>
-        )}
+        {/* Evidence Deep-Dive — only renders topics NOT already surfaced
+            under a specific case, so the section is genuinely supplementary. */}
+        {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (() => {
+          const caseTokens = enabledCases.flatMap(tc => {
+            const c = tc.data;
+            const problemLower = String(c.problem || "").toLowerCase();
+            const diagnosisLower = String(c.primaryDiagnosis?.name || "").toLowerCase();
+            return [problemLower, diagnosisLower].join(" ").split(/\s+/).filter(w => w.length > 3);
+          });
+          const topicIsCaseMatched = (t) => {
+            const topicLower = String(t.topic || "").toLowerCase();
+            const topicTokens = topicLower.split(/\s+/).filter(w => w.length > 3);
+            return topicTokens.some(tt => caseTokens.some(ct => tt.includes(ct) || ct.includes(tt)));
+          };
+          const leftoverContent = {
+            ...s.synthesizedEvidence.content,
+            topics: (s.synthesizedEvidence.content.topics || []).filter(t => !topicIsCaseMatched(t)),
+          };
+          if (!leftoverContent.topics.length && !leftoverContent.singleSource) return null;
+          return (
+            <div style={{ marginTop: "2.5rem" }}>
+              <EvidenceDeepDive content={leftoverContent} allSourceImages={doc.allSourceImages} isPreview={doc.isPreview} />
+            </div>
+          );
+        })()}
+
+        {/* Figure Gallery — merges images pasted into source rich-text boxes
+            with figures the attending attached separately. Both types render
+            together, labeled by source, so students see all figures in one
+            place at the end of the case content. */}
+        {(() => {
+          const galleryFigures = [];
+          // 1. Images extracted from pasted source responses (synthesized evidence)
+          const synthFigures = doc.sections?.synthesizedEvidence?.content?.allFigures || [];
+          synthFigures.forEach((f, i) => {
+            if (!f?.dataUrl) return;
+            galleryFigures.push({
+              dataUrl: f.dataUrl,
+              caption: f.alt || `Figure from ${f.source || "source"}`,
+              sourceLabel: f.source || "External source",
+              key: f.id || `synth-${i}`,
+            });
+          });
+          // 2. Fallback: some flows put source images on doc.allSourceImages
+          //    directly (e.g., when synthesis didn't run). De-duplicate by dataUrl.
+          const seenDataUrls = new Set(galleryFigures.map(g => g.dataUrl));
+          (doc.allSourceImages || []).forEach((img, i) => {
+            if (!img?.dataUrl || seenDataUrls.has(img.dataUrl)) return;
+            seenDataUrls.add(img.dataUrl);
+            galleryFigures.push({
+              dataUrl: img.dataUrl,
+              caption: img.alt || img.filename || `Figure from ${img.source || "source"}`,
+              sourceLabel: img.source || "External source",
+              key: `srcimg-${i}`,
+            });
+          });
+          // 3. Attending-attached images (Step 4 attachments panel)
+          (doc.imageAttachments || []).forEach((img, i) => {
+            if (!img?.dataUrl || seenDataUrls.has(img.dataUrl)) return;
+            seenDataUrls.add(img.dataUrl);
+            galleryFigures.push({
+              dataUrl: img.dataUrl,
+              caption: img.caption || img.filename || `Attending figure ${i + 1}`,
+              sourceLabel: "Attending-attached",
+              key: img.id || `att-${i}`,
+            });
+          });
+          if (galleryFigures.length === 0) return null;
+          return (
+            <section style={{ marginTop: "2.5rem" }} className="keep-together">
+              <h2 className="doc-h2">Figure Gallery</h2>
+              <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+                All figures gathered for this case — clinical images, algorithms, guideline tables, and reference diagrams from your attending's selected sources plus any figures they attached directly.
+              </p>
+              <div className="doc-figures-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
+                {galleryFigures.map((fig, i) => (
+                  <figure key={fig.key} className="keep-together" style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white", padding: "0.5rem" }}>
+                    <img src={fig.dataUrl} alt={fig.caption} style={{ width: "100%", height: "auto", maxHeight: "400px", objectFit: "contain", display: "block" }} />
+                    <figcaption style={{ fontSize: "0.78rem", color: "var(--doc-warm-gray)", marginTop: "0.5rem", padding: "0 0.25rem" }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "0.4rem", marginBottom: "0.2rem", flexWrap: "wrap" }}>
+                        <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", fontSize: "0.65rem", color: "var(--doc-navy)" }}>
+                          Figure {i + 1}
+                        </span>
+                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", color: "var(--doc-warm-gray)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                          · {fig.sourceLabel}
+                        </span>
+                      </div>
+                      {fig.caption}
+                    </figcaption>
+                  </figure>
+                ))}
+              </div>
+            </section>
+          );
+        })()}
 
         {/* Practice Questions */}
         {enabledCases.some(tc => tc.data.shelfQuestions?.length > 0) && (
@@ -16372,28 +16487,6 @@ function DocumentContent({ doc, phase, session }) {
             )}
           </div>
         )}
-{/* Reference Figures (user-attached images) */}
-        {doc.imageAttachments && doc.imageAttachments.length > 0 && (
-          <section style={{ marginTop: "2.5rem" }} className="keep-together">
-            <h2 className="doc-h2">Reference Figures</h2>
-            <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
-              Figures your attending attached for you to review — clinical images, diagrams, or reference tables relevant to today's case.
-            </p>
-            <div className="doc-figures-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
-              {doc.imageAttachments.map((img, i) => (
-                <figure key={img.id || i} className="keep-together" style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white", padding: "0.5rem" }}>
-                  <img src={img.dataUrl} alt={img.caption || img.filename || `Figure ${i+1}`} style={{ width: "100%", height: "auto", maxHeight: "400px", objectFit: "contain", display: "block" }} />
-                  <figcaption style={{ fontSize: "0.78rem", color: "var(--doc-warm-gray)", marginTop: "0.5rem", padding: "0 0.25rem" }}>
-                    <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.12em", fontSize: "0.65rem", color: "var(--doc-navy)", marginRight: "0.4rem" }}>
-                      Figure {i + 1}
-                    </span>
-                    {img.caption || img.filename || ""}
-                  </figcaption>
-                </figure>
-              ))}
-            </div>
-          </section>
-        )}
 
         {/* Footer */}
         <div className="doc-footer">
@@ -16430,7 +16523,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
   if (!content.synthesized && content.singleSource) {
     return (
       <section>
-        <h2 className="doc-h2">Evidence Deep-Dive</h2>
+        <h2 className="doc-h2">Additional Evidence</h2>
         <div style={{ fontSize: "0.9rem" }} dangerouslySetInnerHTML={{ __html: content.singleSource.contentHtml || "" }} />
       </section>
     );
@@ -16448,7 +16541,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
   return (
     <section>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", paddingBottom: "0.5rem", borderBottom: "2px solid var(--doc-navy)" }}>
-        <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: "1.0625rem", fontWeight: 600, color: "var(--doc-navy)", margin: 0 }}>Evidence Deep-Dive</h2>
+        <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: "1.0625rem", fontWeight: 600, color: "var(--doc-navy)", margin: 0 }}>Additional Evidence & Cross-Cutting Topics</h2>
         <button
           onClick={() => setShowProvenance(!showProvenance)}
           className="no-print"
