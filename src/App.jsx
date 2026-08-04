@@ -12208,13 +12208,13 @@ const buildInRoomHtml = (doc, session) => {
   };
 
   const aboutPatientHtml = whatToKnowText
-    ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-address-card"></i> ABOUT The Patient</div><div class="narrative-body">${renderNarrativeBody(whatToKnowText, "about")}</div></div>`
+    ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-address-card"></i> About the Patient</div><div class="narrative-body">${renderNarrativeBody(whatToKnowText, "about")}</div></div>`
     : "";
 
   const updatesRecentVisitsHtml = updatesText
-    ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-clock-rotate-left"></i> UPDATES / RECENT VISITS</div><div class="narrative-body">${renderNarrativeBody(updatesText, "updates")}</div></div>`
+    ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-clock-rotate-left"></i> Updates &amp; Recent Visits</div><div class="narrative-body">${renderNarrativeBody(updatesText, "updates")}</div></div>`
     : "";
-
+    
   const topNarrativeHtml =
     aboutPatientHtml || updatesRecentVisitsHtml
       ? `<div class="narrative-stack">${aboutPatientHtml}${updatesRecentVisitsHtml}</div>`
@@ -14778,23 +14778,32 @@ const buildInRoomHtml = (doc, session) => {
   // Priority Focus Areas — the top things the student should ACTUALLY DO
   // in the visit today, from the AI's synthesis. Falls back to red flags
   // if the AI didn't produce this field for some reason.
+  //
+  // Rendered with amber styling (not red) to distinguish visually from the
+  // allergy bar above. Red is reserved for things that can harm the patient
+  // (allergies, safety alerts); amber signals "important, plan ahead."
+  // Extra top margin creates breathing room between this box and the next
+  // narrative section (About the Patient).
   let priorityFocusHtml = "";
+  const priorityFocusStyle = `margin-top:14px;margin-bottom:14px;background:#fffbeb;border-left:2.5px solid #d97706;`;
+  const priorityFocusLabelStyle = `color:#92400e;`;
+  const priorityFocusTextStyle = `color:#78350f;`;
   if (Array.isArray(na.priorityFocusAreas) && na.priorityFocusAreas.length > 0) {
-    priorityFocusHtml += `<div class="wrn" style="margin-top:10px;"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Priority Focus Areas for This Visit</div>`;
+    priorityFocusHtml += `<div class="tch" style="${priorityFocusStyle}"><div class="tch-label" style="${priorityFocusLabelStyle}"><i class="fa-solid fa-bullseye"></i> Priority Focus Areas for This Visit</div>`;
     na.priorityFocusAreas.forEach((item, i) => {
       if (typeof item === "string") {
-        priorityFocusHtml += `<p><b>${i + 1}.</b> ${esc(item)}</p>`;
+        priorityFocusHtml += `<p style="${priorityFocusTextStyle}"><b>${i + 1}.</b> ${esc(item)}</p>`;
       } else {
         const title = item.title || "";
         const desc = item.description || "";
-        priorityFocusHtml += `<p><b>${i + 1}. ${esc(title)}${title ? ":" : ""}</b> ${esc(desc)}</p>`;
+        priorityFocusHtml += `<p style="${priorityFocusTextStyle}"><b>${i + 1}. ${esc(title)}${title ? ":" : ""}</b> ${esc(desc)}</p>`;
       }
     });
     priorityFocusHtml += `</div>`;
   } else if (Array.isArray(na.redFlags) && na.redFlags.length > 0) {
-    priorityFocusHtml += `<div class="wrn" style="margin-top:10px;"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Priority Focus Areas for This Visit</div>`;
+    priorityFocusHtml += `<div class="tch" style="${priorityFocusStyle}"><div class="tch-label" style="${priorityFocusLabelStyle}"><i class="fa-solid fa-bullseye"></i> Priority Focus Areas for This Visit</div>`;
     na.redFlags.slice(0, 3).forEach((rf, i) => {
-      priorityFocusHtml += `<p><b>${i + 1}.</b> ${esc(rf)}</p>`;
+      priorityFocusHtml += `<p style="${priorityFocusTextStyle}"><b>${i + 1}.</b> ${esc(rf)}</p>`;
     });
     priorityFocusHtml += `</div>`;
   }
