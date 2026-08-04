@@ -16775,13 +16775,20 @@ function DocumentContent({ doc, phase, session }) {
         {(() => {
           const galleryFigures = [];
           // 1. Images extracted from pasted source responses (synthesized evidence)
+          // Captions use the image's own alt text if it exists — this often
+          // carries useful context like "AAA screening algorithm" from the
+          // source. If no alt text, we render just "Figure N" without a
+          // fallback caption so the student never sees source-tool names.
           const synthFigures = doc.sections?.synthesizedEvidence?.content?.allFigures || [];
           synthFigures.forEach((f, i) => {
             if (!f?.dataUrl) return;
+            const alt = String(f.alt || "").trim();
+            // Reject alt text that just names the source ("Figure from X",
+            // "OpenEvidence figure", etc.) — treat as no caption.
+            const isSourceyAlt = /^figure\s+from\s+/i.test(alt) || /^(openevidence|uptodate|dynamed|doxgpt|pubmed)/i.test(alt);
             galleryFigures.push({
               dataUrl: f.dataUrl,
-              caption: f.alt || `Figure from ${f.source || "source"}`,
-              sourceLabel: f.source || "External source",
+              caption: (alt && !isSourceyAlt) ? alt : "",
               key: f.id || `synth-${i}`,
             });
           });
@@ -16791,21 +16798,28 @@ function DocumentContent({ doc, phase, session }) {
           (doc.allSourceImages || []).forEach((img, i) => {
             if (!img?.dataUrl || seenDataUrls.has(img.dataUrl)) return;
             seenDataUrls.add(img.dataUrl);
+            const alt = String(img.alt || img.filename || "").trim();
+            const isSourceyAlt = /^figure\s+from\s+/i.test(alt) || /^(openevidence|uptodate|dynamed|doxgpt|pubmed)/i.test(alt);
             galleryFigures.push({
               dataUrl: img.dataUrl,
-              caption: img.alt || img.filename || `Figure from ${img.source || "source"}`,
-              sourceLabel: img.source || "External source",
+              caption: (alt && !isSourceyAlt) ? alt : "",
               key: `srcimg-${i}`,
             });
           });
-          // 3. Attending-attached images (Step 4 attachments panel)
+          // 3. Attending-attached images (Step 4 attachments panel).
+          // The attending's own caption is trusted verbatim — they wrote it
+          // knowing it'd be shown to the student. Filename fallback is fine
+          // (nothing source-related), but skip if it looks like a screenshot
+          // filename or generic "Attending figure N" placeholder.
           (doc.imageAttachments || []).forEach((img, i) => {
             if (!img?.dataUrl || seenDataUrls.has(img.dataUrl)) return;
             seenDataUrls.add(img.dataUrl);
+            const caption = String(img.caption || "").trim();
+            const filename = String(img.filename || "").trim();
+            const isGenericFilename = /^(image|screenshot|screen shot|photo|img|pasted)/i.test(filename);
             galleryFigures.push({
               dataUrl: img.dataUrl,
-              caption: img.caption || img.filename || `Attending figure ${i + 1}`,
-              sourceLabel: "Attending-attached",
+              caption: caption || (filename && !isGenericFilename ? filename : ""),
               key: img.id || `att-${i}`,
             });
           });
@@ -16814,22 +16828,17 @@ function DocumentContent({ doc, phase, session }) {
             <section style={{ marginTop: "2.5rem" }} className="keep-together">
               <h2 className="doc-h2">Figure Gallery</h2>
               <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
-                All figures gathered for this case — clinical images, algorithms, guideline tables, and reference diagrams from your attending's selected sources plus any figures they attached directly.
+                Reference figures for this case — clinical images, algorithms, guideline tables, and diagrams relevant to the problems above.
               </p>
               <div className="doc-figures-grid" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: "1rem" }}>
                 {galleryFigures.map((fig, i) => (
                   <figure key={fig.key} className="keep-together" style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white", padding: "0.5rem" }}>
                     <img src={fig.dataUrl} alt={fig.caption} style={{ width: "100%", height: "auto", maxHeight: "400px", objectFit: "contain", display: "block" }} />
                     <figcaption style={{ fontSize: "0.78rem", color: "var(--doc-warm-gray)", marginTop: "0.5rem", padding: "0 0.25rem" }}>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: "0.4rem", marginBottom: "0.2rem", flexWrap: "wrap" }}>
-                        <span style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", fontSize: "0.65rem", color: "var(--doc-navy)" }}>
-                          Figure {i + 1}
-                        </span>
-                        <span style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", color: "var(--doc-warm-gray)", textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                          · {fig.sourceLabel}
-                        </span>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.12em", fontSize: "0.65rem", color: "var(--doc-navy)", marginBottom: fig.caption ? "0.2rem" : 0 }}>
+                        Figure {i + 1}
                       </div>
-                      {fig.caption}
+                      {fig.caption && <div>{fig.caption}</div>}
                     </figcaption>
                   </figure>
                 ))}
@@ -16974,6 +16983,17 @@ function DocumentContent({ doc, phase, session }) {
 }
 
 // ============ EVIDENCE DEEP-DIVE (structured claims rendering) ============
+// Strip inline bracketed reference markers like [1], [2,3], [1-4] that sources
+// (OpenEvidence, DoxGPT, UpToDate) leave in their text. The citations for
+// each claim are shown separately in the (real citations) parenthetical,
+// so keeping these numeric markers in-line just adds visual noise for the
+// student without providing lookup value.
+const stripRefMarkers = (text) =>
+  String(text || "")
+    .replace(/\s*\[\d+(?:\s*[,\-–]\s*\d+)*\]/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+
 function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) {
   const [expandedClaims, setExpandedClaims] = React.useState({});
   const [showProvenance, setShowProvenance] = React.useState(false);
@@ -16986,10 +17006,103 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
   }, [content.allFigures]);
 
   if (!content.synthesized && content.singleSource) {
+    // Fallback path: only one source, no AI synthesis ran. Instead of dumping
+    // raw HTML/text as one giant paragraph, parse it into structured blocks
+    // (headings + paragraphs + lists) so the student gets a readable section.
+    const parseUnsynthesizedContent = (rawHtml) => {
+      if (!rawHtml) return [];
+      // Convert HTML to text-with-structure. We look at <h*>, <p>, <li>, <br>
+      // tags to preserve structure; everything else gets flattened.
+      const tempDiv = document.createElement("div");
+      tempDiv.innerHTML = rawHtml;
+      const blocks = [];
+      const walk = (node) => {
+        if (node.nodeType === Node.TEXT_NODE) return;
+        const tag = node.tagName?.toLowerCase();
+        if (["h1","h2","h3","h4","h5","h6"].includes(tag)) {
+          const text = stripRefMarkers(node.textContent);
+          if (text) blocks.push({ type: "heading", level: parseInt(tag[1], 10), text });
+          return;
+        }
+        if (tag === "p") {
+          const text = stripRefMarkers(node.textContent);
+          if (text) blocks.push({ type: "paragraph", text });
+          return;
+        }
+        if (tag === "ul" || tag === "ol") {
+          const items = Array.from(node.querySelectorAll(":scope > li"))
+            .map(li => stripRefMarkers(li.textContent))
+            .filter(Boolean);
+          if (items.length) blocks.push({ type: "list", ordered: tag === "ol", items });
+          return;
+        }
+        if (tag === "img") return; // images handled by Figure Gallery
+        // Recurse into containers
+        Array.from(node.childNodes).forEach(walk);
+      };
+      Array.from(tempDiv.childNodes).forEach(walk);
+      // If no structural blocks were found, fall back to splitting on double
+      // newlines / sentence-run heuristics from the plain text.
+      if (blocks.length === 0) {
+        const plainText = stripRefMarkers(tempDiv.textContent);
+        // Split on "Problem N" / "Discordance #N" / numbered pattern headers,
+        // or on two-or-more newlines, or on obvious topic sentence starters.
+        const chunks = plainText
+          .split(/(?=\b(?:Problem \d+|Discordance #?\d+|Case \d+|Section \d+)\s*[:—–-])/g)
+          .flatMap(c => c.split(/\n{2,}/))
+          .map(c => c.trim())
+          .filter(Boolean);
+        chunks.forEach(chunk => {
+          // Detect a leading heading-like phrase (up to 80 chars, ends with colon or em-dash)
+          const headingMatch = chunk.match(/^([^:—\n]{4,80})[:—](.+)$/s);
+          if (headingMatch) {
+            blocks.push({ type: "heading", level: 4, text: headingMatch[1].trim() });
+            const body = headingMatch[2].trim();
+            if (body) blocks.push({ type: "paragraph", text: body });
+          } else {
+            blocks.push({ type: "paragraph", text: chunk });
+          }
+        });
+      }
+      return blocks;
+    };
+    const structuredBlocks = parseUnsynthesizedContent(content.singleSource.contentHtml || "");
     return (
       <section>
         <h2 className="doc-h2">Additional Evidence</h2>
-        <div style={{ fontSize: "0.9rem" }} dangerouslySetInnerHTML={{ __html: content.singleSource.contentHtml || "" }} />
+        <p style={{ marginTop: "-0.5rem", marginBottom: "1rem", fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+          From <strong style={{ color: "var(--doc-navy)", fontStyle: "normal" }}>{content.singleSource.source}</strong>. Content the AI wasn't able to weave into a specific case appears here for reference.
+        </p>
+        {structuredBlocks.map((block, i) => {
+          if (block.type === "heading") {
+            const Tag = block.level <= 3 ? "h3" : "h4";
+            return (
+              <Tag key={i} style={{
+                fontFamily: "'Inter', sans-serif",
+                fontSize: block.level <= 3 ? "0.95rem" : "0.88rem",
+                fontWeight: 600,
+                color: "var(--doc-navy)",
+                margin: "1.25rem 0 0.5rem",
+                lineHeight: 1.3,
+              }}>
+                {block.text}
+              </Tag>
+            );
+          }
+          if (block.type === "list") {
+            const ListTag = block.ordered ? "ol" : "ul";
+            return (
+              <ListTag key={i} style={{ margin: "0.5rem 0 0.75rem", paddingLeft: "1.35rem" }}>
+                {block.items.map((item, ii) => (
+                  <li key={ii} style={{ fontSize: "0.87rem", marginBottom: "0.3rem", lineHeight: 1.5 }}>{item}</li>
+                ))}
+              </ListTag>
+            );
+          }
+          return (
+            <p key={i} style={{ fontSize: "0.88rem", margin: "0 0 0.75rem", lineHeight: 1.55 }}>{block.text}</p>
+          );
+        })}
       </section>
     );
   }
@@ -17085,7 +17198,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
                 return (
                   <div key={ci} className="keep-together" style={{ paddingLeft: "0.85rem", borderLeft: "1px solid var(--doc-hairline)" }}>
                     <div style={{ fontSize: "0.9rem", lineHeight: 1.6 }}>
-                      {claim.statement}
+                      {stripRefMarkers(claim.statement)}
                       {realCitations.length > 0 && (
                         <span style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", fontSize: "0.85em", color: "var(--doc-warm-gray)", marginLeft: "0.35rem" }}>
                           ({realCitations.join("; ")})
@@ -17115,7 +17228,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
                         {claim.perSourceDetail.map((psd, pi) => (
                           <div key={pi} style={{ fontSize: "0.78rem", marginBottom: pi < claim.perSourceDetail.length - 1 ? "0.35rem" : 0 }}>
                             <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{psd.source}:</span>
-                            <span style={{ color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>{psd.detail}</span>
+                            <span style={{ color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>{stripRefMarkers(psd.detail)}</span>
                           </div>
                         ))}
                       </div>
@@ -17152,7 +17265,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
         <div style={{ marginTop: "1.5rem", padding: "1rem 1.25rem", background: "var(--doc-paper)", borderLeft: "3px solid var(--doc-navy-mid)" }} className="keep-together">
           <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Key Takeaways</div>
           <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
-            {content.keyTakeaways.map((t, i) => <li key={i} style={{ fontSize: "0.9rem", marginBottom: "0.25rem" }}>{t}</li>)}
+            {content.keyTakeaways.map((t, i) => <li key={i} style={{ fontSize: "0.9rem", marginBottom: "0.25rem" }}>{stripRefMarkers(t)}</li>)}
           </ul>
         </div>
       )}
