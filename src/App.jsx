@@ -1535,6 +1535,329 @@ const extractCurrentMedsSubsection = (medRecOrFullText) => {
   return String(medRecOrFullText).trim();
 };
 
+// ─── CPRS formatting helpers ───
+
+// Convert ALL-CAPS drug names to title case while preserving dose units and
+// common medical abbreviations. Handles the CPRS format: "LEVOTHYROXINE NA
+// 175MCG TAB" → "Levothyroxine Na 175 mcg tab".
+const formatDrugName = (raw) => {
+  if (!raw) return "";
+  let s = String(raw).trim();
+
+  // Normalize whitespace and add space between number and unit if missing
+  // ("175MCG" → "175 mcg", "0.3MG/0.3ML" → "0.3 mg/0.3 mL").
+  s = s.replace(/\s+/g, " ");
+  s = s.replace(/(\d(?:\.\d+)?)(MG|MCG|G|ML|IU|UNITS?|MEQ|%)\b/gi,
+    (_, num, unit) => `${num} ${unit.toLowerCase().replace(/^(mcg|mg|ml|iu|meq)$/i, m => m.toLowerCase())}`);
+  s = s.replace(/(\d)\/(\d)/g, "$1/$2"); // preserve ratios
+
+  // Title-case each word, then lowercase common suffixes/forms and preserve
+  // known abbreviations (NA, PO, IV, IM, SL, IU, etc.).
+  const preserveUpper = new Set(["NA", "PO", "IV", "IM", "SL", "SQ", "IU", "SR", "XR", "ER", "DR", "HCL", "CR"]);
+  const preserveLower = new Set(["tab", "cap", "tabs", "caps", "soln", "susp", "syr", "inj", "inhl", "cream", "oint", "gel", "drops", "drop", "spray", "patch", "loz", "supp", "kit", "mcg", "mg", "ml", "iu", "meq", "unt"]);
+
+  s = s.split(/(\s+|\/)/).map(token => {
+    if (!/[A-Za-z]/.test(token)) return token; // spaces, slashes, numbers
+    const upper = token.toUpperCase();
+    const lower = token.toLowerCase();
+    if (preserveUpper.has(upper)) return upper;
+    if (preserveLower.has(lower)) return lower;
+    // Title case: first letter upper, rest lower
+    return token.charAt(0).toUpperCase() + token.slice(1).toLowerCase();
+  }).join("");
+
+  return s.trim();
+};
+
+// Condense a verbose SIG into scannable shorthand. Removes boilerplate like
+// "TAKE ONE TABLET BY MOUTH" and replaces with "1 tab PO", converts frequency
+// phrases to standard abbreviations, and lowercases the result.
+const condenseSig = (raw) => {
+  if (!raw) return "";
+  let s = String(raw).trim();
+
+  // Remove trailing period and normalize spacing
+  s = s.replace(/\s+/g, " ").replace(/\.$/, "");
+
+  // Common SIG substitutions — order matters (longer patterns first).
+  const subs = [
+    // Quantity + form
+    [/\bTAKE\s+(ONE|1)(?:\s+AND\s+(?:ONE-)?HALF|\s+AND\s+1\/2)?\s+TABLETS?\b/gi, m => m.match(/AND/i) ? "take 1½ tabs" : "take 1 tab"],
+    [/\bTAKE\s+(ONE-HALF|1\/2|HALF)\s+TABLET\b/gi, "take ½ tab"],
+    [/\bTAKE\s+(ONE|1)\s+CAPSULES?\b/gi, "take 1 cap"],
+    [/\bTAKE\s+(TWO|2)\s+TABLETS?\b/gi, "take 2 tabs"],
+    [/\bINHALE\s+(ONE|1|(\d+))\s+PUFFS?\b/gi, (_, w, n) => `inhale ${n || "1"} puff${(n && +n > 1) || w?.toLowerCase() !== "one" && w?.toLowerCase() !== "1" ? "s" : ""}`],
+    [/\bINJECT\s+(\d+)\s+DOSE\s+OR\s+([\d.]+\s*mg)\s+/gi, "inject $1 dose ($2) "],
+    [/\bUSE\s+(\d+)\s+ITEM\b/gi, "use $1 item"],
+    // Route
+    [/\bBY\s+MOUTH\b/gi, "PO"],
+    [/\bINTRAMUSCULARLY\b/gi, "IM"],
+    [/\bINTRAVENOUSLY\b/gi, "IV"],
+    [/\bSUBCUTANEOUSLY\b/gi, "SQ"],
+    [/\bSUBLINGUALLY\b/gi, "SL"],
+    [/\bEACH\s+NOSTRIL\b/gi, "each nostril"],
+    [/\bTO\s+THE\s+AFFECTED\s+AREA\b/gi, "topical to affected area"],
+    // Frequency
+    [/\bEVERY\s+DAY\b/gi, "daily"],
+    [/\bEVERY\s+MORNING\b/gi, "qAM"],
+    [/\bEVERY\s+EVENING\b/gi, "qPM"],
+    [/\bEVERY\s+MORNING\s+WITH\s+BREAKFAST\b/gi, "qAM with breakfast"],
+    [/\bTWICE\s+A\s+DAY\b/gi, "BID"],
+    [/\bTHREE\s+TIMES\s+A\s+DAY\b/gi, "TID"],
+    [/\bFOUR\s+TIMES\s+A\s+DAY\b/gi, "QID"],
+    [/\bAT\s+BEDTIME\b/gi, "qHS"],
+    [/\bEVERY\s+(\d+)\s+HOURS?\b/gi, "q$1h"],
+    [/\bONCE\b(?!\s+(?:daily|a\s+day))/gi, "×1"],
+    [/\bAS\s+NEEDED\s+FOR\b/gi, "PRN for"],
+    [/\bAS\s+NEEDED\b/gi, "PRN"],
+    // Trim verbose reasons — "FOR X" often duplicates the indication we already show
+    [/\s+FOR\s+CHOLESTEROL$/gi, ""],
+    [/\s+FOR\s+BLOOD\s+PRESSURE$/gi, ""],
+    [/\s+FOR\s+ASTHMA$/gi, ""],
+    [/\s+FOR\s+THYROID\s+REPLACEMENT\.?$/gi, ""],
+    [/\s+FOR\s+MUSCLE\s+RELAXATION$/gi, ""],
+    [/\s+FOR\s+PAIN$/gi, ""],
+    [/\s+FOR\s+MENOPAUSE$/gi, ""],
+    [/\s+FOR\s+HORMONE\s+REPLACEMENT$/gi, ""],
+    [/\s+FOR\s+VULVOVAGINITIS$/gi, ""],
+    [/\s+FOR\s+BRONCHOSPASM$/gi, ""],
+    [/\s+FOR\s+SEVERE\s+ALLERGIC\s+REACTION$/gi, ""],
+    [/\s+TO\s+REDUCE\s+LEG\s+EDEMA$/gi, ""],
+    [/\s+AS\s+A\s+DIURETIC\s+OR\s+"WATER\s+PILL"\s+TO\s+REDUCE\s+LEG\s+EDEMA$/gi, ""],
+    [/\s+AS\s+A\s+DIURETIC$/gi, ""],
+    // Remove parenthetical warnings that clutter the display but aren't
+    // clinically decision-relevant for a med list glance
+    [/\s*\*\*\s*NOTE\s+CHANGE\s+IN\s+DOSE\s+OR\s+DIRECTIONS\s*\*\*\s*/gi, " "],
+    [/\s*\*\*\s*MUST\s+LAST\s+\d+\s+DAYS\s*\*\*\s*/gi, " "],
+    [/\s*\*\*\s*NO\s+DRIVING\/OPERATING\s+MACHINERY\s+WHEN\s+USING\s*\*\*\s*/gi, " "],
+    [/\s*\(PRIME\s+PER\s+INSTRUCTIONS\s+FOR\s+USE\)\s*/gi, " "],
+    // Long compliance details in parens — collapse
+    [/\s*\(WITH\s+FOOD\s+AND\s+8OZ\s+WATER,?\s+REMAIN\s+UPRIGHT[^)]*\)\s*/gi, " (with food + water; remain upright 30 min)"],
+    [/\s*-\s*WITH\s+WATER\s+ONLY,?\s+30\s+MINUTES\s+PRIOR\s+TO\s+ANY\s+OTHER\s+FOOD,?\s+DRINK\s+OR\s+MEDICATION,?\s*/gi, " (with water only; wait 30 min before food/drink) "],
+    [/\s*-\s*STOP\s+IF\s+PREGNANT\s*/gi, "; stop if pregnant "],
+  ];
+
+  subs.forEach(([re, replacement]) => {
+    s = typeof replacement === "function"
+      ? s.replace(re, replacement)
+      : s.replace(re, replacement);
+  });
+
+  // Collapse leftover whitespace and lowercase (but leave the shorthand
+  // abbreviations that our substitutions produced in their canonical case).
+  s = s.replace(/\s+/g, " ").replace(/\s+,/g, ",").trim();
+
+  // Lowercase the whole thing, then restore known abbreviations that must
+  // stay capitalized.
+  const shorthandUpper = ["PO", "IV", "IM", "SQ", "SL", "BID", "TID", "QID", "PRN", "qAM", "qPM", "qHS"];
+  const preserveMap = new Map(shorthandUpper.map(w => [w.toLowerCase(), w]));
+  s = s.toLowerCase().replace(/\b(po|iv|im|sq|sl|bid|tid|qid|prn|qam|qpm|qhs)\b/gi,
+    m => preserveMap.get(m.toLowerCase()) || m);
+
+  // Restore qNh patterns (q6h, q12h) — the toLowerCase handled these correctly
+  // but the frequency substitution needed lowercase from the start.
+
+  return s.trim();
+};
+
+// Clean indication text — lowercase and drop "FOR " prefix, since we already
+// wrap it in parens which conveys "for" semantically.
+const cleanIndicationText = (raw) => {
+  if (!raw) return "";
+  return String(raw)
+    .replace(/^\s*FOR\s+/i, "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+};
+
+// ============ CPRS PHARMACY DUMP PARSER ============
+// Handles VA CPRS-style pharmacy exports where:
+//   - No "CURRENT / DISCONTINUED / HISTORICAL" headers exist
+//   - Every med row carries its own status (ACTIVE, DISCONTINUED, EXPIRED)
+//   - Meds are multiline entries separated by blank lines or the next med's name
+//   - Non-VA meds appear in a separate block with "Non-VA Med:" markers
+// Returns { current, discontinued, historical } — each a bullet-formatted text
+// block ready for the existing render pipeline. Empty string means no meds
+// found for that bucket.
+const parseCprsPharmacyDump = (text) => {
+  if (!text || typeof text !== "string") {
+    return { current: "", discontinued: "", historical: "" };
+  }
+
+  // Detect CPRS format. If neither marker is present, this parser doesn't
+  // apply — return empty so callers fall through to the other extractors.
+  const hasVaBlock = /RXOP\s*-\s*Outpatient\s+Pharmacy/i.test(text) ||
+    /\b(?:ACTIVE|DISCONTINUED|EXPIRED)\s+\d+\s+\d{1,2}\/\d{1,2}\/\d{4}/i.test(text);
+  const hasNonVaBlock = /Non-?VA\s+Med:/i.test(text);
+  if (!hasVaBlock && !hasNonVaBlock) {
+    return { current: "", discontinued: "", historical: "" };
+  }
+
+  const currentEntries = [];
+  const discontinuedEntries = [];
+  const historicalEntries = [];
+
+  // ── 1. Parse the VA outpatient block (RXOP) ──
+  // Each med starts with the drug name followed by an Rx#/status/qty row.
+  // We split on lines that match: "DRUGNAME  RX#  STATUS  QTY  DATE  DATE"
+  // and then collect the SIG + provider lines that follow.
+  const vaBlockMatch = text.match(/RXOP\s*-\s*Outpatient\s+Pharmacy[\s\S]*?(?=RXNV|Non-?VA\s+Med:|$)/i);
+  const vaBlock = vaBlockMatch ? vaBlockMatch[0] : (hasVaBlock ? text : "");
+
+  if (vaBlock) {
+    // Med-name lines are typically uppercase drug names followed by dose/route
+    // (e.g., "LEVOTHYROXINE NA 175MCG TAB"). The status line that follows has
+    // the pattern: Rx#, STATUS, quantity, issued-date, filled-date.
+    // Strategy: find every occurrence of "STATUS  qty  MM/DD/YYYY  MM/DD/YYYY"
+    // and treat the immediately preceding non-empty non-header line as the
+    // drug name.
+    const statusLineRegex = /^\s*(\d{7,}[A-Z]?)\s+(ACTIVE|DISCONTINUED|EXPIRED)\s+(\d+)\s+(\d{1,2}\/\d{1,2}\/\d{4})\s+(\d{1,2}\/\d{1,2}\/\d{4})/gm;
+
+    const statusMatches = [];
+    let m;
+    while ((m = statusLineRegex.exec(vaBlock)) !== null) {
+      statusMatches.push({
+        rxNum: m[1],
+        status: m[2].toUpperCase(),
+        qty: m[3],
+        issued: m[4],
+        filled: m[5],
+        statusLineStart: m.index,
+        statusLineEnd: m.index + m[0].length,
+      });
+    }
+
+    // For each status match, look backward for the drug name line and forward
+    // for SIG/provider/etc up to the next med's status line (or end).
+    for (let i = 0; i < statusMatches.length; i++) {
+      const cur = statusMatches[i];
+      const nextStart = i + 1 < statusMatches.length ? statusMatches[i + 1].statusLineStart : vaBlock.length;
+
+      // Drug name: last non-empty line before the status line that isn't a
+      // header/table row.
+      const beforeText = vaBlock.slice(0, cur.statusLineStart);
+      const beforeLines = beforeText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      let drugName = "";
+      for (let j = beforeLines.length - 1; j >= 0; j--) {
+        const line = beforeLines[j];
+        // Skip the table header row and section headers
+        if (/^Drug\.+/i.test(line)) continue;
+        if (/^MEDICATIONS?:/i.test(line)) continue;
+        if (/^RXOP/i.test(line)) continue;
+        // A drug name is typically ALL CAPS with dose/form
+        if (/^[A-Z][A-Z0-9\s()\/\-.]+(?:\d+\s*(?:MG|MCG|G|ML|IU|UNITS?|%)|TAB|CAP|INJ|INHL|SOLN|CREAM|DROP)/i.test(line)) {
+          drugName = line;
+          break;
+        }
+      }
+      if (!drugName) continue;
+
+      // Body: everything from end of status line to next med
+      const body = vaBlock.slice(cur.statusLineEnd, nextStart);
+      // Extract SIG (the actual prescribing instructions)
+      const sigMatch = body.match(/SIG:\s*([^]*?)(?=\n\s*(?:Indication:|Provider:|Cost\/Fill:|Exp\/Can\s+Dt:|$))/i);
+      const sig = sigMatch ? sigMatch[1].replace(/\s+/g, " ").trim() : "";
+      // Extract indication if present
+      const indMatch = body.match(/Indication:\s*([^\n]+?)(?=\s*(?:Provider:|Cost\/Fill:|Exp\/Can\s+Dt:|$))/i);
+      const indication = indMatch ? indMatch[1].trim() : "";
+
+      // Format into a clean, scannable bullet. Convert ALL-CAPS drug names
+      // to title case, condense verbose SIG language into standard medical
+      // shorthand, and strip boilerplate the source repeats on every line.
+      const formattedName = formatDrugName(drugName);
+      const formattedSig = condenseSig(sig);
+      const cleanIndication = cleanIndicationText(indication);
+      const monthYear = cur.issued.replace(/^(\d{1,2})\/\d{1,2}\/(\d{4})$/, "$1/$2");
+
+      const bodyParts = [];
+      if (formattedSig) bodyParts.push(formattedSig);
+      if (cleanIndication) bodyParts.push(`(${cleanIndication})`);
+      const body = bodyParts.join(" ");
+      const line = body
+        ? `**${formattedName}** — ${body} · issued ${monthYear}`
+        : `**${formattedName}** · issued ${monthYear}`;
+
+      if (cur.status === "ACTIVE") {
+        currentEntries.push(line);
+      } else if (cur.status === "DISCONTINUED" || cur.status === "EXPIRED") {
+        // Bucket into "recently discontinued" if within roughly the last year,
+        // else historical. Use issued date since it's what we have reliably.
+        const yearMatch = cur.issued.match(/\/(\d{4})$/);
+        const year = yearMatch ? parseInt(yearMatch[1], 10) : 0;
+        const currentYear = new Date().getFullYear();
+        if (year >= currentYear - 1) {
+          discontinuedEntries.push(line);
+        } else {
+          historicalEntries.push(line);
+        }
+      }
+    }
+  }
+
+  // ── 2. Parse the Non-VA Meds block (RXNV) ──
+  // Format: "Non-VA Med: DRUGNAME   Status: Active/Discontinued (DATE)"
+  //         followed by CPRS Order #, dosing, schedule, comments.
+  const nonVaMatches = text.matchAll(/Non-?VA\s+Med:\s*([^\n]+?)\s+Status:\s*(Active|Discontinued)(?:\s*\(([^)]+)\))?/gi);
+  for (const match of nonVaMatches) {
+    const drugName = match[1].trim();
+    const statusRaw = match[2];
+    const discontinuedDate = match[3] || "";
+    const isActive = /^active$/i.test(statusRaw);
+
+    // Look forward from this match for dosage and schedule
+    const afterStart = match.index + match[0].length;
+    // Find the next Non-VA Med marker or end of text
+    const nextMatch = text.substring(afterStart).search(/Non-?VA\s+Med:/i);
+    const bodyEnd = nextMatch >= 0 ? afterStart + nextMatch : text.length;
+    const body = text.slice(afterStart, bodyEnd);
+
+    const dosageMatch = body.match(/Dosage:\s*([^\s]+(?:\s*[A-Z]+)?)/);
+    const scheduleMatch = body.match(/Schedule:\s*([^\n]+?)(?=\s*(?:Statement\/Explanation|$))/i);
+    const commentMatch = body.match(/Statement\/Explanation\/Comment:\s*([^\n]+)/);
+
+    const dosage = dosageMatch ? dosageMatch[1].trim() : "";
+    const schedule = scheduleMatch ? scheduleMatch[1].trim() : "";
+    const comment = commentMatch ? commentMatch[1].trim() : "";
+
+    const formattedName = formatDrugName(drugName);
+    const doseText = [dosage, condenseSig(schedule)].filter(Boolean).join(" ");
+    const parts = [`**${formattedName}**`];
+    if (doseText) parts.push(doseText);
+    parts.push("_(non-VA, patient-supplied)_");
+    if (comment && comment.length < 100) {
+      const cleanComment = comment.replace(/^Patient wants to buy from Non-VA\s*(pharmacy\.?)?\s*/i, "").trim();
+      if (cleanComment) parts.push(`— ${cleanComment}`);
+    }
+    const line = parts.join(" — ").replace(/—\s*—/g, "—");
+
+    if (isActive) {
+      currentEntries.push(line);
+    } else {
+      // Non-VA discontinued items are typically long-past; put in historical
+      const dateYear = discontinuedDate.match(/(\d{4})/);
+      const year = dateYear ? parseInt(dateYear[1], 10) : 0;
+      const currentYear = new Date().getFullYear();
+      const dcNote = discontinuedDate ? `discontinued ${discontinuedDate}` : "discontinued (date unknown)";
+      if (year >= currentYear - 1) {
+        discontinuedEntries.push(`${line} · ${dcNote}`);
+      } else {
+        historicalEntries.push(`${line} · ${dcNote}`);
+      }
+    }
+  }
+
+  // Format each bucket as a bullet list ready for the renderer
+  const asBulletList = (entries) =>
+    entries.length > 0 ? entries.map(e => `- ${e}`).join("\n") : "";
+
+  return {
+    current: asBulletList(currentEntries),
+    discontinued: asBulletList(discontinuedEntries),
+    historical: asBulletList(historicalEntries),
+  };
+};
+
 // Extract discontinued or historical medication subsections.
 
 const extractMedSectionFromFullText = (fullText, targetHeaderRegex, stopExtras = []) => {
@@ -10714,10 +11037,42 @@ const buildInRoomHtml = (doc, session) => {
   const rawFullPrenote = doc.rawPrenote || doc.clinicalNote || "";
   const fullPrenoteText = stripCcdaForFallback(rawFullPrenote);
 
+  // Try the CPRS pharmacy dump parser first — this format has per-row status
+  // instead of section headers, so it needs its own extraction path. Returns
+  // empty strings when the format doesn't apply, letting the section-header
+  // parsers below take over.
+  const cprsMeds = parseCprsPharmacyDump(fullPrenoteText);
+
   const currentMedsText =
+    cprsMeds.current ||
     (medRecText && extractCurrentMedsFromFullText(medRecText)) ||
     extractCurrentMedsFromFullText(fullPrenoteText) ||
     extractCurrentMedsSubsection(medRecText);
+
+  // Recently-discontinued and historical subsections. When CPRS parsing
+  // succeeded, use its buckets; otherwise fall back to the label-based
+  // extractors that look for explicit "RECENTLY DISCONTINUED" / "SIGNIFICANT
+  // HISTORICAL" section headers.
+  const discontinuedMedsText =
+    cprsMeds.discontinued ||
+    extractMedSectionFromFullText(
+      fullPrenoteText,
+      /RECENTLY\s+DISCONTINUED(?:\s*\([^)\n]{1,60}\))?/i
+    );
+  const historicalMedsText =
+    cprsMeds.historical ||
+    extractMedSectionFromFullText(
+      fullPrenoteText,
+      /SIGNIFICANT\s+HISTORICAL\s+MEDICATIONS?(?:\s*(?:\/|AND)\s*TIMELINE)?/i
+    ) ||
+    extractMedSectionFromFullText(
+      fullPrenoteText,
+      /HISTORICAL\s+MEDICATIONS?/i
+    ) ||
+    extractMedSectionFromFullText(
+      fullPrenoteText,
+      /PAST\s+MEDICATIONS?/i
+    );
 
   const currentMedNames = parseMedNames(currentMedsText);
   const medDesc = doc.medDescriptions || {};
@@ -11691,14 +12046,25 @@ const buildInRoomHtml = (doc, session) => {
     for (const rawLine of lines) {
       let line = rawLine.trim();
       if (!line) continue;
-      // Strip common bullet chars and specialty-group headings
-      line = line.replace(/^[\-\*•●○▪▫►◆·]+\s*/, "");
+      // Strip common bullet chars — but preserve leading ** so CPRS output
+      // isn't mistaken for a bullet marker and stripped.
+      if (!/^\*\*[A-Za-z]/.test(line)) {
+        line = line.replace(/^[\-\*•●○▪▫►◆·]+\s*/, "");
+      } else {
+        // CPRS output starts with a bullet "-" then "**Name**". Just strip the "-".
+        line = line.replace(/^-\s*/, "");
+      }
       if (!line) continue;
       // Skip lines that are just specialty group headings like "Cardiology:"
       if (/^[A-Z][A-Za-z /&]+:\s*$/.test(line)) continue;
-      // Skip lines that don't look like meds (no dose, no drug-name pattern)
-      const looksLikeMed = /\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)/i.test(line) ||
-                          /^[A-Z][a-z]+(?:\s+[a-z]+)?\s+/.test(line);
+      // Accept:
+      //   - explicit dose+unit patterns ("175 mg", "0.3 mL")
+      //   - our CPRS-parser output which starts with **DrugName**
+      //   - traditional "Name Dose unit" prose
+      const looksLikeMed =
+        /\d+(?:\.\d+)?\s*(?:mg|mcg|g|IU|units?|mL|meq|%)/i.test(line) ||
+        /^\*\*[A-Za-z]/.test(line) ||
+        /^[A-Z][a-z]+(?:\s+[a-z]+)?\s+/.test(line);
       if (!looksLikeMed) continue;
       bullets.push(line);
     }
@@ -11706,65 +12072,171 @@ const buildInRoomHtml = (doc, session) => {
   };
 
   let medsSectionHtml = "";
-  const hasAnyMedContent = medRows.length > 0 || currentMedNames.length > 0 || currentMedsText.trim();
+  const hasAnyMedContent = medRows.length > 0 || currentMedNames.length > 0 || currentMedsText.trim() ||
+    discontinuedMedsText.trim() || historicalMedsText.trim();
 
-  if (hasAnyMedContent) {
-    medsSectionHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Current Medications</div><div class="sec-div-line"></div></div>`;
-
-    if (useStructuredTable) {
-      // Full structured table — parsing was good enough
-      medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Dose/Route</th><th>Freq</th><th>Indication</th><th>Start</th><th>Notes</th></tr></thead><tbody>`;
-      medRows.forEach(m => {
-        const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(m.name)}`;
-        medsSectionHtml += `<tr>`;
-        medsSectionHtml += `<td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(m.name)}</a></td>`;
-        medsSectionHtml += `<td>${esc(m.dose || "—")}</td>`;
-        medsSectionHtml += `<td>${esc(m.freq || "—")}</td>`;
-        medsSectionHtml += `<td class="med-ind">${esc(m.indication || "—")}</td>`;
-        medsSectionHtml += `<td>${esc(m.start || "—")}</td>`;
-        medsSectionHtml += `<td>${esc(m.notes || "")}</td>`;
-        medsSectionHtml += `</tr>`;
+  // Helper: render a medication sub-block with its own heading, styling,
+  // and content-type-aware rendering (table, bullet list, or verbatim).
+  // Used for Current, Recently Discontinued, and Historical subsections.
+  const renderMedBlock = (label, iconSvg, bodyText, options = {}) => {
+    if (!bodyText || !bodyText.trim() ||
+        /^(none documented|none|not documented|n\/?a)\.?$/i.test(bodyText.trim())) {
+      return "";
+    }
+    const {
+      subheadColor = "var(--fg-d)",
+      accentBorder = "var(--border)",
+      italicize = false,
+      compactList = false,
+    } = options;
+    let html = `<div style="margin-top:${options.marginTop || "12px"};padding-top:8px;border-top:1px solid ${accentBorder};">`;
+    html += `<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px;">`;
+    html += `<div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:${subheadColor};">${iconSvg}${label}</div>`;
+    html += `</div>`;
+    const bullets = extractMedBullets(bodyText);
+    if (bullets.length > 0) {
+      const listStyle = compactList
+        ? `padding-left:1.1rem;font-size:8.5pt;color:var(--fg-m);line-height:1.45;${italicize ? "font-style:italic;" : ""}`
+        : `padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;${italicize ? "font-style:italic;" : ""}`;
+      html += `<ul style="${listStyle}">`;
+      bullets.forEach(b => {
+        // applyInlineMarkdown handles the **bold** and _italic_ markers we
+        // emit from the CPRS parser; plain-text bullets pass through unchanged.
+        html += `<li style="margin-bottom:3px;">${applyInlineMarkdown(b)}</li>`;
       });
-      medsSectionHtml += `</tbody></table>`;
-    } else if (currentMedNames.length > 0) {
-      // AI-descriptions table — clean and useful when structural parsing is weak
-      // but we know the med names (via parseMedNames which is more forgiving).
-      medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
-      currentMedNames.forEach(name => {
-        const desc = medDesc[name.toLowerCase().trim()] || {};
-        const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(name)}`;
-        medsSectionHtml += `<tr><td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)}</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
-      });
-      medsSectionHtml += `</tbody></table>`;
-
-      // Also show the raw bullets below the AI-description table so the
-      // student sees the full prescribing detail (dose, route, frequency,
-      // indication, notes) that the AI table doesn't show.
-      const bullets = extractMedBullets(currentMedsText);
-      if (bullets.length > 0) {
-        medsSectionHtml += `<div style="margin-top:8px;font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:4px;">Full Prescribing Detail</div>`;
-        medsSectionHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;">`;
-        bullets.forEach(b => {
-          medsSectionHtml += `<li style="margin-bottom:3px;">${esc(b)}</li>`;
-        });
-        medsSectionHtml += `</ul>`;
-      }
+      html += `</ul>`;
     } else {
-      // Last-ditch fallback: just show the med section verbatim as a bullet list.
-      // Parser couldn't structure anything, we don't have named meds — but the
-      // raw text is at least readable.
-      const bullets = extractMedBullets(currentMedsText);
-      if (bullets.length > 0) {
-        medsSectionHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;">`;
-        bullets.forEach(b => {
-          medsSectionHtml += `<li style="margin-bottom:4px;">${esc(b)}</li>`;
+      // Fallback: split on newlines and render as bullets manually
+      const lines = bodyText.split(/\r?\n/).map(l => l.replace(/^\s*[\*\-•●○▪▫►◆·]?\s*/, "").trim()).filter(Boolean);
+      if (lines.length > 1) {
+        html += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;${italicize ? "font-style:italic;" : ""}">`;
+        lines.forEach(l => {
+          html += `<li style="margin-bottom:3px;">${applyInlineMarkdown(l)}</li>`;
         });
-        medsSectionHtml += `</ul>`;
+        html += `</ul>`;
       } else {
-        // Absolute last resort: verbatim text as pre-block
-        medsSectionHtml += `<pre style="font-family:'DM Sans',sans-serif;font-size:9pt;white-space:pre-wrap;color:var(--fg-m);line-height:1.5;">${esc(currentMedsText)}</pre>`;
+        html += `<div style="font-size:9pt;color:var(--fg-m);line-height:1.5;${italicize ? "font-style:italic;" : ""}">${applyInlineMarkdown(bodyText.trim())}</div>`;
       }
     }
+    html += `</div>`;
+    return html;
+  };
+
+  // Helper: convert **bold** and _italic_ markers into HTML. Used for CPRS
+  // parser output which encodes drug names as bold and non-VA labels as italic.
+  const applyInlineMarkdown = (text) => {
+    if (!text) return "";
+    let s = esc(text);
+    // Bold: **text** → <strong>text</strong>
+    s = s.replace(/\*\*([^*]+?)\*\*/g, '<strong style="color:var(--fg);">$1</strong>');
+    // Italic: _text_ → <em>text</em>
+    s = s.replace(/_([^_]+?)_/g, '<em style="color:var(--fg-d);font-style:italic;">$1</em>');
+    return s;
+  };
+
+  if (hasAnyMedContent) {
+    medsSectionHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Medications</div><div class="sec-div-line"></div></div>`;
+
+    // ─── CURRENT MEDICATIONS ───
+    if (currentMedsText.trim() || medRows.length > 0 || currentMedNames.length > 0) {
+      medsSectionHtml += `<div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:6px;">Current Medications</div>`;
+
+      if (useStructuredTable) {
+        // Full structured table — parsing was good enough
+        medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Dose/Route</th><th>Freq</th><th>Indication</th><th>Start</th><th>Notes</th></tr></thead><tbody>`;
+        medRows.forEach(m => {
+          const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(m.name)}`;
+          medsSectionHtml += `<tr>`;
+          medsSectionHtml += `<td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(m.name)}</a></td>`;
+          medsSectionHtml += `<td>${esc(m.dose || "—")}</td>`;
+          medsSectionHtml += `<td>${esc(m.freq || "—")}</td>`;
+          medsSectionHtml += `<td class="med-ind">${esc(m.indication || "—")}</td>`;
+          medsSectionHtml += `<td>${esc(m.start || "—")}</td>`;
+          medsSectionHtml += `<td>${esc(m.notes || "")}</td>`;
+          medsSectionHtml += `</tr>`;
+        });
+        medsSectionHtml += `</tbody></table>`;
+      } else if (currentMedNames.length > 0) {
+        // AI-descriptions table
+        medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
+        currentMedNames.forEach(name => {
+          const desc = medDesc[name.toLowerCase().trim()] || {};
+          const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(name)}`;
+          medsSectionHtml += `<tr><td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(name)}</a></td><td>${desc.treats ? esc(desc.treats) : "—"}</td><td>${desc.mechanism ? esc(desc.mechanism) : "—"}</td></tr>`;
+        });
+        medsSectionHtml += `</tbody></table>`;
+
+        // Full prescribing detail as bullets
+        const bullets = extractMedBullets(currentMedsText);
+        if (bullets.length > 0) {
+          medsSectionHtml += `<div style="margin-top:8px;font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin-bottom:4px;">Full Prescribing Detail</div>`;
+          medsSectionHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;">`;
+          bullets.forEach(b => {
+            medsSectionHtml += `<li style="margin-bottom:3px;">${applyInlineMarkdown(b)}</li>`;
+          });
+          medsSectionHtml += `</ul>`;
+        }
+      } else {
+        // Last-ditch fallback — no structural table, no matching bullet lines.
+        // Instead of dumping raw text as a monospaced block, split on newlines
+        // (blank-line separated paragraphs, then hyphens), clean bullets, and
+        // render as a formatted list. Every branch stays visually consistent
+        // with the rest of the document.
+        const bullets = extractMedBullets(currentMedsText);
+        if (bullets.length > 0) {
+          medsSectionHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;">`;
+          bullets.forEach(b => {
+            medsSectionHtml += `<li style="margin-bottom:4px;">${applyInlineMarkdown(b)}</li>`;
+          });
+          medsSectionHtml += `</ul>`;
+        } else {
+          // Split on newlines to reconstruct at least a bullet list.
+          const softLines = currentMedsText
+            .split(/\r?\n/)
+            .map(l => l.replace(/^\s*[\-\*•●○▪▫►◆·]+\s*/, "").trim())
+            .filter(Boolean);
+          if (softLines.length > 1) {
+            medsSectionHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.5;">`;
+            softLines.forEach(line => {
+              medsSectionHtml += `<li style="margin-bottom:4px;">${applyInlineMarkdown(line)}</li>`;
+            });
+            medsSectionHtml += `</ul>`;
+          } else {
+            // Truly one line, no structure — render as plain prose, no <pre>.
+            medsSectionHtml += `<div style="font-size:9pt;color:var(--fg-m);line-height:1.5;padding:6px 0;">${applyInlineMarkdown(currentMedsText.trim())}</div>`;
+          }
+        }
+      }
+    }
+
+    // ─── RECENTLY DISCONTINUED ───
+    // Uses an amber-tinted top border to visually distinguish from active.
+    medsSectionHtml += renderMedBlock(
+      "Recently Discontinued",
+      "",
+      discontinuedMedsText,
+      {
+        subheadColor: "#b45309",
+        accentBorder: "rgba(180, 83, 9, 0.25)",
+        marginTop: "14px",
+      }
+    );
+
+    // ─── SIGNIFICANT HISTORICAL / TIMELINE ───
+    // Rendered smaller and italicized — this is background context, not
+    // active care information the student needs to memorize.
+    medsSectionHtml += renderMedBlock(
+      "Significant Historical Medications / Timeline",
+      "",
+      historicalMedsText,
+      {
+        subheadColor: "var(--fg-d)",
+        accentBorder: "var(--border-l)",
+        italicize: true,
+        compactList: true,
+        marginTop: "14px",
+      }
+    );
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -13584,11 +14056,49 @@ const buildInRoomHtml = (doc, session) => {
     labsHtml += `<div class="lab-note">${esc(na.labTrendsSummary)}</div>`;
   }
 
-  // Fallback: when table parsing is unavailable, show only the raw
-  // lab-specific section. Never place imaging narrative in Laboratory Results.
+  // Fallback: when table parsing is unavailable, format the raw lab text
+  // into a readable list rather than dumping it as monospaced code.
+  // Splits on blank lines to get logical groups, then on newlines within
+  // each group to get analyte lines.
   if (!hasAnyLabs && !na.labTrendsSummary && labSourceText) {
     labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
-    labsHtml += `<pre style="font-family:'JetBrains Mono',monospace;font-size:7.5pt;white-space:pre-wrap;color:var(--fg-m);background:var(--panel);border:1px solid var(--border-l);border-radius:3px;padding:8px;">${esc(labSourceText)}</pre>`;
+    labsHtml += `<div class="lab-note" style="font-style:italic;margin-bottom:8px;">Structured table parsing was not available for these results. The text is shown below as reported in the source.</div>`;
+
+    const groups = labSourceText.split(/\n\s*\n/).map(g => g.trim()).filter(Boolean);
+    groups.forEach(group => {
+      const lines = group.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      if (lines.length === 0) return;
+
+      // Detect a heading line: short, likely a date or panel name.
+      const firstLine = lines[0];
+      const looksLikeHeading =
+        firstLine.length < 60 &&
+        (/^\d{1,2}\/\d{1,4}/.test(firstLine) ||          // starts with date
+         /^[A-Z][A-Za-z\s]+:?\s*$/.test(firstLine) ||    // capitalized panel name
+         !/:/.test(firstLine));                          // no colon → likely not a data line
+
+      let bodyLines = lines;
+      if (looksLikeHeading && lines.length > 1) {
+        labsHtml += `<div style="font-size:8pt;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--fg-d);margin:10px 0 4px;">${esc(firstLine.replace(/:$/, ""))}</div>`;
+        bodyLines = lines.slice(1);
+      }
+
+      // Render remaining lines as a bulleted list. Strip bullet markers so
+      // we don't get "* * value" doubled up.
+      labsHtml += `<ul style="padding-left:1.25rem;font-size:9pt;color:var(--fg-m);line-height:1.55;margin-bottom:8px;">`;
+      bodyLines.forEach(line => {
+        const cleaned = line.replace(/^\s*[\-\*•●○▪▫►◆·]+\s*/, "").trim();
+        if (!cleaned) return;
+        // If the line looks like "Label: value" (typical lab), bold the label.
+        const kvMatch = cleaned.match(/^([^:]{1,60}):\s*(.+)$/);
+        if (kvMatch) {
+          labsHtml += `<li style="margin-bottom:3px;"><strong style="color:var(--fg);">${esc(kvMatch[1])}:</strong> ${esc(kvMatch[2])}</li>`;
+        } else {
+          labsHtml += `<li style="margin-bottom:3px;">${esc(cleaned)}</li>`;
+        }
+      });
+      labsHtml += `</ul>`;
+    });
   }
 
   const labValueGuideHtml = renderStudentValueGuide("lab");
