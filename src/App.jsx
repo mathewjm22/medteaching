@@ -12697,7 +12697,7 @@ const buildInRoomHtml = (doc, session) => {
           medsSectionHtml += `</tr>`;
         });
         medsSectionHtml += `</tbody></table>`;
-      }
+      
       } else if (currentMedNames.length > 0) {
         // AI-descriptions table
         medsSectionHtml += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Treats</th><th>Mechanism</th></tr></thead><tbody>`;
