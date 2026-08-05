@@ -5843,7 +5843,35 @@ Formatting rules:
 * Use markdown tables for comparisons. Use bold for key terms and diagnoses.
 * Each problem section should be thorough (no arbitrary word limit) but concise — prioritize clinical utility and scannability.`;
 
+    // If the selected problems have chart-documented imaging, endoscopy, or
+    // diagnostic reports in the prenote, include those verbatim so external
+    // AI tools (OpenEvidence, DoxGPT, etc.) can help interpret the findings
+    // educationally rather than the app AI inventing an interpretation.
+    const buildReportsForInterpretation = () => {
+      if (!clinicalNote) return "";
+      const parsedPrenote = sessionMode === "pre" ? parsePrenote(clinicalNote) : null;
+      const blocks = parsedPrenote
+        ? buildDeterministicProblemBlockMap(parsedPrenote.pmhProblems)
+        : parseProblemBlocks(extractPmhSectionForAi(clinicalNote));
+      const reports = [];
+      problems.forEach(p => {
+        const block = findProblemBlockForPrompt(p, blocks);
+        if (!block?.imaging) return;
+        const cleaned = scrubber(block.imaging);
+        if (!cleaned) return;
+        const clipped = clipPromptText(cleaned, 800);
+        if (!clipped) return;
+        reports.push(`For "${p}":\n${clipped}`);
+      });
+      if (reports.length === 0) return "";
+      return `\n\nChart-documented imaging and diagnostic reports for these problems\nPlease help interpret these findings educationally for the medical student — explain what each finding means in plain language, define technical terms, and note any clinically important implications for management:\n\n${reports.join("\n\n")}`;
+    };
+
+    const reportsForInterpretation = buildReportsForInterpretation();
+
     // The teaching-focus line sits immediately before the problem framing.
+    // Includes chart-documented imaging/diagnostic reports so the external
+    // tool can help interpret them educationally.
     const renderPrompt = (contextBlock) =>
       [
         learnerLine,
@@ -5853,6 +5881,7 @@ Formatting rules:
         topicsLine,
         lensLine,
         contextBlock,
+        reportsForInterpretation,
         requestBlock,
       ]
         .filter(Boolean)
@@ -10621,6 +10650,181 @@ const findKeyDiagnosisBlock = (problemName, keyDxBlocks) => {
   return null;
 };
 
+
+const buildProblemNarrativeParagraph = (block) => {
+  if (!block) return "";
+
+  const sentences = [];
+  const clean = (s) => String(s || "").trim().replace(/\s+/g, " ").replace(/\.+$/, "");
+
+  // Sentence 1-2: current status / historical course (this is usually the
+  // richest field and often contains the full clinical story)
+  if (block.currentStatus) {
+    sentences.push(clean(block.currentStatus));
+  }
+
+  // Recent control / trend — only if it adds something beyond current status
+  if (block.recentControl) {
+    const rc = clean(block.recentControl);
+    const cs = clean(block.currentStatus);
+    if (rc && rc.toLowerCase() !== cs.toLowerCase() && !/^(stable|unchanged|no change)$/i.test(rc)) {
+      sentences.push(`Recent trend: ${rc.charAt(0).toLowerCase()}${rc.slice(1)}`);
+    }
+  }
+
+  // Status notes — often contains recent recommendations (e.g., "vascular
+  // surgery recommends d/c clopidogrel")
+  if (block.statusNotes) {
+    sentences.push(clean(block.statusNotes));
+  }
+
+  return sentences
+    .filter(Boolean)
+    .join(". ")
+    .replace(/\.\s*\./g, ".")
+    + ".";
+};
+
+
+// Reference links shown ONLY in the interactive HTML view (not printed/PDF).
+// The `.html-only-link` class is display:none in print CSS.
+const htmlOnlyLink = (url, label, description) =>
+  `<div class="html-only-link"><i class="fa-solid fa-external-link-alt"></i> <a href="${url}" target="_blank" rel="noreferrer">${label}</a>${description ? ` — <span>${description}</span>` : ""}</div>`;
+
+
+// Educational lookup for common diagnostic tests. When a test result appears
+// in a problem card, we render a small teaching box explaining what the test
+// is, why it's typically ordered (including guideline context where relevant),
+// and defining pathologic terms that actually appear in the impression.
+const DIAGNOSTIC_TEACHING = {
+  egd: {
+    match: /\b(EGD|esophagogastroduodenoscopy|upper endoscopy)\b/i,
+    whatItIs: "EGD (esophagogastroduodenoscopy) is an outpatient procedure where a flexible endoscope is passed through the mouth to visualize the esophagus, stomach, and duodenum. Biopsies can be taken through the scope.",
+    whyOrdered: "Common indications: workup of unexplained iron-deficiency anemia (searching for occult upper GI bleeding), dyspepsia unresponsive to therapy, dysphagia, suspected malignancy, and surveillance of Barrett esophagus or varices.",
+    commonTerms: {
+      "hemorrhagic gastritis": "Diffuse mucosal inflammation with bleeding, often from NSAIDs, alcohol, portal hypertension, or severe physiologic stress. Can be a slow but significant source of iron-deficiency anemia.",
+      "lipoma": "A benign submucosal collection of adipose tissue that appears as a yellowish, soft, smooth-surfaced lesion. Almost always incidental — does not require biopsy or removal unless symptomatic.",
+      "barrett": "Barrett esophagus — metaplastic change from squamous to columnar epithelium in the distal esophagus due to chronic reflux. A precursor to esophageal adenocarcinoma; requires surveillance.",
+      "esophagitis": "Inflammation of the esophageal mucosa. Most commonly from GERD but also from pill injury, infection (Candida, HSV, CMV in immunocompromised), or eosinophilic esophagitis.",
+      "varices": "Dilated submucosal veins in the esophagus or stomach, typically from portal hypertension in cirrhosis. A source of potentially catastrophic upper GI bleeding.",
+      "gastritis": "Inflammation of the gastric mucosa. Can be acute (NSAIDs, alcohol, stress) or chronic (H. pylori, autoimmune).",
+      "ulcer": "A break in the mucosa extending through the muscularis mucosae. Causes: H. pylori, NSAIDs, stress, Zollinger-Ellison.",
+    },
+  },
+  colonoscopy: {
+    match: /\bcolonoscopy\b/i,
+    whatItIs: "Colonoscopy visualizes the entire colon and terminal ileum via a flexible endoscope. Polyps can be removed and biopsies taken.",
+    whyOrdered: "Screening (start age 45 per USPSTF, or earlier with family history), surveillance of prior adenomas or IBD, workup of iron-deficiency anemia (paired with EGD), evaluation of overt or occult GI bleeding, and workup of chronic diarrhea or suspected IBD.",
+    commonTerms: {
+      "diverticulosis": "Small outpouchings of colonic mucosa through the muscular wall. Extremely common in older adults; usually asymptomatic.",
+      "adenoma": "A benign polyp with dysplastic features — the precursor lesion for most colorectal cancers. Surveillance interval depends on size, number, and histology.",
+      "hyperplastic polyp": "A benign polyp with no significant malignant potential when small (<10 mm) and located in the rectosigmoid.",
+      "sessile serrated": "Sessile serrated lesion (formerly SSA/P) — flat serrated polyp with malignant potential via the serrated pathway; requires shorter surveillance intervals.",
+    },
+  },
+  ldct: {
+    match: /\b(low-?dose CT|LDCT)\b|lung cancer screening/i,
+    whatItIs: "Low-dose CT (LDCT) of the chest is a screening study performed without contrast at reduced radiation dose to detect early-stage lung cancer.",
+    whyOrdered: "USPSTF recommends annual LDCT for adults 50-80 with ≥20 pack-year smoking history who currently smoke or quit within the past 15 years (Grade B). Screening stops when 15 years have passed since quitting, or when health problems limit life expectancy or ability to have curative surgery.",
+    commonTerms: {
+      "nodule": "A discrete rounded opacity <3 cm surrounded by lung parenchyma. May be benign (granuloma, hamartoma) or malignant. Management follows Lung-RADS or Fleischner Society criteria based on size, density, and growth.",
+      "atelectasis": "Collapse or incomplete expansion of a portion of lung — often from mucus plugging, compression, or hypoventilation.",
+      "emphysema": "Permanent enlargement and destruction of alveoli distal to terminal bronchioles; a manifestation of COPD.",
+      "ground-glass": "Hazy increased opacity that does not obscure underlying vessels. Can indicate infection, inflammation, hemorrhage, or malignancy (especially adenocarcinoma in situ).",
+      "lung-rads": "Lung Imaging Reporting and Data System — standardized classification of screening LDCT findings from Category 1 (negative, annual screen) to Category 4X (highly suspicious, tissue sampling).",
+    },
+  },
+  aaa_us: {
+    match: /\b(?:AAA|abdominal aortic).*?(?:ultrasound|doppler|US)\b|\bultrasound.*abdominal aorta\b/i,
+    whatItIs: "Ultrasound of the abdominal aorta measures maximum aortic diameter to screen for or surveil abdominal aortic aneurysm (AAA). Inexpensive, radiation-free, and highly accurate for AAAs >3 cm.",
+    whyOrdered: "USPSTF recommends one-time screening ultrasound for AAA in men 65-75 who have ever smoked (Grade B). Surveillance intervals: 3.0-3.9 cm every 3 years, 4.0-4.9 cm annually, 5.0-5.4 cm every 6 months. Repair typically at ≥5.5 cm, rapid growth (>0.5 cm/6 months), or symptoms. AAAs form because of medial layer degradation from atherosclerosis, elastin/collagen breakdown, and inflammation — most commonly infrarenal.",
+    commonTerms: {
+      "aneurysm": "Focal aortic dilation ≥3 cm (or ≥1.5× the normal segment). Risk factors: smoking, male sex, age >65, atherosclerosis, family history, connective tissue disease.",
+      "ectasia": "Diffuse mild dilation of the aorta not meeting aneurysm criteria (<3 cm). Monitored but not treated.",
+      "atherosclerotic plaque": "Deposits of lipid, calcium, and fibrous tissue in the arterial wall. Both a cause and a marker of systemic vascular disease.",
+      "infrarenal": "Located below the renal arteries — the most common location for AAA.",
+    },
+  },
+  pft: {
+    match: /\b(PFT|pulmonary function|spirometry|DLCO)\b/i,
+    whatItIs: "Pulmonary function tests measure lung volumes (TLC, RV, FRC), airflow (FEV1, FVC, FEV1/FVC), and gas transfer (DLCO). They classify lung disease as obstructive, restrictive, mixed, or normal, and quantify severity.",
+    whyOrdered: "Evaluation of chronic dyspnea, cough, or wheeze; baseline and monitoring of known lung disease (COPD, asthma, ILD); preoperative risk assessment for major thoracic/abdominal surgery; assessment of occupational exposure or medication toxicity (e.g., amiodarone, bleomycin).",
+    commonTerms: {
+      "obstructive": "Reduced FEV1/FVC ratio (<0.70 or <LLN) — airflow limitation as in COPD, asthma, bronchiectasis.",
+      "restrictive": "Reduced TLC with preserved FEV1/FVC — reduced lung volumes as in ILD, chest wall disease, neuromuscular disease, or obesity.",
+      "hyperinflation": "Elevated TLC and RV indicating air trapping — a hallmark of severe emphysema/COPD.",
+      "air trapping": "Elevated RV or RV/TLC — incomplete exhalation from airway obstruction or loss of elastic recoil.",
+      "dlco": "Diffusing capacity for carbon monoxide — reflects surface area available for gas exchange. Reduced in emphysema, ILD, pulmonary vascular disease, and anemia.",
+      "bronchodilator": "Bronchodilator response — ≥12% AND ≥200 mL improvement in FEV1 or FVC after inhaled bronchodilator suggests reversible airflow obstruction (classic for asthma, can occur in COPD).",
+      "fev1": "Forced expiratory volume in 1 second — the volume of air forcefully exhaled in the first second. Reduced in obstructive disease; used for COPD severity staging (GOLD).",
+      "fvc": "Forced vital capacity — total volume forcefully exhaled after maximal inhalation.",
+    },
+  },
+  echo: {
+    match: /\b(echocardiogram|echocardiography|\bTTE\b|\bTEE\b)\b/i,
+    whatItIs: "Transthoracic echocardiography (TTE) uses ultrasound to assess cardiac structure and function — chamber sizes, wall motion, ejection fraction, valve function, pericardial disease.",
+    whyOrdered: "Evaluation of heart failure symptoms, murmur workup, assessment of LV function after MI, screening for cardiomyopathy, monitoring of known valvular disease, evaluation of pulmonary hypertension.",
+    commonTerms: {
+      "ejection fraction": "Percentage of end-diastolic LV volume ejected per beat. Normal ≥55%; HFrEF <40%; HFmrEF 40-49%; HFpEF ≥50% with symptoms.",
+      "diastolic dysfunction": "Impaired ventricular relaxation and/or increased stiffness. Common with aging, HTN, diabetes; underlies HFpEF.",
+      "wall motion abnormality": "Focal reduction in myocardial contraction — may indicate prior MI, active ischemia, or cardiomyopathy.",
+    },
+  },
+  sleep_study: {
+    match: /\b(sleep study|polysomnography|HSAT|home sleep apnea)\b/i,
+    whatItIs: "Polysomnography (in-lab) or home sleep apnea testing (HSAT) measures respiratory events, oxygen desaturation, and arousals during sleep to diagnose obstructive sleep apnea.",
+    whyOrdered: "Workup of witnessed apneas, loud snoring with daytime sleepiness, resistant hypertension, unexplained pulmonary hypertension, or high pretest probability by STOP-BANG.",
+    commonTerms: {
+      "ahi": "Apnea-Hypopnea Index — respiratory events per hour of sleep. Mild 5-14, moderate 15-29, severe ≥30.",
+      "rdi": "Respiratory Disturbance Index — AHI plus respiratory-effort-related arousals; captures milder events.",
+      "cpap": "Continuous positive airway pressure — first-line treatment for moderate-severe OSA.",
+    },
+  },
+  abi: {
+    match: /\bABI\b|\bankle[- ]brachial\b/i,
+    whatItIs: "Ankle-Brachial Index compares systolic BP at the ankle vs. the arm as a screen for peripheral artery disease.",
+    whyOrdered: "Workup of exertional leg symptoms (claudication), non-healing ulcers, or PAD screening in high-risk patients (diabetes, smokers >50, prior CVD).",
+    commonTerms: {
+      "abi": "ABI values: 1.00-1.40 normal; ≤0.90 diagnostic of PAD; ≤0.40 suggests critical limb ischemia; >1.40 non-compressible (calcified vessels, common in diabetes/CKD) — use toe-brachial index instead.",
+    },
+  },
+  ct_abdomen: {
+    match: /\bCT\b.*(?:abdomen|abd\/pelvis|A\/P)\b|\babdomen.*CT\b/i,
+    whatItIs: "CT of the abdomen and pelvis uses cross-sectional X-ray imaging to evaluate solid organs, bowel, vessels, and retroperitoneum. IV contrast opacifies vessels and enhances soft tissue; oral contrast opacifies bowel.",
+    whyOrdered: "Workup of abdominal pain, unexplained weight loss, elevated liver enzymes, hematuria, suspected malignancy, staging of known cancers, surveillance of AAA, and evaluation of trauma.",
+    commonTerms: {
+      "aortic occlusion": "Complete blockage of the aorta, most commonly at the infrarenal segment from atherosclerosis. Presents with buttock/thigh claudication and impotence (Leriche syndrome).",
+      "hepatic steatosis": "Fatty liver — increased fat within hepatocytes. NAFLD/MASLD is now the most common chronic liver disease.",
+      "hydronephrosis": "Dilation of the renal collecting system, usually from obstruction (stone, tumor, stricture, BPH).",
+    },
+  },
+};
+
+
+// Given a study name and result text, return the best-matching teaching entry
+// with only the terms that actually appear in the result.
+const getDiagnosticTeaching = (studyText, resultText = "") => {
+  const combined = `${studyText || ""} ${resultText || ""}`;
+  for (const entry of Object.values(DIAGNOSTIC_TEACHING)) {
+    if (entry.match.test(combined)) {
+      const relevantTerms = {};
+      Object.entries(entry.commonTerms || {}).forEach(([term, def]) => {
+        const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        if (new RegExp(`\\b${escaped}\\b`, "i").test(resultText)) {
+          relevantTerms[term] = def;
+        }
+      });
+      return {
+        whatItIs: entry.whatItIs,
+        whyOrdered: entry.whyOrdered,
+        relevantTerms,
+      };
+    }
+  }
+  return null;
+};
+
+
 // ============================================================================
 // SHARED IN-ROOM DOCUMENT TEMPLATE (long-form layout)
 // ============================================================================
@@ -12760,284 +12964,335 @@ const buildInRoomHtml = (doc, session) => {
   // ──────────────────────────────────────────────────────────────
   // PROBLEM CARDS (each selected teaching case + non-selected PMH problems)
   // ──────────────────────────────────────────────────────────────
-  const buildProblemCard = (tc, idx, isSelected) => {
-    const c = tc.data || tc;
-    const problemName = c.problem || c.rawHeader || "Problem";
-    const apMatch = (na.activeProblems || []).find(ap => ap.problem?.toLowerCase().trim() === problemName.toLowerCase().trim());
-    const status = c.status || apMatch?.status || (isSelected ? "active" : "stable");
-    const shortSub = c.shortSubtitle || apMatch?.shortSubtitle || c.primaryDiagnosis?.name || "";
-    const pill = statusPill[status] || statusPill.active;
-    const chartBlock = findBlockFor(problemName) || findBlockFor(c.primaryDiagnosis?.name);
-    const perProbRedFlagsRaw = na.perProblemRedFlags?.[problemName];
-    const perProbRedFlags = Array.isArray(perProbRedFlagsRaw) ? perProbRedFlagsRaw : [];
+  
+const buildProblemCard = (tc, idx, isSelected) => {
+  const c = tc.data || tc;
+  const problemName = c.problem || c.rawHeader || "Problem";
+  const apMatch = (na.activeProblems || []).find(ap => ap.problem?.toLowerCase().trim() === problemName.toLowerCase().trim());
+  const status = c.status || apMatch?.status || (isSelected ? "active" : "stable");
+  const shortSub = c.shortSubtitle || apMatch?.shortSubtitle || c.primaryDiagnosis?.name || "";
+  const pill = statusPill[status] || statusPill.active;
+  const chartBlock = findBlockFor(problemName) || findBlockFor(c.primaryDiagnosis?.name);
+  const perProbRedFlagsRaw = na.perProblemRedFlags?.[problemName];
+  const perProbRedFlags = Array.isArray(perProbRedFlagsRaw) ? perProbRedFlagsRaw : [];
 
-    let html = `<div class="prob"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
-    if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
-    html += `</div><span class="prob-pill ${pill.cls}">${esc(pill.label)}</span></div>`;
+  let html = `<div class="prob"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
+  if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
+  html += `</div><span class="prob-pill ${pill.cls}">${esc(pill.label)}</span></div>`;
 
-    html += `<div class="prob-body">`;
+  html += `<div class="prob-body">`;
 
-    // Case summary — one italicized attending's-take sentence, at the top
-    if (isSelected && c.caseSummary) {
-      html += `<p style="font-style:italic;color:var(--fg);border-left:2px solid #b45309;padding-left:8px;margin-bottom:8px;font-size:9pt;line-height:1.5;">${esc(c.caseSummary)}</p>`;
-    }
+  // ── Attending case summary (italic amber accent) ──
+  if (isSelected && c.caseSummary) {
+    html += `<p style="font-style:italic;color:var(--fg);border-left:2px solid #b45309;padding-left:8px;margin-bottom:10px;font-size:9pt;line-height:1.5;">${esc(c.caseSummary)}</p>`;
+  }
 
-    // Opening paragraph — brief definition or current status
-    if (chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition) {
-      html += `<p>${esc(chartBlock?.currentStatus || c.primaryDiagnosis?.briefDefinition)}</p>`;
-    }
+  // ── Narrative paragraph: flowing prose synthesis of the PMH block ──
+  // Replaces the old fragmented "Current: ...", "Past: ...", "Trends: ..."
+  // per-field rendering. The individual data still shows below in dedicated
+  // subsections (Meds table, Labs bullets, Diagnostics list, Care team).
+  const narrative = buildProblemNarrativeParagraph(chartBlock);
+  if (narrative && narrative.length > 15) {
+    html += `<p style="margin-bottom:10px;font-size:9pt;line-height:1.55;color:var(--fg);">${esc(narrative)}</p>`;
+  } else if (c.primaryDiagnosis?.briefDefinition) {
+    html += `<p style="margin-bottom:10px;">${esc(c.primaryDiagnosis.briefDefinition)}</p>`;
+  }
 
-    // Medications subsection — chart-documented medications only.
-    // Do not fall back to treatmentApproach.firstLine here: that field may
-    // contain therapeutic interventions or monitoring recommendations, which
-    // previously caused PET/CT, echocardiography, PFTs, and TSH testing to be
-    // mislabeled as medications.
-    if (chartBlock?.currentMeds || chartBlock?.pastMeds) {
-      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-pills"></i> Medications</div>`;
-      if (chartBlock?.currentMeds) html += `<p><b>Current:</b> ${esc(chartBlock.currentMeds)}</p>`;
-      if (chartBlock?.pastMeds) html += `<p><b>Past:</b> ${esc(chartBlock.pastMeds)}</p>`;
-      html += `</div>`;
-    }
+  // ── Problem-specific Medications (structured table) ──
+  // Parse block.currentMeds and block.pastMeds into rows using the same
+  // parser and column layout as the top-level medication table, but scoped
+  // to just this problem.
+  const problemMedRows = [];
+  if (chartBlock?.currentMeds) {
+    parseMedRows(chartBlock.currentMeds).forEach(r => problemMedRows.push({ ...r, kind: "current" }));
+  }
+  if (chartBlock?.pastMeds) {
+    parseMedRows(chartBlock.pastMeds).forEach(r => problemMedRows.push({ ...r, kind: "past" }));
+  }
+  if (problemMedRows.length > 0) {
+    html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-pills"></i> Medications for This Problem</div>`;
+    html += `<table class="med-tbl"><thead><tr><th>Medication</th><th>Dose/Route</th><th>Freq</th><th>Indication</th><th>Start</th><th>Notes</th></tr></thead><tbody>`;
+    problemMedRows.forEach(m => {
+      const utdUrl = `https://www.uptodate.com/contents/search?search=${encodeURIComponent(m.name)}`;
+      const doseRoute = [m.dose, m.route].filter(Boolean).join(" ");
+      const kindLabel = m.kind === "past" ? ` <span style="font-size:7pt;color:var(--fg-d);font-style:italic;">(past)</span>` : "";
+      html += `<tr>`;
+      html += `<td class="drug-n"><a href="${esc(utdUrl)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:underline;text-decoration-style:dotted;">${esc(m.name)}</a>${kindLabel}</td>`;
+      html += `<td>${esc(doseRoute || "—")}</td>`;
+      html += `<td>${esc(m.freq || "—")}</td>`;
+      html += `<td class="med-ind">${esc(m.indication || "—")}</td>`;
+      html += `<td>${esc(m.start || "—")}</td>`;
+      html += `<td>${esc(m.notes || "")}</td>`;
+      html += `</tr>`;
+    });
+    html += `</tbody></table></div>`;
+  } else if (chartBlock?.currentMeds || chartBlock?.pastMeds) {
+    // Fallback if the med parser couldn't extract structured rows: render
+    // the raw text as prose so the info isn't lost.
+    html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-pills"></i> Medications for This Problem</div>`;
+    if (chartBlock?.currentMeds) html += `<p><b>Current:</b> ${esc(chartBlock.currentMeds)}</p>`;
+    if (chartBlock?.pastMeds) html += `<p><b>Past:</b> ${esc(chartBlock.pastMeds)}</p>`;
+    html += `</div>`;
+  }
 
-    // Recent Control / Trends
-    if (chartBlock?.labTrends || chartBlock?.recentControl) {
-      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-chart-line"></i> Recent Control / Trends</div>`;
-      if (chartBlock?.recentControl) html += `<p>${esc(chartBlock.recentControl)}</p>`;
-      if (chartBlock?.labTrends) html += `<p><b>Lab trends:</b> ${esc(chartBlock.labTrends)}</p>`;
-      html += `</div>`;
-    }
-
-    // KEY DIAGNOSES enrichment — pull richer longitudinal content when a
-    // matching block exists in the prenote's KEY DIAGNOSES section. Renders
-    // as its own subsections so the student sees the depth the prenote author
-    // provided (history, prior therapy timeline, follow-up plan, coordination).
-    const keyDxBlock = findKeyDiagnosisBlock(problemName, keyDiagnosesBlocks) ||
-                       findKeyDiagnosisBlock(c.primaryDiagnosis?.name, keyDiagnosesBlocks);
-
-    // Helper to render a labeled sub-subsection with an icon. Multi-line
-    // content is preserved (split on newlines into a bulleted list where
-    // appropriate; otherwise rendered as prose).
-    const renderKeyDxField = (icon, label, content) => {
-      if (!content || typeof content !== "string") return "";
-      const trimmed = content.trim();
-      if (!trimmed || /^(?:none documented|none|n\/?a)\.?$/i.test(trimmed)) return "";
-
-      let bodyHtml = "";
-      // Detect whether the field body is a bulleted list or prose.
-      const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-      const bulletLines = lines.filter(l => /^[\*\-•]/.test(l));
-      if (bulletLines.length >= 2) {
-        // Bulleted list — parse nested structure (some fields use sub-bullets
-        // for "Current:" / "Historical clinically relevant:")
-        bodyHtml = `<ul style="margin:0;padding-left:16px;">`;
-        lines.forEach(l => {
-          const cleaned = l.replace(/^[\*\-•]\s*/, "").trim();
-          if (!cleaned) return;
-          // A "Label:" line followed by items — bold the label.
-          const labelMatch = cleaned.match(/^([A-Z][^:]{1,60}):\s*$/);
-          if (labelMatch) {
-            bodyHtml += `<li style="list-style:none;margin-left:-16px;margin-top:3px;font-weight:600;color:var(--fg);">${esc(labelMatch[1])}:</li>`;
-          } else {
-            bodyHtml += `<li style="margin-bottom:2px;">${esc(cleaned)}</li>`;
-          }
-        });
-        bodyHtml += `</ul>`;
+  // ── Problem-specific Lab Trends (bulleted list) ──
+  // Per user preference: always render as a clean bulleted list preserving
+  // the prenote author's phrasing, rather than attempting structured parsing.
+  if (chartBlock?.labTrends) {
+    const labLines = String(chartBlock.labTrends)
+      .split(/\r?\n|(?<=[.;])\s+(?=[A-Z])/)
+      .map(l => l.trim().replace(/^[\*\-•●○▪▫►◆·]\s*/, ""))
+      .filter(l => l && !/^(none|not documented|n\/?a)\.?$/i.test(l));
+    if (labLines.length > 0) {
+      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-vial"></i> Relevant Laboratory Trends</div>`;
+      if (labLines.length === 1) {
+        html += `<p>${esc(labLines[0])}</p>`;
       } else {
-        // Prose — split on double newlines into paragraphs
-        const paragraphs = trimmed.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
-        if (paragraphs.length > 1) {
-          bodyHtml = paragraphs.map(p => `<p style="margin:0 0 4px;">${esc(p)}</p>`).join("");
-        } else {
-          bodyHtml = `<p style="margin:0;">${esc(trimmed)}</p>`;
-        }
+        html += `<ul style="margin:0;padding-left:16px;">`;
+        labLines.forEach(l => html += `<li style="margin-bottom:3px;font-size:9pt;line-height:1.45;">${esc(l)}</li>`);
+        html += `</ul>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  // ── Chart-documented completed diagnostic results (existing logic) ──
+  const patientResults = normalizeTeachingResults(
+    c.keyLabsAndImaging,
+    {
+      explainLabValues: false,
+      explainDiagnosticValues: false,
+    }
+  );
+
+  if (patientResults.length > 0) {
+    html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-flask"></i> Chart Results: Labs, Imaging &amp; Procedures</div>`;
+    html += `<ul class="result-list">`;
+
+    patientResults.forEach((item) => {
+      const dateLabel = item.date ? ` (${esc(item.date)})` : "";
+      html += `<li class="result-item"><div class="result-main"><span class="result-study">${esc(item.study)}${dateLabel}</span> — ${esc(item.result)}</div>`;
+      if (item.explanation) {
+        html += `<div class="result-detail">${esc(item.explanation)}</div>`;
+      }
+      html += `</li>`;
+    });
+
+    html += `</ul></div>`;
+
+    // ── Diagnostic teaching boxes ──
+    // For each result that matches a DIAGNOSTIC_TEACHING entry, render a
+    // small explanatory box with what the test is, why it's ordered, and
+    // definitions for pathologic terms that appear in the result.
+    const seenTeachingKeys = new Set();
+    patientResults.forEach((item) => {
+      const teaching = getDiagnosticTeaching(item.study, item.result);
+      if (!teaching) return;
+      // Dedupe: don't show the same teaching box twice if two similar
+      // studies matched (e.g., two ultrasounds).
+      const key = teaching.whatItIs.slice(0, 50);
+      if (seenTeachingKeys.has(key)) return;
+      seenTeachingKeys.add(key);
+
+      html += `<div class="dx-teach"><div class="dx-teach-label"><i class="fa-solid fa-microscope"></i> Understanding: ${esc(item.study)}</div>`;
+      html += `<p><b>What it is:</b> ${esc(teaching.whatItIs)}</p>`;
+      html += `<p style="margin-top:4px;"><b>Why it's ordered:</b> ${esc(teaching.whyOrdered)}</p>`;
+      if (Object.keys(teaching.relevantTerms).length > 0) {
+        html += `<div style="margin-top:5px;"><b>Terms from this report:</b><ul style="margin:2px 0 0;padding-left:16px;">`;
+        Object.entries(teaching.relevantTerms).forEach(([term, def]) => {
+          const displayTerm = term.charAt(0).toUpperCase() + term.slice(1);
+          html += `<li style="margin-bottom:2px;"><b>${esc(displayTerm)}:</b> ${esc(def)}</li>`;
+        });
+        html += `</ul></div>`;
       }
 
-      return `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid ${icon}"></i> ${esc(label)}</div>${bodyHtml}</div>`;
-    };
+      // HTML-only PFT link — appears once per PFT result in this problem.
+      if (/PFT|pulmonary function|spirometry|DLCO/i.test(item.study)) {
+        html += htmlOnlyLink(
+          "https://www.acponline.org/sites/default/files/documents/about_acp/chapters/co/20mtg/neumeier.pdf",
+          "ACP PFT Interpretation Guide (PDF)",
+          "step-by-step approach to reading a pulmonary function test"
+        );
+      }
 
-    if (keyDxBlock) {
-      // Longitudinal history — the story of how this problem developed and was
-      // managed over time. Often the single richest piece of context.
-      html += renderKeyDxField("fa-timeline", "Longitudinal History", keyDxBlock.longitudinalHistory);
+      html += `</div>`;
+    });
+  } else if (chartBlock?.imaging) {
+    // Fallback: preserve chart-documented imaging text when AI teaching call failed
+    html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-x-ray"></i> Chart Imaging / Procedures</div><p>${esc(chartBlock.imaging)}</p></div>`;
+  }
 
-      // Most recent consultant note — what the specialist said at the last
-      // encounter. Extremely useful pre-visit context.
-      html += renderKeyDxField("fa-file-medical", "Most Recent Consultant Note", keyDxBlock.recentConsultReview);
+  // ── KEY DIAGNOSES enrichment (existing logic, unchanged) ──
+  const keyDxBlock = findKeyDiagnosisBlock(problemName, keyDiagnosesBlocks) ||
+                     findKeyDiagnosisBlock(c.primaryDiagnosis?.name, keyDiagnosesBlocks);
 
-      // Prior therapies — what was tried, what failed, what worked. Prevents
-      // the student from suggesting things the patient has already tried.
-      html += renderKeyDxField("fa-clock-rotate-left", "Prior Therapies Tried", keyDxBlock.priorTherapies);
+  const renderKeyDxField = (icon, label, content) => {
+    if (!content || typeof content !== "string") return "";
+    const trimmed = content.trim();
+    if (!trimmed || /^(?:none documented|none|n\/?a)\.?$/i.test(trimmed)) return "";
 
-      // Follow-up / Monitoring — the current surveillance plan.
-      html += renderKeyDxField("fa-calendar-check", "Follow-up Plan", keyDxBlock.followUpMonitoring);
-
-      // Care coordination — who is managing this problem, disability rating,
-      // MHTC assignment, etc.
-      html += renderKeyDxField("fa-people-arrows", "Care Coordination", keyDxBlock.careCoordination);
+    let bodyHtml = "";
+    const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    const bulletLines = lines.filter(l => /^[\*\-•]/.test(l));
+    if (bulletLines.length >= 2) {
+      bodyHtml = `<ul style="margin:0;padding-left:16px;">`;
+      lines.forEach(l => {
+        const cleaned = l.replace(/^[\*\-•]\s*/, "").trim();
+        if (!cleaned) return;
+        const labelMatch = cleaned.match(/^([A-Z][^:]{1,60}):\s*$/);
+        if (labelMatch) {
+          bodyHtml += `<li style="list-style:none;margin-left:-16px;margin-top:3px;font-weight:600;color:var(--fg);">${esc(labelMatch[1])}:</li>`;
+        } else {
+          bodyHtml += `<li style="margin-bottom:2px;">${esc(cleaned)}</li>`;
+        }
+      });
+      bodyHtml += `</ul>`;
+    } else {
+      const paragraphs = trimmed.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+      if (paragraphs.length > 1) {
+        bodyHtml = paragraphs.map(p => `<p style="margin:0 0 4px;">${esc(p)}</p>`).join("");
+      } else {
+        bodyHtml = `<p style="margin:0;">${esc(trimmed)}</p>`;
+      }
     }
 
-    // Completed patient results only. The bold/black line shows WHAT
-    // happened; the smaller gray line teaches what the test does and why it
-    // was ordered in this patient's scenario.
-    const patientResults = normalizeTeachingResults(
-      c.keyLabsAndImaging,
-      {
-        explainLabValues: false,
-        explainDiagnosticValues: false,
-      }
-    );
+    return `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid ${icon}"></i> ${esc(label)}</div>${bodyHtml}</div>`;
+  };
 
-    if (patientResults.length > 0) {
-      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-flask"></i> Chart Results: Labs, Imaging &amp; Procedures</div>`;
-      html += `<ul class="result-list">`;
+  if (keyDxBlock) {
+    html += renderKeyDxField("fa-timeline", "Longitudinal History", keyDxBlock.longitudinalHistory);
+    html += renderKeyDxField("fa-file-medical", "Most Recent Consultant Note", keyDxBlock.recentConsultReview);
+    html += renderKeyDxField("fa-clock-rotate-left", "Prior Therapies Tried", keyDxBlock.priorTherapies);
+    html += renderKeyDxField("fa-calendar-check", "Follow-up Plan", keyDxBlock.followUpMonitoring);
+    html += renderKeyDxField("fa-people-arrows", "Care Coordination", keyDxBlock.careCoordination);
+  }
 
-      patientResults.forEach((item) => {
-        const dateLabel = item.date
-          ? ` (${esc(item.date)})`
-          : "";
+  // ── Care Team for this problem (small footer line, before teaching) ──
+  // Positioned here so it separates factual chart context (above) from
+  // teaching elements (below).
+  if (chartBlock?.careTeam) {
+    html += `<div class="prob-careteam"><i class="fa-solid fa-user-doctor"></i> <b>Care team for this problem:</b> ${esc(chartBlock.careTeam)}</div>`;
+  }
 
-        html += `<li class="result-item"><div class="result-main"><span class="result-study">${esc(item.study)}${dateLabel}</span> — ${esc(item.result)}</div>`;
+  // ── Teaching content for selected problems (existing logic, unchanged) ──
+  if (isSelected) {
+    // Suggested questions (ASK box)
+    const suggestedQuestions = Array.isArray(c.suggestedQuestions) ? c.suggestedQuestions : [];
+    if (suggestedQuestions.length > 0) {
+      html += `<div class="ask"><div class="ask-label"><i class="fa-solid fa-comment-medical"></i> Suggested Questions</div><p>${suggestedQuestions.map(q => esc(q)).join(" | ")}</p></div>`;
+    }
 
-        if (item.explanation) {
-          html += `<div class="result-detail">${esc(item.explanation)}</div>`;
-        }
-
+    // Key learning points (TEACH box)
+    const keyLearningPoints = Array.isArray(c.keyLearningPoints) ? c.keyLearningPoints : [];
+    if (keyLearningPoints.length > 0) {
+      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: ${esc(c.primaryDiagnosis?.name || problemName)}</div><ul>`;
+      keyLearningPoints.forEach(lp => {
+        if (!lp || typeof lp !== "object") return;
+        html += `<li><b>${esc(lp.point || "")}:</b> ${esc(lp.explanation || "")}`;
+        if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
         html += `</li>`;
       });
-
       html += `</ul></div>`;
-    } else if (chartBlock?.imaging) {
-      // Deterministic fallback: preserve chart-documented imaging text when a
-      // teaching call fails, but do not mix it into the medication section.
-      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-x-ray"></i> Chart Imaging / Procedures</div><p>${esc(chartBlock.imaging)}</p></div>`;
     }
 
-    // Care Team
-    if (chartBlock?.careTeam) {
-      html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-user-doctor"></i> Care Team</div><p>${esc(chartBlock.careTeam)}</p></div>`;
-    }
-
-    // Teaching content for selected problems
-    if (isSelected) {
-      // Suggested questions (ASK box)
-      const suggestedQuestions = Array.isArray(c.suggestedQuestions) ? c.suggestedQuestions : [];
-      if (suggestedQuestions.length > 0) {
-        html += `<div class="ask"><div class="ask-label"><i class="fa-solid fa-comment-medical"></i> Suggested Questions</div><p>${suggestedQuestions.map(q => esc(q)).join(" | ")}</p></div>`;
-      }
-
-      // Key learning points (TEACH box)
-      const keyLearningPoints = Array.isArray(c.keyLearningPoints) ? c.keyLearningPoints : [];
-      if (keyLearningPoints.length > 0) {
-        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: ${esc(c.primaryDiagnosis?.name || problemName)}</div><ul>`;
-        keyLearningPoints.forEach(lp => {
-          if (!lp || typeof lp !== "object") return;
-          html += `<li><b>${esc(lp.point || "")}:</b> ${esc(lp.explanation || "")}`;
-          if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
-          html += `</li>`;
-        });
-        html += `</ul></div>`;
-      }
-
-      // Management teaching — especially important for consultations and
-      // allied-health referrals, where the discipline name alone does not tell
-      // a student what will happen or why the requested focus matters.
-      const treatmentItems = Array.isArray(c.treatmentApproach?.firstLine)
-        ? c.treatmentApproach.firstLine
+    // Treatment & consult rationale
+    const treatmentItems = Array.isArray(c.treatmentApproach?.firstLine) ? c.treatmentApproach.firstLine : [];
+    if (treatmentItems.length > 0) {
+      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-people-group"></i> Treatment &amp; Consult Rationale</div><ul>`;
+      treatmentItems.forEach((item) => {
+        const treatmentName = stripTreatmentVerb(item?.treatment || "Treatment");
+        const dosing = String(item?.dosing || "").trim();
+        const rationale = getTreatmentTeachingRationale(item);
+        const monitoring = String(item?.monitoring || "").trim();
+        const adverseEffects = String(item?.adverseEffectsToWatch || "").trim();
+        const evidence = String(item?.evidence || "").trim();
+        html += `<li><b>${esc(treatmentName)}</b>${dosing ? ` — ${esc(dosing)}` : ""}`;
+        if (rationale) html += `<div style="margin-top:2px;color:#44403c;"><b>Why / what it does:</b> ${esc(rationale)}</div>`;
+        if (monitoring) html += `<div style="margin-top:2px;color:#44403c;"><b>Monitoring:</b> ${esc(monitoring)}</div>`;
+        if (adverseEffects) html += `<div style="margin-top:2px;color:#44403c;"><b>Watch for:</b> ${esc(adverseEffects)}</div>`;
+        if (evidence) html += `<div style="margin-top:2px;opacity:.75;"><em>${esc(evidence)}</em></div>`;
+        html += `</li>`;
+      });
+      html += `</ul>`;
+      const additionalTreatmentNotes = Array.isArray(c.treatmentApproach?.additional)
+        ? c.treatmentApproach.additional.filter(Boolean)
         : [];
-      if (treatmentItems.length > 0) {
-        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-people-group"></i> Treatment &amp; Consult Rationale</div><ul>`;
-        treatmentItems.forEach((item) => {
-          const treatmentName = stripTreatmentVerb(item?.treatment || "Treatment");
-          const dosing = String(item?.dosing || "").trim();
-          const rationale = getTreatmentTeachingRationale(item);
-          const monitoring = String(item?.monitoring || "").trim();
-          const adverseEffects = String(item?.adverseEffectsToWatch || "").trim();
-          const evidence = String(item?.evidence || "").trim();
-          html += `<li><b>${esc(treatmentName)}</b>${dosing ? ` — ${esc(dosing)}` : ""}`;
-          if (rationale) html += `<div style="margin-top:2px;color:#44403c;"><b>Why / what it does:</b> ${esc(rationale)}</div>`;
-          if (monitoring) html += `<div style="margin-top:2px;color:#44403c;"><b>Monitoring:</b> ${esc(monitoring)}</div>`;
-          if (adverseEffects) html += `<div style="margin-top:2px;color:#44403c;"><b>Watch for:</b> ${esc(adverseEffects)}</div>`;
-          if (evidence) html += `<div style="margin-top:2px;opacity:.75;"><em>${esc(evidence)}</em></div>`;
-          html += `</li>`;
-        });
-        
-        html += `</ul>`;
-        const additionalTreatmentNotes = Array.isArray(c.treatmentApproach?.additional)
-          ? c.treatmentApproach.additional.filter(Boolean)
-          : [];
-        if (additionalTreatmentNotes.length > 0) {
-          html += `<p style="margin-top:5px;"><b>Additional considerations:</b> ${additionalTreatmentNotes.map((item) => esc(item)).join(" | ")}</p>`;
-        }
-        html += `</div>`;
+      if (additionalTreatmentNotes.length > 0) {
+        html += `<p style="margin-top:5px;"><b>Additional considerations:</b> ${additionalTreatmentNotes.map((item) => esc(item)).join(" | ")}</p>`;
       }
-
-      // Don't miss (WARN box) — accept both new array format and legacy string
-      const dontMissItems = Array.isArray(c.dontMiss)
-        ? c.dontMiss.filter(item => item && String(item).trim())
-        : (typeof c.dontMiss === "string" && c.dontMiss.trim() ? [c.dontMiss.trim()] : []);
-      if (dontMissItems.length > 0) {
-        html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div>`;
-        if (dontMissItems.length === 1) {
-          html += `<p>${esc(dontMissItems[0])}</p>`;
-        } else {
-          html += `<ul style="margin:0;padding-left:16px;">`;
-          dontMissItems.forEach(item => {
-            html += `<li style="font-size:8pt;color:#991b1b;line-height:1.4;margin-bottom:3px;">${esc(item)}</li>`;
-          });
-          html += `</ul>`;
-        }
-        html += `</div>`;
-      }
-
-      // Per-problem red flags from analysis — suppress if we already showed
-      // an expanded Don't Miss array, to avoid duplicate red warning boxes
-      if (perProbRedFlags.length > 0 && dontMissItems.length === 0) {
-        html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul style="margin:0;padding-left:14px;">`;
-        perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:#991b1b;line-height:1.4;">${esc(rf)}</li>`);
-        html += `</ul></div>`;
-      }
-// Landmark trial (TEACH box)
-      if (c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim()) {
-        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-flask-vial"></i> Landmark Trial: ${esc(c.landmarkTrial.name)}</div><p style="font-size:8pt;color:#44403c;line-height:1.45;">${esc(c.landmarkTrial.oneLineSummary)}</p></div>`;
-      }
-      // Practice-changing recent evidence (TEACH box, distinct amber-yellow tint)
-      if (c.practiceChangingUpdate?.summary?.trim()) {
-        const yearLabel = c.practiceChangingUpdate.yearRange?.trim()
-          ? ` · ${esc(c.practiceChangingUpdate.yearRange)}`
-          : "";
-        html += `<div class="tch" style="border-left-color:#ca8a04;background:#fefce8;">`;
-        html += `<div class="tch-label" style="color:#a16207;"><i class="fa-solid fa-arrow-trend-up"></i> Recent Update${yearLabel}</div>`;
-        html += `<p style="color:#713f12;">${esc(c.practiceChangingUpdate.summary)}</p>`;
-        html += `</div>`;
-      }
-      // Clinical pearl (TEACH box)
-      if (c.clinicalPearl) {
-        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(c.clinicalPearl)}</p></div>`;
-      }
-    } else {
-      // Non-selected: lightweight teaching if available
-      const lwtKey = problemName.toLowerCase().trim();
-      let lwt = doc.lightweightTeaching?.[lwtKey];
-      if (!lwt && doc.lightweightTeaching) {
-        for (const [k, v] of Object.entries(doc.lightweightTeaching)) {
-          if (lwtKey.includes(k) || k.includes(lwtKey)) { lwt = v; break; }
-        }
-      }
-      if (lwt) {
-        if (lwt.theClassicPicture) {
-          html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Quick Background</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(lwt.theClassicPicture)}</p></div>`;
-        }
-        if (lwt.oneKeyLearningPoint) {
-          html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;"><b>${esc(lwt.oneKeyLearningPoint.point || "")}:</b> ${esc(lwt.oneKeyLearningPoint.explanation || "")}`;
-          if (lwt.oneKeyLearningPoint.citation) html += ` <em style="opacity:.75;">(${esc(lwt.oneKeyLearningPoint.citation)})</em>`;
-          html += `</p></div>`;
-        }
-      }
+      html += `</div>`;
     }
 
-    html += `</div></div>`;
-    return html;
-  };
+    // Don't miss (WARN box)
+    const dontMissItems = Array.isArray(c.dontMiss)
+      ? c.dontMiss.filter(item => item && String(item).trim())
+      : (typeof c.dontMiss === "string" && c.dontMiss.trim() ? [c.dontMiss.trim()] : []);
+    if (dontMissItems.length > 0) {
+      html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss</div>`;
+      if (dontMissItems.length === 1) {
+        html += `<p>${esc(dontMissItems[0])}</p>`;
+      } else {
+        html += `<ul style="margin:0;padding-left:16px;">`;
+        dontMissItems.forEach(item => {
+          html += `<li style="font-size:8pt;color:#991b1b;line-height:1.4;margin-bottom:3px;">${esc(item)}</li>`;
+        });
+        html += `</ul>`;
+      }
+      html += `</div>`;
+    }
+
+    // Per-problem red flags (only if don't-miss wasn't already populated)
+    if (perProbRedFlags.length > 0 && dontMissItems.length === 0) {
+      html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul style="margin:0;padding-left:14px;">`;
+      perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:#991b1b;line-height:1.4;">${esc(rf)}</li>`);
+      html += `</ul></div>`;
+    }
+
+    // Landmark trial
+    if (c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim()) {
+      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-flask-vial"></i> Landmark Trial: ${esc(c.landmarkTrial.name)}</div><p style="font-size:8pt;color:#44403c;line-height:1.45;">${esc(c.landmarkTrial.oneLineSummary)}</p></div>`;
+    }
+
+    // Practice-changing recent evidence
+    if (c.practiceChangingUpdate?.summary?.trim()) {
+      const yearLabel = c.practiceChangingUpdate.yearRange?.trim()
+        ? ` · ${esc(c.practiceChangingUpdate.yearRange)}`
+        : "";
+      html += `<div class="tch" style="border-left-color:#ca8a04;background:#fefce8;">`;
+      html += `<div class="tch-label" style="color:#a16207;"><i class="fa-solid fa-arrow-trend-up"></i> Recent Update${yearLabel}</div>`;
+      html += `<p style="color:#713f12;">${esc(c.practiceChangingUpdate.summary)}</p>`;
+      html += `</div>`;
+    }
+
+    // Clinical pearl
+    if (c.clinicalPearl) {
+      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(c.clinicalPearl)}</p></div>`;
+    }
+  } else {
+    // Non-selected: lightweight teaching if available
+    const lwtKey = problemName.toLowerCase().trim();
+    let lwt = doc.lightweightTeaching?.[lwtKey];
+    if (!lwt && doc.lightweightTeaching) {
+      for (const [k, v] of Object.entries(doc.lightweightTeaching)) {
+        if (lwtKey.includes(k) || k.includes(lwtKey)) { lwt = v; break; }
+      }
+    }
+    if (lwt) {
+      if (lwt.theClassicPicture) {
+        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Quick Background</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(lwt.theClassicPicture)}</p></div>`;
+      }
+      if (lwt.oneKeyLearningPoint) {
+        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;"><b>${esc(lwt.oneKeyLearningPoint.point || "")}:</b> ${esc(lwt.oneKeyLearningPoint.explanation || "")}`;
+        if (lwt.oneKeyLearningPoint.citation) html += ` <em style="opacity:.75;">(${esc(lwt.oneKeyLearningPoint.citation)})</em>`;
+        html += `</p></div>`;
+      }
+    }
+  }
+
+  html += `</div></div>`;
+  return html;
+};
+
 
   let problemsHtml = `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Active Problems — Full Detail &amp; Teaching</div><div class="sec-div-line"></div></div>`;
   enabledCases.forEach((tc, idx) => {
@@ -15380,6 +15635,12 @@ const buildInRoomHtml = (doc, session) => {
       preventiveHtml += `<li><span>${esc(item.name)}</span><span class="prev-st ${statusCls}">${esc(item.status)}</span></li>`;
     });
     preventiveHtml += `</ul>`;
+    // HTML-only reference link — CDC adult immunization schedule
+    preventiveHtml += htmlOnlyLink(
+      "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-age.html",
+      "CDC Adult Immunization Schedule",
+      "current age- and condition-based recommendations"
+    );
   }
 
   // Priority Focus Areas — the top things the student should ACTUALLY DO
@@ -16103,6 +16364,67 @@ body.dark .wrn-label { color: #fca5a5; }
 .wrn p { font-size: 9pt; color: #991b1b; line-height: 1.45; margin: 0 0 3px; }
 body.dark .wrn p { color: #fecaca; }
 .wrn p:last-child { margin-bottom: 0; }
+
+/* Diagnostic teaching box — like .tch but slightly different visual weight
+   to distinguish "understanding this test" from "clinical teaching pearls". */
+.dx-teach {
+  background: #f0f9ff;
+  border-left: 2.5px solid #0284c7;
+  border-radius: 0 4px 4px 0;
+  padding: 8px 10px;
+  margin-top: 8px;
+  page-break-inside: avoid;
+}
+body.dark .dx-teach { background: rgba(2, 132, 199, 0.08); }
+.dx-teach-label {
+  font-size: 7pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: #075985;
+  margin-bottom: 4px;
+}
+body.dark .dx-teach-label { color: #7dd3fc; }
+.dx-teach p, .dx-teach li { font-size: 8.5pt; color: #0c4a6e; line-height: 1.45; }
+body.dark .dx-teach p, body.dark .dx-teach li { color: #bae6fd; }
+.dx-teach b { color: #075985; }
+body.dark .dx-teach b { color: #7dd3fc; }
+
+/* Care team footer line — sits between factual chart content and teaching. */
+.prob-careteam {
+  margin-top: 10px;
+  padding: 6px 10px;
+  font-size: 8.5pt;
+  color: var(--fg-d);
+  font-style: italic;
+  background: var(--panel);
+  border-top: 1px solid var(--border-l);
+  border-bottom: 1px solid var(--border-l);
+}
+.prob-careteam b { color: var(--fg); font-style: normal; }
+.prob-careteam i.fa-solid { color: var(--accent); margin-right: 4px; }
+
+/* HTML-only reference link — hidden in print/PDF. */
+.html-only-link {
+  margin-top: 6px;
+  padding: 4px 8px;
+  font-size: 7.5pt;
+  color: var(--fg-d);
+  background: transparent;
+  border-radius: 3px;
+  line-height: 1.4;
+}
+.html-only-link a {
+  color: var(--accent);
+  text-decoration: underline;
+  text-decoration-style: dotted;
+}
+.html-only-link a:hover { text-decoration-style: solid; }
+.html-only-link i.fa-solid { margin-right: 4px; opacity: 0.7; }
+.html-only-link span { color: var(--fg-d); font-style: italic; }
+@media print {
+  .html-only-link { display: none !important; }
+}
 
 /* Lab tables */
 .lab-tbl {
