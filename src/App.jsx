@@ -10887,7 +10887,7 @@ const buildInRoomHtml = (doc, session) => {
     const title = resultType === "lab"
       ? "Lab value guide"
       : "Diagnostic value guide";
-    return `<div class="lab-note" style="margin-top:8px;"><div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;">${title}</div><ul style="margin:0;padding-left:16px;">${entries.map((item) => `<li style="margin-bottom:4px;"><b>${esc(item.study)}${item.result ? ` — ${esc(item.result)}` : ""}:</b> ${esc(item.valueExplanation)}</li>`).join("")}</ul></div>`;
+    return `<div class="lab-value-guide"><div class="lab-value-guide-title">${title}</div><ul class="lab-value-guide-list">${entries.map((item) => `<li><div class="lab-value-guide-name">${esc(item.study)}${item.result ? ` — ${esc(item.result)}` : ""}</div><div class="lab-value-guide-def">${esc(item.valueExplanation)}</div></li>`).join("")}</ul></div>`;
   };
 
   // Deterministic prenote parsing
@@ -15752,12 +15752,17 @@ const buildProblemCard = (tc, idx, isSelected) => {
   --fg: #1a1f2e;
   --fg-m: #374151;
   --fg-d: #6b7280;
-  --border: #d1d5db;
+  --border: #d8dde5;
   --border-l: #e5e7eb;
   --border-vl: #f3f4f6;
-  --panel: #f9fafb;
-  --panel-h: #f3f4f6;
-  --accent: #2563eb;
+  --panel: #f7f8fa;
+  --panel-h: #eef1f5;
+  --accent: #1e3a5f;          // deep slate-blue — the ONE informational color
+  --accent-soft: #eef2f8;     // pale wash of accent for backgrounds
+  --danger: #a03030;          // muted brick — abnormal labs, don't-miss ONLY
+  --danger-soft: #fbeeee;
+  --teach: #b45309;           // warm amber — ALL teaching content
+  --teach-bg: #fefce8;
   --page-bg: #c8cdd5;
 }
 body.dark {
@@ -15765,14 +15770,20 @@ body.dark {
   --fg: #e8edf3;
   --fg-m: #cbd5e1;
   --fg-d: #94a3b8;
-  --border: #334155;
+  --border: #33405d;
   --border-l: #263149;
   --border-vl: #1e293b;
-  --panel: #1c242c;
-  --panel-h: #212a34;
-  --accent: #60a5fa;
+  --panel: #1a222e;
+  --panel-h: #212a38;
+  --accent: #7ea8d4;
+  --accent-soft: rgba(126, 168, 212, 0.10);
+  --danger: #d68a8a;
+  --danger-soft: rgba(214, 138, 138, 0.10);
+  --teach: #d4a86a;
+  --teach-bg: rgba(212, 168, 106, 0.08);
   --page-bg: #0b1220;
 }
+
   /* Font size hierarchy — enforce consistency.
    Only 4 sizes are used:
      - 10pt: card titles and prominent identifiers
@@ -16169,17 +16180,17 @@ body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-col
 .sec-div {
   display: flex;
   align-items: center;
-  gap: 10px;
-  margin: 16px 0 8px;
+  gap: 14px;
+  margin: 28px 0 14px;
   page-break-after: avoid;
 }
-.sec-div-line { flex: 1; height: 1.5px; background: var(--border); }
+.sec-div-line { flex: 1; height: 1px; background: var(--accent); opacity: 0.35; }
 .sec-div-label {
-  font-size: 8pt;
-  font-weight: 700;
+  font-size: 9pt;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: .12em;
-  color: var(--fg-d);
+  letter-spacing: 0.18em;
+  color: var(--accent);
   white-space: nowrap;
 }
 
@@ -16210,26 +16221,31 @@ body.dark .drug-n { color: #c084fc; }
 .med-ind { color: var(--fg-d); font-size: 9pt; }
 
 /* Problem cards */
+
 .prob {
   border: 1px solid var(--border);
-  border-radius: 5px;
-  margin-bottom: 12px;
+  border-left: 4px solid var(--accent);
+  border-radius: 6px;
+  margin-bottom: 18px;
   page-break-inside: avoid;
   overflow: hidden;
   background: var(--bg);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .04);
 }
 .prob-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 8px 12px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  padding: 12px 14px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border-l);
   gap: 10px;
   page-break-after: avoid;
 }
-.prob-title { font-size: 11pt; font-weight: 700; color: var(--fg); line-height: 1.3; }
-.prob-sub { font-size: 8pt; color: var(--fg-d); font-weight: 400; margin-top: 2px; }
+.prob-title { font-size: 12pt; font-weight: 700; color: var(--accent); line-height: 1.25; letter-spacing: -0.005em; }
+.prob-sub { font-size: 8.5pt; color: var(--fg-d); font-weight: 400; margin-top: 3px; }
+body.dark .prob-head { background: rgba(126, 168, 212, 0.06); }
+body.dark .prob-title { color: var(--accent); }
 .prob-pill {
   font-size: 7pt;
   font-weight: 700;
@@ -16296,113 +16312,103 @@ body.dark .pill-reg { background: rgba(245,158,11,.15); color: #fcd34d; border-c
   line-height: 1.42;
 }
 
-/* Callout boxes */
-.tch {
-  background: #fffbeb;
-  border-left: 2.5px solid #f59e0b;
+/* Teaching callouts — ONE amber system for all teaching content.
+   Distinguish by label + icon, not by color. Student's eye learns:
+   left-amber-bar = something to think about.                              */
+.tch, .ask {
+  background: var(--teach-bg);
+  border-left: 3px solid var(--teach);
   border-radius: 0 4px 4px 0;
-  padding: 8px 10px;
-  margin-top: 8px;
+  padding: 9px 12px;
+  margin-top: 10px;
   page-break-inside: avoid;
 }
-body.dark .tch { background: rgba(245,158,11,.08); }
-.tch-label {
+body.dark .tch, body.dark .ask { background: var(--teach-bg); }
+.tch-label, .ask-label {
   font-size: 7pt;
-  font-weight: 700;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: .08em;
-  color: #b45309;
-  margin-bottom: 4px;
+  letter-spacing: .1em;
+  color: var(--teach);
+  margin-bottom: 5px;
 }
-body.dark .tch-label { color: #fcd34d; }
-.tch ul { margin: 0; padding-left: 16px; }
-.tch li { font-size: 9pt; color: #44403c; line-height: 1.45; margin-bottom: 3px; }
-body.dark .tch li { color: #d6d3d1; }
-.tch li:last-child { margin-bottom: 0; }
-.tch p { font-size: 9pt; color: #44403c; line-height: 1.45; margin: 0; }
-body.dark .tch p { color: #d6d3d1; }
+body.dark .tch-label, body.dark .ask-label { color: var(--teach); }
+.tch ul, .ask ul { margin: 0; padding-left: 16px; }
+.tch li, .ask li, .tch p, .ask p {
+  font-size: 9pt;
+  color: var(--fg-m);
+  line-height: 1.5;
+  margin-bottom: 3px;
+}
+.tch li:last-child, .ask li:last-child, .tch p:last-child, .ask p:last-child { margin-bottom: 0; }
 
-.ask {
-  background: #eef2ff;
-  border-left: 2.5px solid #6366f1;
-  border-radius: 0 4px 4px 0;
-  padding: 8px 10px;
-  margin-top: 8px;
-  page-break-inside: avoid;
-}
-body.dark .ask { background: rgba(99,102,241,.08); }
-.ask-label {
-  font-size: 7pt;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .08em;
-  color: #4338ca;
-  margin-bottom: 4px;
-}
-body.dark .ask-label { color: #a5b4fc; }
-.ask p { font-size: 9pt; color: #3730a3; line-height: 1.45; margin: 0; }
-body.dark .ask p { color: #c7d2fe; }
-
+/* Warning box — ONLY for danger (Don't Miss, Screen For).
+   Uses muted brick, not fire-truck red.                                     */
 .wrn {
-  background: #fef2f2;
-  border-left: 2.5px solid #ef4444;
+  background: var(--danger-soft);
+  border-left: 3px solid var(--danger);
   border-radius: 0 4px 4px 0;
-  padding: 8px 10px;
-  margin-top: 8px;
+  padding: 9px 12px;
+  margin-top: 10px;
   page-break-inside: avoid;
 }
-body.dark .wrn { background: rgba(239,68,68,.08); }
+body.dark .wrn { background: var(--danger-soft); }
 .wrn-label {
   font-size: 7pt;
-  font-weight: 700;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: .08em;
-  color: #dc2626;
-  margin-bottom: 4px;
+  letter-spacing: .1em;
+  color: var(--danger);
+  margin-bottom: 5px;
 }
-body.dark .wrn-label { color: #fca5a5; }
-.wrn p { font-size: 9pt; color: #991b1b; line-height: 1.45; margin: 0 0 3px; }
-body.dark .wrn p { color: #fecaca; }
-.wrn p:last-child { margin-bottom: 0; }
+body.dark .wrn-label { color: var(--danger); }
+.wrn p, .wrn li { font-size: 9pt; color: var(--fg-m); line-height: 1.5; margin: 0 0 3px; }
+.wrn p:last-child, .wrn li:last-child { margin-bottom: 0; }
 
-/* Diagnostic teaching box — like .tch but slightly different visual weight
-   to distinguish "understanding this test" from "clinical teaching pearls". */
+
+/* Diagnostic understanding box — uses INFORMATIONAL blue, not teaching amber.
+   Different color from teaching boxes because this is "here is what this test IS,"
+   not "here is what to think about."                                        */
 .dx-teach {
-  background: #f0f9ff;
-  border-left: 2.5px solid #0284c7;
+  background: var(--accent-soft);
+  border-left: 3px solid var(--accent);
   border-radius: 0 4px 4px 0;
-  padding: 8px 10px;
+  padding: 9px 12px;
   margin-top: 8px;
   page-break-inside: avoid;
 }
-body.dark .dx-teach { background: rgba(2, 132, 199, 0.08); }
+body.dark .dx-teach { background: rgba(126, 168, 212, 0.06); }
 .dx-teach-label {
   font-size: 7pt;
-  font-weight: 700;
+  font-weight: 800;
   text-transform: uppercase;
-  letter-spacing: .08em;
-  color: #075985;
-  margin-bottom: 4px;
+  letter-spacing: .1em;
+  color: var(--accent);
+  margin-bottom: 5px;
 }
-body.dark .dx-teach-label { color: #7dd3fc; }
-.dx-teach p, .dx-teach li { font-size: 8.5pt; color: #0c4a6e; line-height: 1.45; }
-body.dark .dx-teach p, body.dark .dx-teach li { color: #bae6fd; }
-.dx-teach b { color: #075985; }
-body.dark .dx-teach b { color: #7dd3fc; }
+.dx-teach p, .dx-teach li {
+  font-size: 8.5pt;
+  color: var(--fg-m);
+  line-height: 1.5;
+}
+.dx-teach b { color: var(--accent); }
+.dx-teach ul { margin-top: 3px; }
+.dx-teach ul li { margin-bottom: 3px; }
 
-/* Care team footer line — sits between factual chart content and teaching. */
+/* Care team footer line — quiet transition from factual chart content to
+   teaching. Uses subdued gray, no color accent icon.                        */
 .prob-careteam {
-  margin-top: 10px;
-  padding: 6px 10px;
+  margin-top: 12px;
+  padding: 8px 12px;
   font-size: 8.5pt;
   color: var(--fg-d);
-  font-style: italic;
   background: var(--panel);
   border-top: 1px solid var(--border-l);
   border-bottom: 1px solid var(--border-l);
+  border-radius: 3px;
 }
-.prob-careteam b { color: var(--fg); font-style: normal; }
-.prob-careteam i.fa-solid { color: var(--accent); margin-right: 4px; }
+.prob-careteam b { color: var(--fg-m); font-weight: 700; }
+.prob-careteam i.fa-solid { color: var(--fg-d); margin-right: 6px; }
 
 /* HTML-only reference link — hidden in print/PDF. */
 .html-only-link {
@@ -16458,10 +16464,20 @@ body.dark .dx-teach b { color: #7dd3fc; }
 }
 .lab-tbl td:first-child { text-align: left; color: var(--fg); font-weight: 500; font-family: 'DM Sans', sans-serif; }
 .lab-tbl tr:last-child td { border-bottom: none; }
-.lab-hi, .lab-lo { color: #dc2626 !important; font-weight: 700; }
-body.dark .lab-hi, body.dark .lab-lo { color: #fca5a5 !important; }
-.lab-ok { color: #16a34a !important; }
-body.dark .lab-ok { color: #86efac !important; }
+
+/* Lab values: normal reads as plain text (no green — normal is the default
+   assumption). Only abnormal values get color, and even then it's muted.  */
+.lab-hi, .lab-lo {
+  color: var(--danger) !important;
+  font-weight: 600;
+}
+body.dark .lab-hi, body.dark .lab-lo { color: var(--danger) !important; }
+.lab-ok {
+  color: var(--fg-m) !important;
+  font-weight: 400;
+}
+body.dark .lab-ok { color: var(--fg-m) !important; }
+
 .lab-sec {
   font-family: 'DM Sans', sans-serif !important;
   font-size: 7pt !important;
@@ -16487,18 +16503,63 @@ body.dark .lab-ok { color: #86efac !important; }
 }
 
 
+/* Lab / diagnostic value guide — clear typographic hierarchy so the
+   analyte name pops and the definition sits quietly below it.               */
+.lab-value-guide {
+  margin-top: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-l);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  background: var(--panel);
+}
+.lab-value-guide-title {
+  font-size: 7pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .12em;
+  color: var(--accent);
+  margin-bottom: 8px;
+}
+.lab-value-guide-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.lab-value-guide-list li {
+  padding: 6px 0;
+  border-top: 1px solid var(--border-vl);
+}
+.lab-value-guide-list li:first-child {
+  padding-top: 0;
+  border-top: none;
+}
+.lab-value-guide-name {
+  font-size: 9pt;
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 2px;
+  line-height: 1.35;
+}
+.lab-value-guide-def {
+  font-size: 8.5pt;
+  color: var(--fg-m);
+  line-height: 1.5;
+}
+
 /* Imaging / diagnostics cards */
 .diag-stack {
   display: grid;
-  gap: 10px;
-  margin-bottom: 10px;
+  gap: 16px;               /* was 10px — needs breathing room */
+  margin-bottom: 12px;
 }
 .diag-card {
   border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
   border-radius: 6px;
   overflow: hidden;
   background: var(--bg);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, .04);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .04);
   page-break-inside: avoid;
 }
 .diag-card-head {
@@ -16506,32 +16567,35 @@ body.dark .lab-ok { color: #86efac !important; }
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 10px;
-  background: linear-gradient(180deg, var(--panel-h) 0%, var(--panel) 100%);
-  border-bottom: 1px solid var(--border);
+  padding: 10px 12px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--border-l);
 }
+body.dark .diag-card-head { background: rgba(126, 168, 212, 0.06); }
 .diag-card-heading { min-width: 0; }
 .diag-category {
-  margin-bottom: 2px;
+  margin-bottom: 3px;
   color: var(--accent);
-  font-size: 6.5pt;
+  font-size: 7.5pt;              /* was 6.5pt — needs to read */
   font-weight: 800;
-  letter-spacing: .075em;
+  letter-spacing: .12em;
   line-height: 1.25;
   text-transform: uppercase;
 }
 .diag-card-title {
   color: var(--fg);
-  font-size: 9.5pt;
-  font-weight: 750;
+  font-size: 10.5pt;             /* was 9.5pt — this is the study name */
+  font-weight: 700;
   line-height: 1.3;
+  letter-spacing: -0.005em;
 }
 .diag-card-subtitle {
-  margin-top: 2px;
-  color: var(--fg-m);
-  font-size: 7.3pt;
-  line-height: 1.35;
+  margin-top: 3px;
+  color: var(--fg-d);
+  font-size: 8pt;
+  line-height: 1.4;
 }
+  
 .diag-date, .diag-status {
   flex-shrink: 0;
   padding: 2px 7px;
@@ -17174,23 +17238,28 @@ const POST_VISIT_DOCUMENT_STYLES = `
   --fg: #1a1f2e;
   --fg-m: #374151;
   --fg-d: #6b7280;
-  --border: #d1d5db;
+  --border: #d8dde5;
   --border-l: #e5e7eb;
   --border-vl: #f3f4f6;
-  --panel: #f9fafb;
-  --panel-h: #f3f4f6;
-  --accent: #2563eb;
+  --panel: #f7f8fa;
+  --panel-h: #eef1f5;
+  --accent: #1e3a5f;
+  --accent-soft: #eef2f8;
+  --danger: #a03030;
+  --danger-soft: #fbeeee;
+  --teach: #b45309;
+  --teach-bg: #fefce8;
   --page-bg: #c8cdd5;
-  --doc-navy: var(--fg);
+  --doc-navy: var(--accent);
   --doc-navy-mid: var(--accent);
   --doc-paper: var(--panel);
   --doc-surface: var(--bg);
   --doc-warm-gray: var(--fg-d);
-  --doc-terracotta: #b45309;
-  --doc-consensus: #15803d;
-  --doc-majority: #2563eb;
-  --doc-single: #6b7280;
-  --doc-conflict: #dc2626;
+  --doc-terracotta: var(--teach);
+  --doc-consensus: var(--fg-m);
+  --doc-majority: var(--accent);
+  --doc-single: var(--fg-d);
+  --doc-conflict: var(--danger);
   --doc-hairline: var(--border-l);
   width: 100%;
   max-width: 10in;
@@ -17407,72 +17476,78 @@ body.post-visit-export.dark .post-visit-document {
 .post-visit-document [style*="var(--doc-navy)"] { color: var(--fg) !important; }
 .post-visit-document [style*="var(--doc-warm-gray)"] { color: var(--fg-d) !important; }
 
-/* Callouts use the prenote teaching / ask / warning language. */
-.post-visit-document .doc-callout-goal {
-  margin: 8px 0 !important;
-  padding: 8px 10px !important;
-  border: 0 !important;
-  border-left: 2.5px solid #6366f1 !important;
-  border-radius: 0 4px 4px 0 !important;
-  background: #eef2ff !important;
-  color: #3730a3 !important;
-}
-  .post-visit-document .doc-callout-trial {
+
+/* All post-visit callouts collapse into TWO visual treatments:
+   - Teaching (amber): pearl, trial, session goal
+   - Informational (blue): quote (patient voice), diagnostic explanation      */
+.post-visit-document .doc-callout-goal,
+.post-visit-document .doc-callout-pearl,
+.post-visit-document .doc-callout-trial {
   margin: 8px 12px 10px !important;
   padding: 8px 10px !important;
   border: 0 !important;
-  border-left: 2.5px solid #0d9488 !important;
+  border-left: 2.5px solid var(--teach) !important;
   border-radius: 0 4px 4px 0 !important;
-  background: #f0fdfa !important;
-  color: #134e4a !important;
+  background: var(--teach-bg) !important;
+  color: var(--fg-m) !important;
 }
-.post-visit-document .doc-callout-trial .label { color: #0f766e !important; font-size: 7pt !important; }
-body.post-visit-export.dark .post-visit-document .doc-callout-trial { background: rgba(20, 184, 166, 0.08) !important; color: #99f6e4 !important; }
-body.post-visit-export.dark .post-visit-document .doc-callout-trial .label { color: #5eead4 !important; }
-.post-visit-document .doc-callout-pearl {
-  margin: 8px 12px 10px !important;
-  padding: 8px 10px !important;
-  border: 0 !important;
-  border-left: 2.5px solid #f59e0b !important;
-  border-radius: 0 4px 4px 0 !important;
-  background: #fffbeb !important;
-  color: #44403c !important;
+.post-visit-document .doc-callout-goal .label,
+.post-visit-document .doc-callout-pearl .label,
+.post-visit-document .doc-callout-trial .label {
+  color: var(--teach) !important;
+  font-size: 7pt !important;
+  font-weight: 800 !important;
+  letter-spacing: .1em !important;
 }
-.post-visit-document .doc-callout-pearl .label { color: #b45309 !important; font-size: 7pt !important; }
 .post-visit-document .doc-callout-quote {
   margin: 8px 12px 10px !important;
   padding: 8px 10px !important;
   border: 0 !important;
-  border-left: 2.5px solid #2563eb !important;
+  border-left: 2.5px solid var(--accent) !important;
   border-radius: 0 4px 4px 0 !important;
-  background: #eff6ff !important;
-  color: #1e3a8a !important;
+  background: var(--accent-soft) !important;
+  color: var(--fg-m) !important;
 }
 .post-visit-document .doc-callout-quote::before { display: none; }
-.post-visit-document .doc-callout-quote .label { color: #1d4ed8 !important; font-size: 7pt !important; }
-.post-visit-document .doc-callout-quote .quote-text { color: inherit !important; font-size: 9pt !important; }
-body.post-visit-export.dark .post-visit-document .doc-callout-goal { background: rgba(99, 102, 241, 0.08) !important; color: #c7d2fe !important; }
-body.post-visit-export.dark .post-visit-document .doc-callout-pearl { background: rgba(245, 158, 11, 0.08) !important; color: #d6d3d1 !important; }
-body.post-visit-export.dark .post-visit-document .doc-callout-quote { background: rgba(59, 130, 246, 0.1) !important; color: #bfdbfe !important; }
+.post-visit-document .doc-callout-quote .label {
+  color: var(--accent) !important;
+  font-size: 7pt !important;
+  font-weight: 800 !important;
+  letter-spacing: .1em !important;
+}
+.post-visit-document .doc-callout-quote .quote-text {
+  color: var(--fg-m) !important;
+  font-size: 9pt !important;
+}
+body.post-visit-export.dark .post-visit-document .doc-callout-goal,
+body.post-visit-export.dark .post-visit-document .doc-callout-pearl,
+body.post-visit-export.dark .post-visit-document .doc-callout-trial {
+  background: var(--teach-bg) !important;
+  color: var(--fg-m) !important;
+}
+body.post-visit-export.dark .post-visit-document .doc-callout-quote {
+  background: var(--accent-soft) !important;
+  color: var(--fg-m) !important;
+}
 
 /* Practice questions and footer. */
 .post-visit-document .doc-shelf-q { padding: 9px 0 !important; border-top: 1px solid var(--border-l) !important; }
 .post-visit-document .doc-shelf-answer {
   margin-top: 6px !important;
   padding: 7px 9px !important;
-  border-left: 2.5px solid #16a34a !important;
-  background: #f0fdf4 !important;
-  color: #166534 !important;
+  border-left: 2.5px solid var(--accent) !important;
+  background: var(--accent-soft) !important;
+  color: var(--fg-m) !important;
 }
-body.post-visit-export.dark .post-visit-document .doc-shelf-answer { background: rgba(34, 197, 94, 0.08) !important; color: #bbf7d0 !important; }
-.post-visit-document .doc-footer {
-  margin-top: 20px !important;
-  padding-top: 10px !important;
-  border-top: 1px solid var(--border) !important;
-  color: var(--fg-d) !important;
-  font-size: 8pt !important;
-  line-height: 1.4;
-  text-align: center;
+body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
+  background: var(--accent-soft) !important;
+  color: var(--fg-m) !important;
+}
+.post-visit-document .doc-shelf-answer .label {
+  color: var(--accent) !important;
+  font-size: 7pt !important;
+  font-weight: 800 !important;
+  letter-spacing: .1em !important;
 }
 .post-visit-document figure { border-color: var(--border) !important; background: var(--bg) !important; }
 .post-visit-document img { max-width: 100%; }
@@ -17534,32 +17609,48 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer { background:
   .post-visit-document figure,
   .post-visit-document .doc-callout-goal,
   .post-visit-document .doc-callout-pearl,
-  .post-visit-document .doc-callout-quote { break-inside: avoid; page-break-inside: avoid; }
-  .post-visit-document p,
-  .post-visit-document li,
-  .post-visit-document div { orphans: 3; widows: 3; }
+  .post-visit-document .doc-callout-trial,
+  .post-visit-document .doc-callout-quote,
+  .post-visit-document .doc-shelf-q,
+  .post-visit-document .doc-shelf-answer { break-inside: avoid; page-break-inside: avoid; }
 }
-`;
-
-const POST_VISIT_EXPORT_STYLES = `
-* { box-sizing: border-box; }
-html { scroll-behavior: smooth; }
-body.post-visit-export {
-  margin: 0;
-  min-height: 100vh;
-  padding: 20px 0;
-  background: #c8cdd5;
-  color: #1a1f2e;
-  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  transition: background 0.2s, color 0.2s;
+.post-visit-document .doc-callout-goal .label,
+.post-visit-document .doc-callout-pearl .label,
+.post-visit-document .doc-callout-trial .label {
+  color: var(--teach) !important;
+  font-size: 7pt !important;
+  font-weight: 800 !important;
+  letter-spacing: .1em !important;
 }
-body.post-visit-export.dark { background: #0b1220; color: #e8edf3; }
-.doc-toolbar {
-  width: min(10in, calc(100% - 16px));
-  margin: 0 auto 12px;
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
+.post-visit-document .doc-callout-quote {
+  margin: 8px 12px 10px !important;
+  padding: 8px 10px !important;
+  border: 0 !important;
+  border-left: 2.5px solid var(--accent) !important;
+  border-radius: 0 4px 4px 0 !important;
+  background: var(--accent-soft) !important;
+  color: var(--fg-m) !important;
+}
+.post-visit-document .doc-callout-quote::before { display: none; }
+.post-visit-document .doc-callout-quote .label {
+  color: var(--accent) !important;
+  font-size: 7pt !important;
+  font-weight: 800 !important;
+  letter-spacing: .1em !important;
+}
+.post-visit-document .doc-callout-quote .quote-text {
+  color: var(--fg-m) !important;
+  font-size: 9pt !important;
+}
+body.post-visit-export.dark .post-visit-document .doc-callout-goal,
+body.post-visit-export.dark .post-visit-document .doc-callout-pearl,
+body.post-visit-export.dark .post-visit-document .doc-callout-trial {
+  background: var(--teach-bg) !important;
+  color: var(--fg-m) !important;
+}
+body.post-visit-export.dark .post-visit-document .doc-callout-quote {
+  background: var(--accent-soft) !important;
+  color: var(--fg-m) !important;
 }
 .tb-btn {
   display: inline-flex;
@@ -17650,6 +17741,232 @@ body.dark .shelf-option-btn.chosen-wrong { background: rgba(239, 68, 68, 0.1); c
 @media print {
   .doc-toolbar, .interactive-banner, .case-nav-pills, .shelf-reset-btn { display: none !important; }
   .shelf-answer-interactive { max-height: none !important; opacity: 1 !important; }
+}
+`;
+
+
+const POST_VISIT_EXPORT_STYLES = `
+body.post-visit-export {
+  margin: 0;
+  padding: 20px 0;
+  background: var(--doc-page-bg, #c8cdd5);
+  font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+body.post-visit-export.dark {
+  background: #0b1220;
+  color-scheme: dark;
+}
+
+.doc-toolbar {
+  width: min(10in, calc(100% - 16px));
+  margin: 0 auto 10px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.tb-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1a1f2e;
+  font: 600 0.82rem 'DM Sans', sans-serif;
+  cursor: pointer;
+}
+body.post-visit-export.dark .tb-btn {
+  border-color: #334155;
+  background: #0f1419;
+  color: #e8edf3;
+}
+.tb-btn:hover { transform: translateY(-1px); }
+
+.interactive-banner {
+  width: min(10in, calc(100% - 16px));
+  margin: 0 auto 10px;
+  padding: 8px 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 4px;
+  background: #eff6ff;
+  color: #1e3a8a;
+  font-size: 8pt;
+  line-height: 1.4;
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+body.post-visit-export.dark .interactive-banner {
+  border-color: rgba(96, 165, 250, 0.35);
+  background: rgba(59, 130, 246, 0.12);
+  color: #bfdbfe;
+}
+
+/* Problem-jump links inside "Case at a Glance" */
+.post-visit-document a.problem-jump {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+}
+.post-visit-document a.problem-jump::before {
+  content: "↓ ";
+  font-size: 7pt;
+  opacity: 0.65;
+}
+
+/* Case navigation pills at the top of the first case */
+.case-nav-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin: 10px 0;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.case-nav-pills .nav-label {
+  align-self: center;
+  margin-right: 4px;
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.case-nav-pills a.case-jump {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg);
+  color: var(--fg-m);
+  font-size: 8pt;
+  font-weight: 600;
+  text-decoration: none;
+}
+.case-nav-pills a.case-jump:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* Interactive shelf question buttons */
+.shelf-choices-interactive {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 5px 8px;
+  margin: 5px 0 4px 24px;
+}
+.shelf-option-btn {
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg-m);
+  font: 400 9pt/1.4 'DM Sans', sans-serif;
+  text-align: left;
+  cursor: pointer;
+}
+.shelf-option-btn:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--panel);
+}
+.shelf-option-btn:disabled { cursor: default; }
+.shelf-option-btn .letter {
+  margin-right: 4px;
+  font-weight: 700;
+}
+.shelf-option-btn .indicator {
+  display: none;
+  margin-left: 5px;
+  font-size: 7pt;
+  font-weight: 700;
+}
+.shelf-option-btn.chosen-correct,
+.shelf-option-btn.revealed-correct {
+  border-color: #16a34a;
+  background: #f0fdf4;
+  color: #166534;
+}
+.shelf-option-btn.chosen-wrong {
+  border-color: #dc2626;
+  background: #fef2f2;
+  color: #991b1b;
+}
+.shelf-option-btn.revealed-wrong {
+  opacity: 0.55;
+  text-decoration: line-through;
+}
+.shelf-option-btn.chosen-correct .indicator,
+.shelf-option-btn.revealed-correct .indicator,
+.shelf-option-btn.chosen-wrong .indicator {
+  display: inline;
+}
+body.post-visit-export.dark .shelf-option-btn.chosen-correct,
+body.post-visit-export.dark .shelf-option-btn.revealed-correct {
+  background: rgba(34, 197, 94, 0.1);
+  color: #bbf7d0;
+}
+body.post-visit-export.dark .shelf-option-btn.chosen-wrong {
+  background: rgba(239, 68, 68, 0.1);
+  color: #fecaca;
+}
+
+.shelf-answer-interactive {
+  margin: 0 0 0 24px;
+  max-height: 0;
+  overflow: hidden;
+  opacity: 0;
+  transition: max-height 0.3s, opacity 0.3s;
+}
+.shelf-answer-interactive.revealed {
+  max-height: 1200px;
+  opacity: 1;
+}
+.shelf-answer-interactive .label {
+  color: #15803d;
+  font-size: 7pt;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.shelf-reset-btn {
+  margin: 5px 0 0 24px;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--fg-d);
+  font: 600 7pt 'DM Sans', sans-serif;
+  cursor: pointer;
+}
+.shelf-reset-btn.hidden { display: none; }
+
+@media (max-width: 640px) {
+  body.post-visit-export { padding-top: 10px; }
+  .doc-toolbar, .interactive-banner {
+    width: calc(100% - 16px);
+  }
+  .shelf-choices-interactive {
+    grid-template-columns: 1fr;
+    margin-left: 0;
+  }
+  .shelf-answer-interactive, .shelf-reset-btn {
+    margin-left: 0;
+  }
+}
+
+@media print {
+  .doc-toolbar,
+  .interactive-banner,
+  .case-nav-pills,
+  .shelf-reset-btn { display: none !important; }
+  .shelf-answer-interactive {
+    max-height: none !important;
+    opacity: 1 !important;
+  }
 }
 `;
 
