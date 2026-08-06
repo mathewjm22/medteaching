@@ -7138,16 +7138,24 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
       <style>{`
         /* ========== DESIGN TOKENS ========== */
         :root {
-          --doc-navy: #0F2A44;
-          --doc-navy-mid: #1E5B94;
-          --doc-paper: #F5F1EA;
+          /* Four-color document palette. Neutral grays/white remain available
+             for type, rules, and page surfaces; all chromatic accents come from
+             these four values or transparent tints of them. */
+          --palette-alert: #ff5757;
+          --palette-blue-deep: #376c8b;
+          --palette-sand: #f2d9bb;
+          --palette-blue-soft: #638fa8;
+
+          --doc-navy: var(--palette-blue-deep);
+          --doc-navy-mid: var(--palette-blue-soft);
+          --doc-paper: rgba(242, 217, 187, 0.16);
           --doc-surface: #FFFFFF;
           --doc-warm-gray: #5C6470;
-          --doc-terracotta: #B85C2E;
-          --doc-consensus: #0F7A5A;
-          --doc-majority: #1E5B94;
-          --doc-single: #8B7355;
-          --doc-conflict: #B85C2E;
+          --doc-terracotta: var(--palette-blue-deep);
+          --doc-consensus: var(--palette-blue-deep);
+          --doc-majority: var(--palette-blue-soft);
+          --doc-single: var(--palette-blue-soft);
+          --doc-conflict: var(--palette-alert);
           --doc-hairline: #D8D3CA;
 
           /* ===== App chrome (dark-mode-aware) =====
@@ -7486,7 +7494,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
 
         /* ========== COVER ========== */
         .doc-cover {
-          background: linear-gradient(135deg, #0F2A44 0%, #1a3d5c 50%, #0F2A44 100%);
+          background: linear-gradient(135deg, var(--palette-blue-deep) 0%, var(--palette-blue-soft) 52%, var(--palette-blue-deep) 100%);
           color: white;
           padding: 3rem 3rem 2.25rem;
         }
@@ -7562,7 +7570,7 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
           margin-top: 3rem;
         }
         .doc-case-banner {
-          background: linear-gradient(135deg, var(--doc-navy) 0%, #1a3d5c 100%);
+          background: linear-gradient(135deg, var(--doc-navy) 0%, var(--doc-navy-mid) 100%);
           color: white;
           padding: 1.25rem 1.5rem;
           margin: 0 -1.5rem 1.75rem;
@@ -13635,14 +13643,14 @@ const buildInRoomHtml = (doc, session) => {
     }
 
     // ─── RECENTLY DISCONTINUED ───
-    // Uses an amber-tinted top border to visually distinguish from active.
+    // Uses the secondary blue to distinguish it from active medications.
     medsSectionHtml += renderMedBlock(
       "Recently Discontinued",
       "",
       discontinuedMedsText,
       {
-        subheadColor: "#b45309",
-        accentBorder: "rgba(180, 83, 9, 0.25)",
+        subheadColor: "#376c8b",
+        accentBorder: "rgba(99, 143, 168, 0.28)",
         marginTop: "14px",
       }
     );
@@ -13679,15 +13687,16 @@ const buildProblemCard = (tc, idx, isSelected) => {
   const perProbRedFlagsRaw = na.perProblemRedFlags?.[problemName];
   const perProbRedFlags = Array.isArray(perProbRedFlagsRaw) ? perProbRedFlagsRaw : [];
 
-  let html = `<div class="prob"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
+  const problemToneClass = idx % 2 === 0 ? "prob-tone-blue" : "prob-tone-sand";
+  let html = `<div class="prob ${problemToneClass}"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
   if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
   html += `</div><span class="prob-pill ${pill.cls}">${esc(pill.label)}</span></div>`;
 
   html += `<div class="prob-body">`;
 
-  // ── Attending case summary (italic amber accent) ──
+  // ── Attending case summary (soft sand panel; no extra vertical rail) ──
   if (isSelected && c.caseSummary) {
-    html += `<p style="font-style:italic;color:var(--fg);border-left:2px solid #b45309;padding-left:8px;margin-bottom:10px;font-size:9pt;line-height:1.5;">${esc(softenTeachingVoice(c.caseSummary))}</p>`;
+    html += `<p class="problem-attending-summary">${esc(softenTeachingVoice(c.caseSummary))}</p>`;
   }
 
   // ── Narrative paragraph: flowing prose synthesis of the PMH block ──
@@ -13945,7 +13954,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
       } else {
         html += `<ul style="margin:0;padding-left:16px;">`;
         dontMissItems.forEach(item => {
-          html += `<li style="font-size:8pt;color:#991b1b;line-height:1.4;margin-bottom:3px;">${esc(item)}</li>`;
+          html += `<li style="font-size:8pt;color:var(--danger);line-height:1.4;margin-bottom:3px;">${esc(item)}</li>`;
         });
         html += `</ul>`;
       }
@@ -13955,7 +13964,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
     // Per-problem red flags (only if don't-miss wasn't already populated)
     if (perProbRedFlags.length > 0 && dontMissItems.length === 0) {
       html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul style="margin:0;padding-left:14px;">`;
-      perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:#991b1b;line-height:1.4;">${esc(rf)}</li>`);
+      perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:var(--danger);line-height:1.4;">${esc(rf)}</li>`);
       html += `</ul></div>`;
     }
 
@@ -13969,9 +13978,9 @@ const buildProblemCard = (tc, idx, isSelected) => {
       const yearLabel = c.practiceChangingUpdate.yearRange?.trim()
         ? ` · ${esc(c.practiceChangingUpdate.yearRange)}`
         : "";
-      html += `<div class="tch" style="border-left-color:#ca8a04;background:#fefce8;">`;
-      html += `<div class="tch-label" style="color:#a16207;"><i class="fa-solid fa-arrow-trend-up"></i> Recent Update${yearLabel}</div>`;
-      html += `<p style="color:#713f12;">${esc(c.practiceChangingUpdate.summary)}</p>`;
+      html += `<div class="tch" style="border-left-color:var(--accent-2);background:var(--teach-bg);">`;
+      html += `<div class="tch-label" style="color:var(--accent);"><i class="fa-solid fa-arrow-trend-up"></i> Recent Update${yearLabel}</div>`;
+      html += `<p style="color:var(--fg-m);">${esc(c.practiceChangingUpdate.summary)}</p>`;
       html += `</div>`;
     }
 
@@ -14006,8 +14015,10 @@ const buildProblemCard = (tc, idx, isSelected) => {
 
 
   let problemsHtml = `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Active Problems — Full Detail &amp; Teaching</div><div class="sec-div-line"></div></div>`;
-  enabledCases.forEach((tc, idx) => {
-    problemsHtml += buildProblemCard(tc, idx, true);
+  let renderedProblemCount = 0;
+  enabledCases.forEach((tc) => {
+    problemsHtml += buildProblemCard(tc, renderedProblemCount, true);
+    renderedProblemCount += 1;
   });
   // Non-selected problems — with defense against section-header labels
   // that slipped through upstream ("Current Medications", "Recently
@@ -14025,7 +14036,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
       .map((tc) => normalizeProblemLookupKey(tc.data?.problem || tc.problem || ""))
       .filter(Boolean)
   );
-  Object.entries(problemBlocks).forEach(([key, block], idx) => {
+  Object.entries(problemBlocks).forEach(([, block]) => {
     if (isNonClinicalHeader(block.rawHeader)) return;
     const headerKey = block.normalizedKey || normalizeProblemLookupKey(block.rawHeader);
     let alreadyCovered = false;
@@ -14040,7 +14051,12 @@ const buildProblemCard = (tc, idx, isSelected) => {
       }
     }
     if (!alreadyCovered) {
-      problemsHtml += buildProblemCard({ data: { problem: block.rawHeader } }, enabledCases.length + idx, false);
+      problemsHtml += buildProblemCard(
+        { data: { problem: block.rawHeader } },
+        renderedProblemCount,
+        false
+      );
+      renderedProblemCount += 1;
     }
   });
 
@@ -16584,9 +16600,9 @@ const buildProblemCard = (tc, idx, isSelected) => {
   // Extra top margin creates breathing room between this box and the next
   // narrative section (About the Patient).
   let priorityFocusHtml = "";
-  const priorityFocusStyle = `margin-top:14px;margin-bottom:14px;background:#fffbeb;border-left:2.5px solid #d97706;`;
-  const priorityFocusLabelStyle = `color:#92400e;`;
-  const priorityFocusTextStyle = `color:#78350f;`;
+  const priorityFocusStyle = `margin-top:14px;margin-bottom:14px;background:rgba(242,217,187,.34);border-left:2.5px solid #376c8b;`;
+  const priorityFocusLabelStyle = `color:#376c8b;`;
+  const priorityFocusTextStyle = `color:#374151;`;
   if (Array.isArray(na.priorityFocusAreas) && na.priorityFocusAreas.length > 0) {
     priorityFocusHtml += `<div class="tch" style="${priorityFocusStyle}"><div class="tch-label" style="${priorityFocusLabelStyle}"><i class="fa-solid fa-bullseye"></i> Priority Focus Areas for This Visit</div>`;
     na.priorityFocusAreas.forEach((item, i) => {
@@ -16679,6 +16695,11 @@ const buildProblemCard = (tc, idx, isSelected) => {
   // ──────────────────────────────────────────────────────────────
   const cssBlock = `
 :root {
+  --palette-alert: #ff5757;
+  --palette-blue-deep: #376c8b;
+  --palette-sand: #f2d9bb;
+  --palette-blue-soft: #638fa8;
+
   --bg: #ffffff;
   --fg: #1a1f2e;
   --fg-m: #374151;
@@ -16687,13 +16708,16 @@ const buildProblemCard = (tc, idx, isSelected) => {
   --border-l: #e5e7eb;
   --border-vl: #f3f4f6;
   --panel: #f7f8fa;
-  --panel-h: #eef1f5;
-  --accent: #1e3a5f;          // deep slate-blue — the ONE informational color
-  --accent-soft: #eef2f8;     // pale wash of accent for backgrounds
-  --danger: #a03030;          // muted brick — abnormal labs, don't-miss ONLY
-  --danger-soft: #fbeeee;
-  --teach: #b45309;           // warm amber — ALL teaching content
-  --teach-bg: #fefce8;
+  --panel-h: rgba(99, 143, 168, 0.10);
+  --accent: var(--palette-blue-deep);
+  --accent-2: var(--palette-blue-soft);
+  --accent-soft: rgba(99, 143, 168, 0.10);
+  --warm: var(--palette-sand);
+  --warm-soft: rgba(242, 217, 187, 0.34);
+  --danger: var(--palette-alert);
+  --danger-soft: rgba(255, 87, 87, 0.09);
+  --teach: var(--palette-blue-deep);
+  --teach-bg: rgba(242, 217, 187, 0.34);
   --page-bg: #c8cdd5;
 }
 body.dark {
@@ -16705,13 +16729,15 @@ body.dark {
   --border-l: #263149;
   --border-vl: #1e293b;
   --panel: #1a222e;
-  --panel-h: #212a38;
-  --accent: #7ea8d4;
-  --accent-soft: rgba(126, 168, 212, 0.10);
-  --danger: #d68a8a;
-  --danger-soft: rgba(214, 138, 138, 0.10);
-  --teach: #d4a86a;
-  --teach-bg: rgba(212, 168, 106, 0.08);
+  --panel-h: rgba(99, 143, 168, 0.14);
+  --accent: var(--palette-blue-soft);
+  --accent-2: var(--palette-blue-soft);
+  --accent-soft: rgba(99, 143, 168, 0.14);
+  --warm-soft: rgba(242, 217, 187, 0.08);
+  --danger: var(--palette-alert);
+  --danger-soft: rgba(255, 87, 87, 0.11);
+  --teach: var(--palette-sand);
+  --teach-bg: rgba(242, 217, 187, 0.08);
   --page-bg: #0b1220;
 }
 
@@ -16821,28 +16847,28 @@ strong, b { font-weight: 700; color: var(--fg); }
   text-transform: uppercase;
   letter-spacing: .03em;
 }
-.pt-b-v { background: #e0f2fe; color: #0369a1; border: 1px solid #7dd3fc; }
-.pt-b-sc { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
-.pt-b-a { background: #fee2e2; color: #991b1b; border: 1px solid #fca5a5; }
-body.dark .pt-b-v { background: rgba(56,189,248,.15); color: #7dd3fc; border-color: rgba(125,211,252,.3); }
-body.dark .pt-b-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
-body.dark .pt-b-a { background: rgba(248,113,113,.15); color: #fca5a5; border-color: rgba(252,165,165,.3); }
+.pt-b-v { background: rgba(99,143,168,.14); color: var(--accent); border: 1px solid rgba(55,108,139,.32); }
+.pt-b-sc { background: var(--warm-soft); color: var(--accent); border: 1px solid rgba(55,108,139,.24); }
+.pt-b-a { background: var(--danger-soft); color: var(--danger); border: 1px solid rgba(255,87,87,.40); }
+body.dark .pt-b-v { background: rgba(99,143,168,.16); color: var(--accent); border-color: rgba(99,143,168,.38); }
+body.dark .pt-b-sc { background: var(--warm-soft); color: var(--palette-sand); border-color: rgba(242,217,187,.30); }
+body.dark .pt-b-a { background: var(--danger-soft); color: var(--danger); border-color: rgba(255,87,87,.42); }
 .pt-sc-row { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 5px; }
 .pt-sc-c {
   font-size: 7pt;
   padding: 1px 6px;
   border-radius: 2px;
-  background: #fef9c3;
-  color: #854d0e;
-  border: 1px solid #fde047;
+  background: var(--warm-soft);
+  color: var(--accent);
+  border: 1px solid rgba(55,108,139,.22);
   font-weight: 600;
 }
-body.dark .pt-sc-c { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
+body.dark .pt-sc-c { background: var(--warm-soft); color: var(--palette-sand); border-color: rgba(242,217,187,.30); }
 
 /* One-liner */
 .oneliner {
-  background: #f0f7ff;
-  border: 1px solid #bfdbfe;
+  background: rgba(99,143,168,.09);
+  border: 1px solid rgba(55,108,139,.24);
   border-radius: 4px;
   padding: 10px 12px;
   margin-bottom: 10px;
@@ -16850,9 +16876,9 @@ body.dark .pt-sc-c { background: rgba(245,158,11,.15); color: #fcd34d; border-co
   line-height: 1.55;
   color: var(--fg-m);
 }
-body.dark .oneliner { background: rgba(56,189,248,.08); border-color: rgba(56,189,248,.25); color: var(--fg-m); }
-.oneliner strong { color: #1d4ed8; }
-body.dark .oneliner strong { color: #93c5fd; }
+body.dark .oneliner { background: rgba(99,143,168,.12); border-color: rgba(99,143,168,.30); color: var(--fg-m); }
+.oneliner strong { color: var(--accent); }
+body.dark .oneliner strong { color: var(--accent); }
 
 /* Allergy bar */
 .allergy {
@@ -16861,20 +16887,20 @@ body.dark .oneliner strong { color: #93c5fd; }
   gap: 5px;
   font-size: 9pt;
   font-weight: 600;
-  color: #166534;
-  background: #dcfce7;
-  border: 1px solid #86efac;
+  color: var(--accent);
+  background: rgba(99,143,168,.12);
+  border: 1px solid rgba(55,108,139,.30);
   border-radius: 3px;
   padding: 3px 10px;
   margin-bottom: 10px;
 }
 .allergy.allergy-warn {
-  color: #991b1b;
-  background: #fee2e2;
-  border-color: #fca5a5;
+  color: var(--danger);
+  background: var(--danger-soft);
+  border-color: rgba(255,87,87,.40);
 }
-body.dark .allergy { background: rgba(52,211,153,.15); color: #6ee7b7; border-color: rgba(52,211,153,.3); }
-body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca5a5; border-color: rgba(248,113,113,.3); }
+body.dark .allergy { background: rgba(99,143,168,.14); color: var(--accent); border-color: rgba(99,143,168,.34); }
+body.dark .allergy.allergy-warn { background: var(--danger-soft); color: var(--danger); border-color: rgba(255,87,87,.42); }
 
 /* Full-width patient narrative boxes */
 .narrative-stack {
@@ -16956,13 +16982,13 @@ body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca
   justify-content: center;
   min-width: 72px;
   padding: 2px 6px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid rgba(55,108,139,.28);
   border-radius: 999px;
-  background: #eff6ff;
+  background: rgba(99,143,168,.10);
   font-family: 'JetBrains Mono', monospace;
   font-size: 7.5pt;
   font-weight: 700;
-  color: #1d4ed8;
+  color: var(--accent);
   white-space: nowrap;
 }
 .narrative-event {
@@ -16980,9 +17006,9 @@ body.dark .allergy.allergy-warn { background: rgba(248,113,113,.15); color: #fca
   white-space: nowrap;
 }
 body.dark .narrative-date {
-  border-color: rgba(96,165,250,.35);
-  background: rgba(59,130,246,.14);
-  color: #93c5fd;
+  border-color: rgba(99,143,168,.38);
+  background: rgba(99,143,168,.16);
+  color: var(--accent);
 }
 body.dark .narrative-inline-date {
   color: var(--fg-m);
@@ -17021,20 +17047,20 @@ body.dark .narrative-inline-date {
 }
 .pmh-list li:last-child { border-bottom: none; }
 .pmh-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; }
-.pmh-dot.on { background: #22c55e; }
+.pmh-dot.on { background: var(--accent-2); }
 .pmh-dot.off { background: #9ca3af; }
 .pmh-sc {
   margin-left: auto;
   font-size: 6.5pt;
   padding: 0 5px;
   border-radius: 2px;
-  background: #fef9c3;
-  color: #854d0e;
-  border: 1px solid #fde047;
+  background: var(--warm-soft);
+  color: var(--accent);
+  border: 1px solid rgba(55,108,139,.22);
   font-weight: 600;
   white-space: nowrap;
 }
-body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
+body.dark .pmh-sc { background: var(--warm-soft); color: var(--palette-sand); border-color: rgba(242,217,187,.30); }
 .ref-item { margin-bottom: 8px; }
 .ref-item:last-child { margin-bottom: 0; }
 .ref-subsection {
@@ -17147,36 +17173,74 @@ body.dark .pmh-sc { background: rgba(245,158,11,.15); color: #fcd34d; border-col
   line-height: 1.4;
 }
 .med-tbl tr:last-child td { border-bottom: none; }
-.drug-n { color: #7c3aed; font-weight: 700; white-space: nowrap; }
-body.dark .drug-n { color: #c084fc; }
+.drug-n { color: var(--accent); font-weight: 700; white-space: nowrap; }
+body.dark .drug-n { color: var(--accent); }
 .med-ind { color: var(--fg-d); font-size: 9pt; }
 
-/* Problem cards */
-
+/* Problem cards
+   The card itself no longer uses a strong vertical rail. Alternating quiet
+   blue and sand surfaces separate adjacent problems, leaving vertical bars
+   available for the nested teaching, diagnostic, and warning callouts. */
 .prob {
-  border: 1px solid var(--border);
-  border-left: 4px solid var(--accent);
-  border-radius: 6px;
+  --problem-bg: rgba(99, 143, 168, 0.055);
+  --problem-head-bg: rgba(99, 143, 168, 0.115);
+  --problem-border: rgba(55, 108, 139, 0.22);
+  border: 1px solid var(--problem-border);
+  border-radius: 7px;
   margin-bottom: 18px;
   page-break-inside: avoid;
   overflow: hidden;
-  background: var(--bg);
-  box-shadow: 0 1px 3px rgba(15, 23, 42, .04);
+  background: var(--problem-bg);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, .035);
+}
+.prob.prob-tone-blue {
+  --problem-bg: rgba(99, 143, 168, 0.055);
+  --problem-head-bg: rgba(99, 143, 168, 0.115);
+  --problem-border: rgba(55, 108, 139, 0.22);
+}
+.prob.prob-tone-sand {
+  --problem-bg: rgba(242, 217, 187, 0.20);
+  --problem-head-bg: rgba(242, 217, 187, 0.38);
+  --problem-border: rgba(55, 108, 139, 0.17);
 }
 .prob-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 12px 14px;
-  background: var(--accent-soft);
-  border-bottom: 1px solid var(--border-l);
+  background: var(--problem-head-bg);
+  border-bottom: 1px solid var(--problem-border);
   gap: 10px;
   page-break-after: avoid;
 }
 .prob-title { font-size: 12pt; font-weight: 700; color: var(--accent); line-height: 1.25; letter-spacing: -0.005em; }
 .prob-sub { font-size: 8.5pt; color: var(--fg-d); font-weight: 400; margin-top: 3px; }
-body.dark .prob-head { background: rgba(126, 168, 212, 0.06); }
+body.dark .prob.prob-tone-blue {
+  --problem-bg: rgba(99, 143, 168, 0.075);
+  --problem-head-bg: rgba(99, 143, 168, 0.14);
+  --problem-border: rgba(99, 143, 168, 0.28);
+}
+body.dark .prob.prob-tone-sand {
+  --problem-bg: rgba(242, 217, 187, 0.045);
+  --problem-head-bg: rgba(242, 217, 187, 0.085);
+  --problem-border: rgba(242, 217, 187, 0.16);
+}
 body.dark .prob-title { color: var(--accent); }
+.problem-attending-summary {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(55, 108, 139, 0.16);
+  border-radius: 4px;
+  background: rgba(242, 217, 187, 0.24);
+  color: var(--fg) !important;
+  font-size: 9pt !important;
+  font-style: italic;
+  line-height: 1.5 !important;
+}
+body.dark .problem-attending-summary {
+  border-color: rgba(242, 217, 187, 0.14);
+  background: rgba(242, 217, 187, 0.065);
+}
 .prob-pill {
   font-size: 7pt;
   font-weight: 700;
@@ -17187,14 +17251,14 @@ body.dark .prob-title { color: var(--accent); }
   white-space: nowrap;
   flex-shrink: 0;
 }
-.pill-active { background: #dcfce7; color: #166534; border: 1px solid #86efac; }
-.pill-stable { background: #dbeafe; color: #1e40af; border: 1px solid #93c5fd; }
+.pill-active { background: rgba(55,108,139,.12); color: var(--accent); border: 1px solid rgba(55,108,139,.32); }
+.pill-stable { background: rgba(99,143,168,.14); color: var(--accent); border: 1px solid rgba(99,143,168,.36); }
 .pill-resolved { background: #f3f4f6; color: #6b7280; border: 1px solid #d1d5db; }
-.pill-reg { background: #fef3c7; color: #92400e; border: 1px solid #fcd34d; }
-body.dark .pill-active { background: rgba(52,211,153,.15); color: #6ee7b7; border-color: rgba(52,211,153,.3); }
-body.dark .pill-stable { background: rgba(56,189,248,.15); color: #7dd3fc; border-color: rgba(56,189,248,.3); }
+.pill-reg { background: var(--warm-soft); color: var(--accent); border: 1px solid rgba(55,108,139,.24); }
+body.dark .pill-active { background: rgba(55,108,139,.18); color: var(--accent); border-color: rgba(99,143,168,.38); }
+body.dark .pill-stable { background: rgba(99,143,168,.18); color: var(--accent); border-color: rgba(99,143,168,.42); }
 body.dark .pill-resolved { background: rgba(148,163,184,.15); color: #cbd5e1; border-color: rgba(148,163,184,.3); }
-body.dark .pill-reg { background: rgba(245,158,11,.15); color: #fcd34d; border-color: rgba(252,211,77,.3); }
+body.dark .pill-reg { background: var(--warm-soft); color: var(--palette-sand); border-color: rgba(242,217,187,.30); }
 .prob-body { padding: 10px 12px; }
 .prob-body p { font-size: 9pt; color: var(--fg-m); line-height: 1.5; margin-bottom: 6px; }
 .prob-body p:last-child { margin-bottom: 0; }
@@ -17243,9 +17307,8 @@ body.dark .pill-reg { background: rgba(245,158,11,.15); color: #fcd34d; border-c
   line-height: 1.42;
 }
 
-/* Teaching callouts — ONE amber system for all teaching content.
-   Distinguish by label + icon, not by color. Student's eye learns:
-   left-amber-bar = something to think about.                              */
+/* Teaching callouts — warm sand surface with a deep-blue cue.
+   The coral is reserved for genuine warning content only. */
 .tch, .ask {
   background: var(--teach-bg);
   border-left: 3px solid var(--teach);
@@ -17273,8 +17336,8 @@ body.dark .tch-label, body.dark .ask-label { color: var(--teach); }
 }
 .tch li:last-child, .ask li:last-child, .tch p:last-child, .ask p:last-child { margin-bottom: 0; }
 
-/* Warning box — ONLY for danger (Don't Miss, Screen For).
-   Uses muted brick, not fire-truck red.                                     */
+/* Warning box — coral is intentionally reserved for danger, abnormal
+   values, and don't-miss content. */
 .wrn {
   background: var(--danger-soft);
   border-left: 3px solid var(--danger);
@@ -17297,9 +17360,8 @@ body.dark .wrn-label { color: var(--danger); }
 .wrn p:last-child, .wrn li:last-child { margin-bottom: 0; }
 
 
-/* Diagnostic understanding box — uses INFORMATIONAL blue, not teaching amber.
-   Different color from teaching boxes because this is "here is what this test IS,"
-   not "here is what to think about."                                        */
+/* Diagnostic understanding box — soft blue distinguishes test explanation
+   from the sand teaching callouts. */
 .dx-teach {
   background: var(--accent-soft);
   border-left: 3px solid var(--accent);
@@ -17308,7 +17370,7 @@ body.dark .wrn-label { color: var(--danger); }
   margin-top: 8px;
   page-break-inside: avoid;
 }
-body.dark .dx-teach { background: rgba(126, 168, 212, 0.06); }
+body.dark .dx-teach { background: rgba(99, 143, 168, 0.10); }
 .dx-teach-label {
   font-size: 7pt;
   font-weight: 800;
@@ -17502,7 +17564,7 @@ body.dark .lab-ok { color: var(--fg-m) !important; }
   background: var(--accent-soft);
   border-bottom: 1px solid var(--border-l);
 }
-body.dark .diag-card-head { background: rgba(126, 168, 212, 0.06); }
+body.dark .diag-card-head { background: rgba(99, 143, 168, 0.10); }
 .diag-card-heading { min-width: 0; }
 .diag-category {
   margin-bottom: 3px;
@@ -17537,36 +17599,36 @@ body.dark .diag-card-head { background: rgba(126, 168, 212, 0.06); }
   white-space: nowrap;
 }
 .diag-date {
-  border: 1px solid #bfdbfe;
-  background: #eff6ff;
-  color: #1d4ed8;
+  border: 1px solid rgba(55,108,139,.28);
+  background: rgba(99,143,168,.11);
+  color: var(--accent);
 }
 .diag-status-pending {
-  border: 1px solid #f59e0b;
-  background: #fffbeb;
-  color: #92400e;
+  border: 1px solid rgba(55,108,139,.20);
+  background: var(--warm-soft);
+  color: var(--accent);
   margin-left: auto;
 }
 .diag-status-scanned {
-  border: 1px solid #93c5fd;
-  background: #eff6ff;
-  color: #1e40af;
+  border: 1px solid rgba(99,143,168,.32);
+  background: rgba(99,143,168,.11);
+  color: var(--accent);
   margin-left: auto;
 }
 body.dark .diag-date {
-  border-color: rgba(96,165,250,.35);
-  background: rgba(59,130,246,.14);
-  color: #93c5fd;
+  border-color: rgba(99,143,168,.38);
+  background: rgba(99,143,168,.16);
+  color: var(--accent);
 }
 body.dark .diag-status-pending {
-  border-color: rgba(245,158,11,.45);
-  background: rgba(245,158,11,.12);
-  color: #fbbf24;
+  border-color: rgba(242,217,187,.30);
+  background: var(--warm-soft);
+  color: var(--palette-sand);
 }
 body.dark .diag-status-scanned {
-  border-color: rgba(96,165,250,.35);
-  background: rgba(59,130,246,.14);
-  color: #93c5fd;
+  border-color: rgba(99,143,168,.38);
+  background: rgba(99,143,168,.16);
+  color: var(--accent);
 }
 .diag-card-body { padding: 8px 10px 9px; }
 .diag-meta-grid {
@@ -17629,13 +17691,13 @@ body.dark .diag-status-scanned {
 .diag-report-section-emphasis {
   margin: 8px -2px 0;
   padding: 7px 8px;
-  border: 1px solid rgba(37, 99, 235, .18);
+  border: 1px solid rgba(55, 108, 139, .18);
   border-radius: 4px;
-  background: rgba(37, 99, 235, .045);
+  background: rgba(99, 143, 168, .075);
 }
 body.dark .diag-report-section-emphasis {
-  border-color: rgba(96, 165, 250, .25);
-  background: rgba(59, 130, 246, .08);
+  border-color: rgba(99, 143, 168, .25);
+  background: rgba(99, 143, 168, .10);
 }
 .diag-section-title {
   margin-bottom: 3px;
@@ -17677,14 +17739,14 @@ body.dark .diag-report-section-emphasis {
 .diag-teaching {
   margin-top: 10px;
   padding: 10px 11px;
-  border: 1px solid rgba(37, 99, 235, .20);
+  border: 1px solid rgba(55, 108, 139, .20);
   border-left: 3px solid var(--accent);
   border-radius: 0 5px 5px 0;
-  background: rgba(37, 99, 235, .045);
+  background: rgba(99, 143, 168, .075);
 }
 body.dark .diag-teaching {
-  border-color: rgba(96, 165, 250, .25);
-  background: rgba(59, 130, 246, .08);
+  border-color: rgba(99, 143, 168, .25);
+  background: rgba(99, 143, 168, .10);
 }
 .diag-teaching-title {
   display: flex;
@@ -17716,7 +17778,7 @@ body.dark .diag-teaching {
   grid-template-columns: minmax(135px, 23%) minmax(0, 1fr);
   gap: 9px;
   padding: 5px 0;
-  border-top: 1px solid rgba(37, 99, 235, .12);
+  border-top: 1px solid rgba(55, 108, 139, .12);
 }
 .diag-teaching-key {
   color: var(--fg-d);
@@ -17814,10 +17876,10 @@ body.dark .diag-teaching {
   border-radius: 8px;
   white-space: nowrap;
 }
-.prev-due { background: #fee2e2; color: #991b1b; }
-.prev-done { background: #dcfce7; color: #166534; }
-body.dark .prev-due { background: rgba(239,68,68,.15); color: #fca5a5; }
-body.dark .prev-done { background: rgba(52,211,153,.15); color: #6ee7b7; }
+.prev-due { background: var(--danger-soft); color: var(--danger); }
+.prev-done { background: rgba(99,143,168,.14); color: var(--accent); }
+body.dark .prev-due { background: var(--danger-soft); color: var(--danger); }
+body.dark .prev-done { background: rgba(99,143,168,.18); color: var(--accent); }
 
 /* Practice questions */
 .pq-sep {
@@ -17851,18 +17913,18 @@ body.dark .prev-done { background: rgba(52,211,153,.15); color: #6ee7b7; }
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: .05em;
-  color: #0d9488;
+  color: var(--accent-2);
   display: block;
   margin-bottom: 2px;
 }
-body.dark .pq-type { color: #5eead4; }
+body.dark .pq-type { color: var(--accent); }
 .pq-opts { list-style: none; margin: 4px 0; padding: 0; }
 .pq-opts li { font-size: 9pt; color: var(--fg-m); padding: 2px 0; line-height: 1.4; }
 .pq-opts li .pq-l { font-weight: 700; margin-right: 5px; color: var(--fg-d); }
-.pq-opts li.pq-right { color: #166534; font-weight: 700; }
-body.dark .pq-opts li.pq-right { color: #86efac; }
-.pq-opts li.pq-right .pq-l { color: #166534; }
-body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
+.pq-opts li.pq-right { color: var(--accent); font-weight: 700; }
+body.dark .pq-opts li.pq-right { color: var(--accent); }
+.pq-opts li.pq-right .pq-l { color: var(--accent); }
+body.dark .pq-opts li.pq-right .pq-l { color: var(--accent); }
 .pq-exp { font-size: 9pt; color: var(--fg-m); line-height: 1.45; margin-top: 4px; }
 
 /* Footer */
@@ -17886,7 +17948,7 @@ body.dark .pq-opts li.pq-right .pq-l { color: #86efac; }
   body.dark .page { background: #fff !important; }
   .doc-toolbar { display: none !important; }
   /* Force light-theme colors for print */
-  body.dark { --bg: #ffffff; --fg: #1a1f2e; --fg-m: #374151; --fg-d: #6b7280; --border: #d1d5db; --border-l: #e5e7eb; --border-vl: #f3f4f6; --panel: #f9fafb; --panel-h: #f3f4f6; --accent: #2563eb; }
+  body.dark { --bg: #ffffff; --fg: #1a1f2e; --fg-m: #374151; --fg-d: #6b7280; --border: #d1d5db; --border-l: #e5e7eb; --border-vl: #f3f4f6; --panel: #f9fafb; --panel-h: rgba(99,143,168,.10); --accent: #376c8b; --accent-2: #638fa8; --teach: #376c8b; --teach-bg: rgba(242,217,187,.34); --danger: #ff5757; --danger-soft: rgba(255,87,87,.09); }
   body.dark .oneliner, body.dark .allergy, body.dark .pt-b-v, body.dark .pt-b-sc, body.dark .pt-b-a, body.dark .pt-sc-c, body.dark .pmh-sc, body.dark .pill-active, body.dark .pill-stable, body.dark .pill-resolved, body.dark .pill-reg, body.dark .tch, body.dark .ask, body.dark .wrn, body.dark .prev-due, body.dark .prev-done { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
   .narrative-head { page-break-after: avoid; break-after: avoid; }
   .narrative-row, .narrative-data { break-inside: avoid; page-break-inside: avoid; }
@@ -18240,6 +18302,10 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
 // standalone exports, and print rules that collapse back to letter size.
 const POST_VISIT_DOCUMENT_STYLES = `
 .post-visit-document {
+  --palette-alert: #ff5757;
+  --palette-blue-deep: #376c8b;
+  --palette-sand: #f2d9bb;
+  --palette-blue-soft: #638fa8;
   --bg: #ffffff;
   --fg: #1a1f2e;
   --fg-m: #374151;
@@ -18248,13 +18314,14 @@ const POST_VISIT_DOCUMENT_STYLES = `
   --border-l: #e5e7eb;
   --border-vl: #f3f4f6;
   --panel: #f7f8fa;
-  --panel-h: #eef1f5;
-  --accent: #1e3a5f;
-  --accent-soft: #eef2f8;
-  --danger: #a03030;
-  --danger-soft: #fbeeee;
-  --teach: #b45309;
-  --teach-bg: #fefce8;
+  --panel-h: rgba(99,143,168,.10);
+  --accent: var(--palette-blue-deep);
+  --accent-2: var(--palette-blue-soft);
+  --accent-soft: rgba(99,143,168,.10);
+  --danger: var(--palette-alert);
+  --danger-soft: rgba(255,87,87,.09);
+  --teach: var(--palette-blue-deep);
+  --teach-bg: rgba(242,217,187,.34);
   --page-bg: #c8cdd5;
   --doc-navy: var(--accent);
   --doc-navy-mid: var(--accent);
@@ -18292,11 +18359,17 @@ body.post-visit-export.dark .post-visit-document {
   --border-vl: #1e293b;
   --panel: #1c242c;
   --panel-h: #212a34;
-  --accent: #60a5fa;
+  --accent: var(--palette-blue-soft);
+  --accent-2: var(--palette-blue-soft);
+  --accent-soft: rgba(99,143,168,.14);
+  --teach: var(--palette-sand);
+  --teach-bg: rgba(242,217,187,.08);
+  --danger: var(--palette-alert);
+  --danger-soft: rgba(255,87,87,.11);
   --page-bg: #0b1220;
-  --doc-terracotta: #fbbf24;
-  --doc-consensus: #86efac;
-  --doc-conflict: #fca5a5;
+  --doc-terracotta: var(--palette-blue-soft);
+  --doc-consensus: var(--palette-blue-soft);
+  --doc-conflict: var(--palette-alert);
   color-scheme: dark;
   box-shadow: 0 2px 24px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
 }
@@ -18404,20 +18477,43 @@ body.post-visit-export.dark .post-visit-document {
 
 /* Teaching cases become the same bordered problem cards used in the prenote. */
 .post-visit-document .doc-case-wrap {
+  --case-bg: rgba(99,143,168,.055);
+  --case-head-bg: rgba(99,143,168,.115);
+  --case-border: rgba(55,108,139,.22);
   margin-top: 14px !important;
   padding: 0 12px 12px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+  border: 1px solid var(--case-border);
+  border-radius: 7px;
   overflow: hidden;
-  background: var(--bg);
+  background: var(--case-bg);
+}
+.post-visit-document .doc-case-wrap.case-tone-blue {
+  --case-bg: rgba(99,143,168,.055);
+  --case-head-bg: rgba(99,143,168,.115);
+  --case-border: rgba(55,108,139,.22);
+}
+.post-visit-document .doc-case-wrap.case-tone-sand {
+  --case-bg: rgba(242,217,187,.20);
+  --case-head-bg: rgba(242,217,187,.38);
+  --case-border: rgba(55,108,139,.17);
+}
+body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-blue {
+  --case-bg: rgba(99,143,168,.075);
+  --case-head-bg: rgba(99,143,168,.14);
+  --case-border: rgba(99,143,168,.28);
+}
+body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
+  --case-bg: rgba(242,217,187,.045);
+  --case-head-bg: rgba(242,217,187,.085);
+  --case-border: rgba(242,217,187,.16);
 }
 .post-visit-document .doc-case-banner {
   margin: 0 -12px 10px !important;
   padding: 8px 12px !important;
   border: 0 !important;
-  border-bottom: 1px solid var(--border) !important;
+  border-bottom: 1px solid var(--case-border) !important;
   border-radius: 0 !important;
-  background: var(--panel) !important;
+  background: var(--case-head-bg) !important;
   box-shadow: none !important;
   color: var(--fg) !important;
 }
@@ -18440,6 +18536,17 @@ body.post-visit-export.dark .post-visit-document {
   color: var(--fg-d) !important;
   font-size: 8pt !important;
   font-style: normal !important;
+}
+
+.post-visit-document .post-case-summary {
+  padding: 9px 11px;
+  border: 1px solid rgba(55,108,139,.16);
+  border-radius: 4px;
+  background: rgba(242,217,187,.24);
+}
+body.post-visit-export.dark .post-visit-document .post-case-summary {
+  border-color: rgba(242,217,187,.14);
+  background: rgba(242,217,187,.065);
 }
 
 /* Tables and structured clinical data. */
@@ -18483,9 +18590,8 @@ body.post-visit-export.dark .post-visit-document {
 .post-visit-document [style*="var(--doc-warm-gray)"] { color: var(--fg-d) !important; }
 
 
-/* All post-visit callouts collapse into TWO visual treatments:
-   - Teaching (amber): pearl, trial, session goal
-   - Informational (blue): quote (patient voice), diagnostic explanation      */
+/* Post-visit callouts use the same two treatments as the prenote:
+   sand + deep blue for teaching, soft blue for informational content. */
 .post-visit-document .doc-callout-goal,
 .post-visit-document .doc-callout-pearl,
 .post-visit-document .doc-callout-trial {
@@ -18567,7 +18673,7 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
 }
 .post-visit-preview-shell [contenteditable="true"] { min-width: 0; }
 .post-visit-preview-shell [contenteditable="true"]:focus .post-visit-document {
-  box-shadow: 0 2px 24px rgba(0, 0, 0, 0.18), 0 0 0 2px rgba(37, 99, 235, 0.22);
+  box-shadow: 0 2px 24px rgba(0, 0, 0, 0.18), 0 0 0 2px rgba(55, 108, 139, 0.24);
 }
 
 @media (max-width: 640px) {
@@ -18595,7 +18701,11 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
     --border-vl: #f3f4f6;
     --panel: #f9fafb;
     --panel-h: #f3f4f6;
-    --accent: #2563eb;
+    --accent: #376c8b;
+    --accent-2: #638fa8;
+    --teach: #376c8b;
+    --teach-bg: rgba(242,217,187,.34);
+    --danger: #ff5757;
     max-width: none !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -18676,14 +18786,14 @@ body.dark .tb-btn { border-color: #334155; background: #0f1419; color: #e8edf3; 
   width: min(10in, calc(100% - 16px));
   margin: 0 auto 10px;
   padding: 8px 10px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid rgba(55,108,139,.28);
   border-radius: 4px;
-  background: #eff6ff;
-  color: #1e3a8a;
+  background: rgba(99,143,168,.11);
+  color: #376c8b;
   font-size: 8pt;
   line-height: 1.4;
 }
-body.dark .interactive-banner { border-color: rgba(96, 165, 250, 0.35); background: rgba(59, 130, 246, 0.12); color: #bfdbfe; }
+body.dark .interactive-banner { border-color: rgba(99,143,168,.38); background: rgba(99,143,168,.16); color: #f2d9bb; }
 .doc-body td ul li a.problem-jump { color: var(--accent); text-decoration: none; border-bottom: 1px dotted currentColor; }
 .doc-body td ul li a.problem-jump::before { content: "down "; font-size: 7pt; opacity: 0.65; }
 .case-nav-pills {
@@ -18724,18 +18834,18 @@ body.dark .interactive-banner { border-color: rgba(96, 165, 250, 0.35); backgrou
 .shelf-option-btn .letter { margin-right: 4px; font-weight: 700; }
 .shelf-option-btn .indicator { display: none; margin-left: 5px; font-size: 7pt; font-weight: 700; }
 .shelf-option-btn.chosen-correct,
-.shelf-option-btn.revealed-correct { border-color: #16a34a; background: #f0fdf4; color: #166534; }
-.shelf-option-btn.chosen-wrong { border-color: #dc2626; background: #fef2f2; color: #991b1b; }
+.shelf-option-btn.revealed-correct { border-color: #638fa8; background: rgba(99,143,168,.12); color: #376c8b; }
+.shelf-option-btn.chosen-wrong { border-color: #ff5757; background: rgba(255,87,87,.09); color: #ff5757; }
 .shelf-option-btn.revealed-wrong { opacity: 0.55; text-decoration: line-through; }
 .shelf-option-btn.chosen-correct .indicator,
 .shelf-option-btn.revealed-correct .indicator,
 .shelf-option-btn.chosen-wrong .indicator { display: inline; }
 body.dark .shelf-option-btn.chosen-correct,
-body.dark .shelf-option-btn.revealed-correct { background: rgba(34, 197, 94, 0.1); color: #bbf7d0; }
-body.dark .shelf-option-btn.chosen-wrong { background: rgba(239, 68, 68, 0.1); color: #fecaca; }
+body.dark .shelf-option-btn.revealed-correct { background: rgba(99,143,168,.16); color: #638fa8; }
+body.dark .shelf-option-btn.chosen-wrong { background: rgba(255,87,87,.11); color: #ff5757; }
 .shelf-answer-interactive { margin: 0 0 0 24px; max-height: 0; overflow: hidden; opacity: 0; transition: max-height 0.3s, opacity 0.3s; }
 .shelf-answer-interactive.revealed { max-height: 1200px; opacity: 1; }
-.shelf-answer-interactive .label { color: #15803d; font-size: 7pt; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
+.shelf-answer-interactive .label { color: #376c8b; font-size: 7pt; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; }
 .shelf-reset-btn { margin: 5px 0 0 24px; padding: 3px 7px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--fg-d); font: 600 7pt 'DM Sans', sans-serif; cursor: pointer; }
 .shelf-reset-btn.hidden { display: none; }
 @media (max-width: 640px) {
@@ -18795,10 +18905,10 @@ body.post-visit-export.dark .tb-btn {
   width: min(10in, calc(100% - 16px));
   margin: 0 auto 10px;
   padding: 8px 10px;
-  border: 1px solid #bfdbfe;
+  border: 1px solid rgba(55,108,139,.28);
   border-radius: 4px;
-  background: #eff6ff;
-  color: #1e3a8a;
+  background: rgba(99,143,168,.11);
+  color: #376c8b;
   font-size: 8pt;
   line-height: 1.4;
   display: flex;
@@ -19753,7 +19863,7 @@ function DocumentContent({ doc, phase, session }) {
             doc.teachingDetailOptions
           );
           return (
-            <section key={idx} className="doc-case-wrap">
+            <section key={idx} className={`doc-case-wrap ${idx % 2 === 0 ? "case-tone-blue" : "case-tone-sand"}`}>
               <div className="doc-case-banner">
                 <div className="doc-case-numeral">
                   {c.kind === "tangential" ? "Tangential Topic" : "Case"} {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}
@@ -19780,10 +19890,8 @@ function DocumentContent({ doc, phase, session }) {
                 })()}
               </div>
 {c.caseSummary && (
-                <div className="keep-together" style={{
+                <div className="keep-together post-case-summary" style={{
                   marginBottom: "1.5rem",
-                  paddingLeft: "0.85rem",
-                  borderLeft: "2px solid var(--doc-terracotta)",
                 }}>
                   <div style={{
                     fontFamily: "'Source Serif 4', Georgia, serif",
@@ -20087,11 +20195,11 @@ function DocumentContent({ doc, phase, session }) {
                   <div className="keep-together" style={{ marginBottom: "1.25rem", padding: "0.85rem 1rem", background: "#fef2f2", borderLeft: "3px solid #dc2626", borderRadius: "0 4px 4px 0" }}>
                     <div className="doc-meta-label" style={{ color: "#dc2626", marginBottom: "0.4rem" }}>Don't Miss</div>
                     {dontMissItems.length === 1 ? (
-                      <div style={{ fontSize: "0.9rem", color: "#991b1b" }}>{dontMissItems[0]}</div>
+                      <div style={{ fontSize: "0.9rem", color: "var(--doc-conflict)" }}>{dontMissItems[0]}</div>
                     ) : (
                       <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
                         {dontMissItems.map((item, i) => (
-                          <li key={i} style={{ fontSize: "0.88rem", color: "#991b1b", marginBottom: "0.3rem" }}>{item}</li>
+                          <li key={i} style={{ fontSize: "0.88rem", color: "var(--doc-conflict)", marginBottom: "0.3rem" }}>{item}</li>
                         ))}
                       </ul>
                     )}
