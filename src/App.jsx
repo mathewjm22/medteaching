@@ -11477,6 +11477,169 @@ const buildInRoomHtml = (doc, session) => {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
+
+  const focusAreaDisplay = {
+    history: {
+      label: "History & Documentation",
+      description: "how to gather and organize the story",
+    },
+    physicalExam: {
+      label: "Physical Exam",
+      description: "which maneuvers matter and how to interpret them",
+    },
+    differential: {
+      label: "Differential Diagnosis",
+      description: "how to build and narrow the differential",
+    },
+    workup: {
+      label: "Diagnostic Workup",
+      description: "which tests to use and how to interpret them",
+    },
+    management: {
+      label: "Management",
+      description: "treatment reasoning, dosing, alternatives, and monitoring",
+    },
+    patientContext: {
+      label: "Patient Context",
+      description: "social, cultural, military, and structural factors",
+    },
+    ebm: {
+      label: "Evidence-Based Medicine",
+      description: "guideline application and evidence appraisal",
+    },
+    communication: {
+      label: "Communication",
+      description: "patient conversations and presentation to the team",
+    },
+  };
+
+  const activeFocusItems = (Array.isArray(doc.focusAreas) ? doc.focusAreas : [])
+    .map((key) => ({ key, ...(focusAreaDisplay[key] || { label: key, description: "" }) }))
+    .filter((item) => item.label);
+
+  // Build one authoritative figure inventory before any section renders. This
+  // lets teaching claims link to the final Figures box even though that box is
+  // intentionally placed near the end of the document.
+  const documentFigures = [];
+  const figureUrlToIndex = new Map();
+  const figureRefToIndex = new Map();
+
+  const registerFigureRef = (ref, index) => {
+    const value = String(ref || "").trim();
+    if (!value) return;
+    figureRefToIndex.set(value, index);
+    figureRefToIndex.set(value.toLowerCase(), index);
+  };
+
+  const addDocumentFigure = (figure, options = {}) => {
+    if (!figure || typeof figure !== "object") return;
+
+    const dataUrl = String(
+      figure.dataUrl || figure.src || figure.url || ""
+    ).trim();
+
+    if (!dataUrl || !/^(?:data:image\/|blob:|https?:\/\/)/i.test(dataUrl)) {
+      return;
+    }
+
+    const refs = [figure.id, figure.key, options.key]
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+
+    if (figureUrlToIndex.has(dataUrl)) {
+      const existingIndex = figureUrlToIndex.get(dataUrl);
+      refs.forEach((ref) => registerFigureRef(ref, existingIndex));
+      const existing = documentFigures[existingIndex];
+      refs.forEach((ref) => {
+        if (!existing.refs.includes(ref)) existing.refs.push(ref);
+      });
+      return;
+    }
+
+    const rawCaption = String(
+      options.caption ??
+      figure.caption ??
+      figure.alt ??
+      figure.filename ??
+      ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+    const sourceOnlyCaption =
+      /^figure\s+from\s+/i.test(rawCaption) ||
+      /^(?:openevidence|uptodate|dynamed|doxgpt|pubmed(?:\s+ai)?)(?:\b|\s*:)/i.test(rawCaption);
+
+    const genericFilename =
+      /^(?:image|screenshot|screen\s*shot|photo|img|pasted)(?:[-_\s]*\d+)?(?:\.[a-z0-9]+)?$/i.test(rawCaption);
+
+    const caption = options.trustCaption
+      ? rawCaption
+      : (!sourceOnlyCaption && !genericFilename ? rawCaption : "");
+
+    const index = documentFigures.length;
+    const entry = {
+      dataUrl,
+      caption,
+      refs: [...new Set(refs)],
+      anchor: `figure-${index + 1}`,
+    };
+
+    documentFigures.push(entry);
+    figureUrlToIndex.set(dataUrl, index);
+    entry.refs.forEach((ref) => registerFigureRef(ref, index));
+  };
+
+  const synthesizedFigures =
+    s.synthesizedEvidence?.content?.allFigures ||
+    doc.synthesizedEvidence?.allFigures ||
+    [];
+
+  (Array.isArray(synthesizedFigures) ? synthesizedFigures : []).forEach(
+    (figure, index) => addDocumentFigure(figure, { key: `synth-${index}` })
+  );
+
+  (Array.isArray(doc.allSourceImages) ? doc.allSourceImages : []).forEach(
+    (figure, index) => addDocumentFigure(figure, { key: `source-${index}` })
+  );
+
+  (Array.isArray(doc.imageAttachments) ? doc.imageAttachments : []).forEach(
+    (figure, index) => addDocumentFigure(figure, {
+      key: `attachment-${index}`,
+      caption: figure.caption || figure.filename || "",
+      trustCaption: Boolean(String(figure.caption || "").trim()),
+    })
+  );
+
+  const normalizeFigureRefList = (value) => {
+    if (Array.isArray(value)) {
+      return value.flatMap((item) => normalizeFigureRefList(item));
+    }
+    if (value && typeof value === "object") {
+      return normalizeFigureRefList(value.id || value.figureRef || value.figureRefs || "");
+    }
+    const source = String(value || "").trim();
+    if (!source) return [];
+    return source.split(/\s*[;,]\s*/).map((item) => item.trim()).filter(Boolean);
+  };
+
+  const renderFigureReferenceLinks = (value, lead = "See") => {
+    const indexes = [];
+    normalizeFigureRefList(value).forEach((ref) => {
+      const index = figureRefToIndex.get(ref) ?? figureRefToIndex.get(ref.toLowerCase());
+      if (Number.isInteger(index) && !indexes.includes(index)) indexes.push(index);
+    });
+
+    if (indexes.length === 0) return "";
+    indexes.sort((a, b) => a - b);
+
+    const links = indexes.map((index) =>
+      `<a href="#${documentFigures[index].anchor}">Figure ${index + 1}</a>`
+    );
+
+    return `<span class="figure-ref-links"><i class="fa-regular fa-image"></i> ${esc(lead)} ${links.join(indexes.length > 1 ? ", " : "")}</span>`;
+  };
+
   // Pull the AI's value definitions into the main pre-visit laboratory and
   // diagnostic sections. This keeps the raw chart data easy to scan while
   // still giving the student a nearby glossary for unfamiliar values.
@@ -13049,6 +13212,57 @@ const buildInRoomHtml = (doc, session) => {
     : `<span class="allergy allergy-warn"><i class="fa-solid fa-triangle-exclamation"></i> Allergies: ${esc(allergiesShort)}</span>`;
 
   // ──────────────────────────────────────────────────────────────
+  // CASE OVERVIEW, SESSION GOAL, AND SELECTED TEACHING FOCUSES
+  // ──────────────────────────────────────────────────────────────
+  let overviewHtml = "";
+  const selectedProblemLabels = Array.from(new Set(
+    (Array.isArray(doc.selectedProblems) && doc.selectedProblems.length > 0
+      ? doc.selectedProblems
+      : enabledCases.map((tc) => tc?.data?.problem || tc?.problem)
+    ).filter(Boolean)
+  ));
+
+  const glanceRows = [
+    ["Chief concern", doc.chiefConcern],
+    ["Primary working diagnosis", doc.workingDx],
+    ["Complexity", doc.complexity === "complex" ? "Complex presentation" : "Common presentation"],
+  ].filter(([, value]) => String(value || "").trim());
+
+  if (s.caseAtGlance?.enabled !== false && (glanceRows.length > 0 || selectedProblemLabels.length > 0)) {
+    overviewHtml += `<section class="overview-card case-glance-card">`;
+    overviewHtml += `<div class="overview-card-head"><i class="fa-solid fa-binoculars"></i> Case at a Glance</div>`;
+    overviewHtml += `<div class="overview-kv-grid">`;
+    glanceRows.forEach(([label, value]) => {
+      overviewHtml += `<div class="overview-kv"><div class="overview-k">${esc(label)}</div><div class="overview-v">${esc(value)}</div></div>`;
+    });
+    if (selectedProblemLabels.length > 0) {
+      overviewHtml += `<div class="overview-kv overview-kv-wide"><div class="overview-k">Problems in focus</div><div class="overview-problem-tags">${selectedProblemLabels.map((problem) => `<span>${esc(problem)}</span>`).join("")}</div></div>`;
+    }
+    overviewHtml += `</div></section>`;
+  }
+
+  const goalText = s.sessionGoal?.enabled && String(s.sessionGoal?.content || "").trim()
+    ? String(s.sessionGoal.content).trim()
+    : "";
+  const showFocusFraming = s.phaseFraming?.enabled !== false && activeFocusItems.length > 0;
+
+  if (goalText || showFocusFraming) {
+    overviewHtml += `<div class="overview-support-grid${goalText && showFocusFraming ? "" : " overview-support-grid-single"}">`;
+    if (goalText) {
+      overviewHtml += `<section class="overview-card overview-goal-card"><div class="overview-card-head"><i class="fa-solid fa-bullseye"></i> Session Goal</div><div class="overview-goal-text">${esc(goalText)}</div></section>`;
+    }
+    if (showFocusFraming) {
+      overviewHtml += `<section class="overview-card overview-focus-card"><div class="overview-card-head"><i class="fa-solid fa-compass"></i> What This Document Focuses On</div>`;
+      overviewHtml += `<div class="overview-focus-list">`;
+      activeFocusItems.forEach((item, index) => {
+        overviewHtml += `<div class="overview-focus-item"><span class="overview-focus-num">${String(index + 1).padStart(2, "0")}</span><div><b>${esc(item.label)}.</b>${item.description ? ` ${esc(item.description)}` : ""}</div></div>`;
+      });
+      overviewHtml += `</div></section>`;
+    }
+    overviewHtml += `</div>`;
+  }
+
+  // ──────────────────────────────────────────────────────────────
   // FULL-WIDTH PATIENT NARRATIVE BOXES
   // ──────────────────────────────────────────────────────────────
   const narrativeDateSource =
@@ -14095,6 +14309,9 @@ const buildProblemCard = (tc, idx, isSelected) => {
   const problemToneClass = idx % 2 === 0 ? "prob-tone-blue" : "prob-tone-sand";
   let html = `<div class="prob ${problemToneClass}"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
   if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
+  if (isSelected && activeFocusItems.length > 0) {
+    html += `<div class="prob-focus-line">Taught with focus on: ${activeFocusItems.map((item) => esc(item.label)).join(" · ")}</div>`;
+  }
   html += `</div><span class="prob-pill ${pill.cls}">${esc(pill.label)}</span></div>`;
 
   html += `<div class="prob-body">`;
@@ -14299,8 +14516,94 @@ const buildProblemCard = (tc, idx, isSelected) => {
     html += `<div class="prob-careteam"><i class="fa-solid fa-user-doctor"></i> <b>Care team for this problem:</b> ${esc(chartBlock.careTeam)}</div>`;
   }
 
-  // ── Teaching content for selected problems (existing logic, unchanged) ──
+  // ── Teaching content for selected problems ──
   if (isSelected) {
+    const teachingText = (value) => {
+      if (Array.isArray(value)) return value.map((item) => String(item || "").trim()).filter(Boolean).join("; ");
+      return String(value || "").replace(/\s+/g, " ").trim();
+    };
+
+    // Teaching definition is deliberately separate from the chart-derived
+    // narrative above so a generic definition can never masquerade as source
+    // documentation.
+    const primaryName = teachingText(c.primaryDiagnosis?.name);
+    const primaryDefinition = teachingText(c.primaryDiagnosis?.briefDefinition);
+    if (primaryName || primaryDefinition) {
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-book-medical"></i> Primary Diagnosis — Teaching Definition</div>`;
+      html += `<p>${primaryName ? `<b>${esc(primaryName)}${primaryDefinition ? "." : ""}</b>` : ""}${primaryDefinition ? ` ${esc(softenTeachingVoice(primaryDefinition))}` : ""}</p></div>`;
+    }
+
+    const illnessScript = c.illnessScript || {};
+    const illnessRows = [
+      ["Epidemiology", illnessScript.epidemiology],
+      ["Time course", illnessScript.timeCourse],
+      ["Key symptoms", illnessScript.keySymptoms],
+      ["Key signs", illnessScript.keySigns],
+      ["Key labs / imaging", illnessScript.keyLabsImaging],
+      ["Natural history", illnessScript.naturalHistory],
+    ]
+      .map(([label, value]) => [label, teachingText(value)])
+      .filter(([, value]) => value);
+
+    if (illnessRows.length > 0) {
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-puzzle-piece"></i> Illness Script</div>`;
+      html += `<p class="teaching-intro">The classic pattern for this diagnosis, anchored to how this patient fits or diverges.</p>`;
+      html += `<table class="mini-teach-table"><tbody>`;
+      illnessRows.forEach(([label, value]) => {
+        html += `<tr><th>${esc(label)}</th><td>${esc(value)}</td></tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+
+    const differentialItems = Array.isArray(c.differentialDiagnosis)
+      ? c.differentialDiagnosis.filter(Boolean)
+      : [];
+    if (differentialItems.length > 0) {
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-code-branch"></i> Differential Diagnosis</div>`;
+      html += `<table class="mini-teach-table differential-table"><thead><tr><th>Alternative</th><th>Clinical reasoning</th></tr></thead><tbody>`;
+      differentialItems.forEach((item) => {
+        const diagnosis = teachingText(typeof item === "string" ? item : item?.diagnosis || item?.name);
+        const reasoning = teachingText(typeof item === "string" ? "" : item?.reasoning || item?.why);
+        if (!diagnosis && !reasoning) return;
+        html += `<tr><td><b>${esc(diagnosis || "Alternative diagnosis")}</b></td><td>${esc(reasoning || "Reasoning not provided.")}</td></tr>`;
+      });
+      html += `</tbody></table></div>`;
+    }
+
+    const focusedHistoryQuestions = Array.isArray(c.focusedHistoryQuestions)
+      ? c.focusedHistoryQuestions.filter(Boolean)
+      : [];
+    if (focusedHistoryQuestions.length > 0) {
+      const historyLabel = c.kind === "tangential"
+        ? "Focused History Questions"
+        : "Key History That Anchors the Diagnosis";
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-clipboard-question"></i> ${esc(historyLabel)}</div><ul class="history-question-list">`;
+      focusedHistoryQuestions.forEach((item) => {
+        const question = teachingText(typeof item === "string" ? item : item?.question);
+        const rationale = teachingText(typeof item === "string" ? "" : item?.rationale);
+        if (!question) return;
+        html += `<li><div class="history-question">${esc(question)}</div>${rationale ? `<div class="history-rationale">${esc(rationale)}</div>` : ""}</li>`;
+      });
+      html += `</ul></div>`;
+    }
+
+    const exam = c.physicalExam || {};
+    const maneuver = teachingText(exam.maneuver);
+    const examSteps = Array.isArray(exam.steps) ? exam.steps.map(teachingText).filter(Boolean) : [];
+    const examInterpretation = teachingText(exam.interpretation);
+    if (maneuver || examSteps.length > 0 || examInterpretation) {
+      const examLabel = c.kind === "tangential"
+        ? "Physical Examination"
+        : "Physical Exam Findings That Matter";
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-hand-dots"></i> ${esc(examLabel)}</div>`;
+      if (maneuver) html += `<p class="exam-maneuver"><b>${esc(maneuver)}</b></p>`;
+      if (examSteps.length > 0) {
+        html += `<ol class="exam-step-list">${examSteps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol>`;
+      }
+      if (examInterpretation) html += `<p class="exam-interpretation"><b>Interpretation:</b> ${esc(examInterpretation)}</p>`;
+      html += `</div>`;
+    }
+
     // Suggested questions (ASK box)
     const suggestedQuestions = Array.isArray(c.suggestedQuestions) ? c.suggestedQuestions : [];
     if (suggestedQuestions.length > 0) {
@@ -14315,6 +14618,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
         if (!lp || typeof lp !== "object") return;
         html += `<li><b>${esc(lp.point || "")}:</b> ${esc(softenTeachingVoice(lp.explanation || ""))}`;
         if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
+        html += renderFigureReferenceLinks(lp.figureRefs || lp.figureRef, "See");
         html += `</li>`;
       });
       html += `</ul></div>`;
@@ -14346,6 +14650,34 @@ const buildProblemCard = (tc, idx, isSelected) => {
         html += `<p style="margin-top:5px;"><b>Additional considerations:</b> ${additionalTreatmentNotes.map((item) => esc(item)).join(" | ")}</p>`;
       }
       html += `</div>`;
+    }
+
+    const patientContext = teachingText(c.patientContextConsiderations);
+    if (patientContext) {
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-people-roof"></i> Patient Context</div><p>${esc(patientContext)}</p></div>`;
+    }
+
+    const communicationScenario = teachingText(c.communicationTeaching?.scenario);
+    const communicationScript = teachingText(c.communicationTeaching?.script);
+    if (communicationScenario || communicationScript) {
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-comments"></i> Communication Teaching</div>`;
+      if (communicationScenario) html += `<p><b>Scenario:</b> ${esc(communicationScenario)}</p>`;
+      if (communicationScript) html += `<div class="communication-script">“${esc(communicationScript)}”</div>`;
+      html += `</div>`;
+    }
+
+    const recommendedReading = Array.isArray(c.recommendedReading)
+      ? c.recommendedReading.filter(Boolean)
+      : [];
+    if (recommendedReading.length > 0) {
+      html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-book-open-reader"></i> Recommended Reading</div><ol class="reading-list">`;
+      recommendedReading.forEach((item) => {
+        const reference = teachingText(typeof item === "string" ? item : item?.reference || item?.title);
+        const relevance = teachingText(typeof item === "string" ? "" : item?.relevance || item?.why);
+        if (!reference) return;
+        html += `<li><div class="reading-reference">${esc(reference)}</div>${relevance ? `<div class="reading-relevance">${esc(relevance)}</div>` : ""}</li>`;
+      });
+      html += `</ol></div>`;
     }
 
     // Don't miss (WARN box)
@@ -14392,6 +14724,10 @@ const buildProblemCard = (tc, idx, isSelected) => {
     // Clinical pearl
     if (c.clinicalPearl) {
       html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(c.clinicalPearl)}</p></div>`;
+    }
+
+    if (teachingText(c.quoteToDiscuss)) {
+      html += `<div class="patient-voice-box"><div class="patient-voice-label"><i class="fa-solid fa-quote-left"></i> Patient's Voice</div><div class="patient-voice-text">${esc(teachingText(c.quoteToDiscuss))}</div></div>`;
     }
   } else {
     // Non-selected: lightweight teaching if available
@@ -17099,6 +17435,186 @@ const buildProblemCard = (tc, idx, isSelected) => {
   }
 
   // ──────────────────────────────────────────────────────────────
+  // LAB/VITAL INTERPRETATION, CROSS-CUTTING THEMES, STEP 4 EVIDENCE,
+  // AND CONTINUING LEARNING SECTIONS
+  // ──────────────────────────────────────────────────────────────
+  let trendTeachingHtml = "";
+  const trendTeachingItems = Array.isArray(s.labTrends?.content)
+    ? s.labTrends.content.filter(Boolean)
+    : [];
+  if (s.labTrends?.enabled && trendTeachingItems.length > 0) {
+    trendTeachingHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Lab &amp; Vital Trends for Interpretation</div><div class="sec-div-line"></div></div>`;
+    trendTeachingHtml += `<div class="section-card"><table class="trend-teaching-table"><thead><tr><th>Parameter</th><th>Trend</th><th>Teaching point</th></tr></thead><tbody>`;
+    trendTeachingItems.forEach((item) => {
+      const parameter = String(item?.parameter || item?.name || "").trim();
+      const trend = String(item?.trend || item?.value || "").trim();
+      const teachingPoint = String(item?.teachingPoint || item?.interpretation || "").trim();
+      if (!parameter && !trend && !teachingPoint) return;
+      trendTeachingHtml += `<tr><td><b>${esc(parameter || "Trend")}</b></td><td>${esc(trend || "—")}</td><td>${esc(teachingPoint || "—")}</td></tr>`;
+    });
+    trendTeachingHtml += `</tbody></table></div>`;
+  }
+
+  let crossCuttingHtml = "";
+  const crossCuttingThemes = Array.isArray(s.crossCuttingThemes?.content)
+    ? s.crossCuttingThemes.content.filter((item) => String(item || "").trim())
+    : [];
+  if (s.crossCuttingThemes?.enabled && crossCuttingThemes.length > 0) {
+    crossCuttingHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Cross-Cutting Themes</div><div class="sec-div-line"></div></div>`;
+    crossCuttingHtml += `<div class="theme-list">`;
+    crossCuttingThemes.forEach((theme, index) => {
+      crossCuttingHtml += `<div class="theme-item"><span>${String(index + 1).padStart(2, "0")}</span><div>${esc(theme)}</div></div>`;
+    });
+    crossCuttingHtml += `</div>`;
+  }
+
+  let evidenceHtml = "";
+  const evidenceContent = s.synthesizedEvidence?.content;
+  if (s.synthesizedEvidence?.enabled && evidenceContent) {
+    const evidenceTopics = Array.isArray(evidenceContent.topics)
+      ? evidenceContent.topics.filter(Boolean)
+      : [];
+    const evidenceTakeaways = Array.isArray(evidenceContent.keyTakeaways)
+      ? evidenceContent.keyTakeaways.filter(Boolean)
+      : [];
+    const singleSource = evidenceContent.singleSource;
+
+    if (evidenceTopics.length > 0 || evidenceTakeaways.length > 0 || singleSource) {
+      evidenceHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Step 4 Evidence Summary</div><div class="sec-div-line"></div></div>`;
+      evidenceHtml += `<section class="evidence-box">`;
+      evidenceHtml += `<div class="evidence-intro">Evidence extracted from the selected Step 4 sources. Clinical references are shown separately from source-tool provenance.</div>`;
+
+      if (singleSource && !evidenceContent.synthesized) {
+        const sourceName = String(singleSource.source || "Selected source").trim();
+        const sourceText = String(singleSource.contentHtml || "").replace(/\s+/g, " ").trim();
+        evidenceHtml += `<div class="evidence-topic"><div class="evidence-topic-title">${esc(sourceName)}</div>`;
+        if (sourceText) evidenceHtml += `<p>${esc(sourceText)}</p>`;
+        evidenceHtml += `</div>`;
+      }
+
+      if (evidenceTakeaways.length > 0) {
+        evidenceHtml += `<div class="evidence-takeaways"><div class="evidence-subhead">Key takeaways</div><ul>`;
+        evidenceTakeaways.forEach((takeaway) => {
+          evidenceHtml += `<li>${esc(takeaway)}</li>`;
+        });
+        evidenceHtml += `</ul></div>`;
+      }
+
+      const strengthLabels = {
+        consensus: "Consensus",
+        majority: "Multiple sources",
+        "single-source": "Single source",
+        conflict: "Conflicting evidence",
+      };
+
+      evidenceTopics.forEach((topic) => {
+        const topicName = String(topic?.topic || "Evidence topic").trim();
+        const claims = Array.isArray(topic?.claims) ? topic.claims.filter(Boolean) : [];
+        if (!topicName && claims.length === 0) return;
+
+        evidenceHtml += `<article class="evidence-topic"><div class="evidence-topic-title">${esc(topicName || "Evidence topic")}</div>`;
+        if (claims.length > 0) evidenceHtml += `<div class="evidence-claims">`;
+        claims.forEach((claim) => {
+          const statement = String(claim?.statement || "").trim();
+          if (!statement) return;
+          const strength = String(claim?.strength || "single-source").toLowerCase();
+          const citations = Array.isArray(claim?.citations) ? claim.citations.filter(Boolean) : [];
+          const provenance = Array.isArray(claim?.provenance || claim?.sources)
+            ? (claim.provenance || claim.sources).filter(Boolean)
+            : [];
+
+          evidenceHtml += `<div class="evidence-claim">`;
+          evidenceHtml += `<div class="evidence-claim-line"><span class="evidence-strength evidence-strength-${esc(strength)}">${esc(strengthLabels[strength] || strength)}</span><span>${esc(statement)}</span></div>`;
+          if (citations.length > 0) {
+            evidenceHtml += `<div class="evidence-citations"><b>Clinical references:</b> ${citations.map((citation) => esc(citation)).join("; ")}</div>`;
+          }
+          if (provenance.length > 0) {
+            evidenceHtml += `<div class="evidence-provenance"><b>Source provenance:</b> ${provenance.map((source) => esc(source)).join("; ")}</div>`;
+          }
+          evidenceHtml += renderFigureReferenceLinks(claim?.figureRefs || claim?.figureRef, "See");
+          evidenceHtml += `</div>`;
+        });
+        if (claims.length > 0) evidenceHtml += `</div>`;
+        evidenceHtml += `</article>`;
+      });
+
+      const matrixRows = Array.isArray(evidenceContent.crossReferenceMatrix)
+        ? evidenceContent.crossReferenceMatrix.filter(Boolean)
+        : [];
+      if (matrixRows.length > 0) {
+        evidenceHtml += `<div class="evidence-subhead evidence-reference-head">Reference map</div><table class="evidence-reference-table"><thead><tr><th>Topic</th><th>Primary guideline / trial references</th></tr></thead><tbody>`;
+        matrixRows.forEach((row) => {
+          const topic = String(row?.topic || "").trim();
+          const references = Array.isArray(row?.primaryReferences) ? row.primaryReferences.filter(Boolean) : [];
+          if (!topic && references.length === 0) return;
+          evidenceHtml += `<tr><td>${esc(topic || "Topic")}</td><td>${references.length > 0 ? references.map((reference) => esc(reference)).join("; ") : "—"}</td></tr>`;
+        });
+        evidenceHtml += `</tbody></table>`;
+      }
+
+      evidenceHtml += `</section>`;
+    }
+  }
+
+  let learningCloseHtml = "";
+  const longTermGoalItems = s.longTermGoals?.enabled && Array.isArray(s.longTermGoals?.content)
+    ? [...s.longTermGoals.content].filter(Boolean).sort((a, b) => (b?.id || 0) - (a?.id || 0))
+    : [];
+  const reflectionQuestions = s.nextSessionPrep?.enabled && Array.isArray(s.nextSessionPrep?.reflectionQuestions)
+    ? s.nextSessionPrep.reflectionQuestions.filter((item) => String(item || "").trim())
+    : [];
+
+  if (longTermGoalItems.length > 0 || s.nextSessionPrep?.enabled) {
+    learningCloseHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Continuing Learning</div><div class="sec-div-line"></div></div>`;
+    learningCloseHtml += `<div class="closing-grid${longTermGoalItems.length > 0 && s.nextSessionPrep?.enabled ? "" : " closing-grid-single"}">`;
+
+    if (longTermGoalItems.length > 0) {
+      const shownGoals = longTermGoalItems.slice(0, 5);
+      const hiddenGoalCount = Math.max(0, longTermGoalItems.length - shownGoals.length);
+      learningCloseHtml += `<section class="closing-card"><div class="closing-card-title"><i class="fa-solid fa-mountain-sun"></i> Ongoing Learning Goals</div><ul class="goal-list">`;
+      shownGoals.forEach((goal) => {
+        const goalText = String(goal?.text || goal || "").trim();
+        if (!goalText) return;
+        const added = String(goal?.added || "").trim();
+        learningCloseHtml += `<li><div>${esc(goalText)}</div>${added ? `<span>Added ${esc(added)}</span>` : ""}</li>`;
+      });
+      learningCloseHtml += `</ul>`;
+      if (hiddenGoalCount > 0) learningCloseHtml += `<div class="closing-note">+ ${hiddenGoalCount} additional long-term goal${hiddenGoalCount === 1 ? "" : "s"} not shown here.</div>`;
+      learningCloseHtml += `</section>`;
+    }
+
+    if (s.nextSessionPrep?.enabled) {
+      const diagnosisNames = enabledCases
+        .map((tc) => String(tc?.data?.primaryDiagnosis?.name || tc?.data?.problem || "").trim())
+        .filter(Boolean);
+      const readingNames = enabledCases
+        .flatMap((tc) => Array.isArray(tc?.data?.recommendedReading) ? tc.data.recommendedReading : [])
+        .map((item) => String(typeof item === "string" ? item : item?.reference || item?.title || "").trim())
+        .filter(Boolean);
+      const hasPatientQuote = enabledCases.some((tc) => String(tc?.data?.quoteToDiscuss || "").trim());
+
+      learningCloseHtml += `<section class="closing-card"><div class="closing-card-title"><i class="fa-solid fa-forward-step"></i> Prep for Next Session</div>`;
+      if (reflectionQuestions.length > 0) {
+        learningCloseHtml += `<div class="closing-subhead">Reflect on</div><ul class="reflection-list">${reflectionQuestions.map((question) => `<li>${esc(question)}</li>`).join("")}</ul>`;
+      }
+      learningCloseHtml += `<div class="closing-subhead">Come prepared to discuss</div><ul class="prep-list">`;
+      if (diagnosisNames.length > 0) {
+        learningCloseHtml += `<li>Your working understanding of <b>${diagnosisNames.map((name) => esc(name)).join(", ")}</b>, including the differential and reasoning.</li>`;
+      }
+      if (readingNames.length > 0) {
+        const shownReadings = readingNames.slice(0, 3);
+        learningCloseHtml += `<li>Have skimmed: ${shownReadings.map((reading) => esc(reading)).join("; ")}${readingNames.length > 3 ? `, and ${readingNames.length - 3} more` : ""}.</li>`;
+      }
+      if (reflectionQuestions.length > 0) learningCloseHtml += `<li>Any thoughts on the reflection questions above.</li>`;
+      learningCloseHtml += `<li>One thing from this case that still feels unclear; bring it as a question.</li>`;
+      if (hasPatientQuote) learningCloseHtml += `<li>How you would respond to the patient's own words highlighted in this document.</li>`;
+      learningCloseHtml += `</ul></section>`;
+    }
+
+    learningCloseHtml += `</div>`;
+  }
+
+  // ──────────────────────────────────────────────────────────────
   // FIGURES — Step 4 source images and attending attachments
   // ──────────────────────────────────────────────────────────────
   // The current pre-visit preview/export is rendered by buildInRoomHtml().
@@ -17106,77 +17622,6 @@ const buildProblemCard = (tc, idx, isSelected) => {
   // that were extracted during source synthesis. This section intentionally
   // sits immediately before the shelf-style practice questions.
   let figuresHtml = "";
-  const documentFigures = [];
-  const seenFigureUrls = new Set();
-
-  const addDocumentFigure = (figure, options = {}) => {
-    if (!figure || typeof figure !== "object") return;
-
-    const dataUrl = String(
-      figure.dataUrl || figure.src || figure.url || ""
-    ).trim();
-
-    if (!dataUrl || seenFigureUrls.has(dataUrl)) return;
-
-    // The rich-paste and attachment pipelines normally convert images to data
-    // URLs. Retain https/blob fallbacks for restored drafts and older sessions.
-    if (!/^(?:data:image\/|blob:|https?:\/\/)/i.test(dataUrl)) return;
-
-    seenFigureUrls.add(dataUrl);
-
-    const rawCaption = String(
-      options.caption ??
-      figure.caption ??
-      figure.alt ??
-      figure.filename ??
-      ""
-    )
-      .replace(/\s+/g, " ")
-      .trim();
-
-    // Tool labels are provenance, not useful student-facing captions.
-    const sourceOnlyCaption =
-      /^figure\s+from\s+/i.test(rawCaption) ||
-      /^(?:openevidence|uptodate|dynamed|doxgpt|pubmed(?:\s+ai)?)(?:\b|\s*:)/i.test(rawCaption);
-
-    const genericFilename =
-      /^(?:image|screenshot|screen\s*shot|photo|img|pasted)(?:[-_\s]*\d+)?(?:\.[a-z0-9]+)?$/i.test(rawCaption);
-
-    const caption = options.trustCaption
-      ? rawCaption
-      : (!sourceOnlyCaption && !genericFilename ? rawCaption : "");
-
-    documentFigures.push({
-      dataUrl,
-      caption,
-      key: String(figure.id || options.key || `figure-${documentFigures.length + 1}`),
-    });
-  };
-
-  // 1. Figures extracted while synthesizing Step 4 source responses.
-  const synthesizedFigures =
-    s.synthesizedEvidence?.content?.allFigures ||
-    doc.synthesizedEvidence?.allFigures ||
-    [];
-
-  (Array.isArray(synthesizedFigures) ? synthesizedFigures : []).forEach(
-    (figure, index) => addDocumentFigure(figure, { key: `synth-${index}` })
-  );
-
-  // 2. Direct fallback for sessions where synthesis was skipped or failed.
-  (Array.isArray(doc.allSourceImages) ? doc.allSourceImages : []).forEach(
-    (figure, index) => addDocumentFigure(figure, { key: `source-${index}` })
-  );
-
-  // 3. Images attached separately in Step 4. The attending-authored caption
-  // is trusted; filename is used only when it is specific rather than generic.
-  (Array.isArray(doc.imageAttachments) ? doc.imageAttachments : []).forEach(
-    (figure, index) => addDocumentFigure(figure, {
-      key: `attachment-${index}`,
-      caption: figure.caption || figure.filename || "",
-      trustCaption: Boolean(String(figure.caption || "").trim()),
-    })
-  );
 
   if (documentFigures.length > 0) {
     figuresHtml += `<section class="figures-box">`;
@@ -17187,7 +17632,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
       const label = `Figure ${index + 1}`;
       const altText = figure.caption || label;
 
-      figuresHtml += `<figure class="figure-card">`;
+      figuresHtml += `<figure id="${figure.anchor}" class="figure-card" data-figure-refs="${esc(figure.refs.join(" "))}">`;
       figuresHtml += `<div class="figure-image-wrap"><img src="${esc(figure.dataUrl)}" alt="${esc(altText)}"></div>`;
       figuresHtml += `<figcaption><div class="figure-number">${label}</div>`;
       if (figure.caption) {
@@ -17203,26 +17648,42 @@ const buildProblemCard = (tc, idx, isSelected) => {
   // PRACTICE QUESTIONS
   // ──────────────────────────────────────────────────────────────
   let practiceHtml = "";
-  const allShelfQs = enabledCases.flatMap(tc => (tc.data.shelfQuestions || []).map(q => ({ ...q, problem: tc.data.problem })));
+  const allShelfQs = enabledCases.flatMap((tc) =>
+    (Array.isArray(tc?.data?.shelfQuestions) ? tc.data.shelfQuestions : [])
+      .map((question) => ({ ...question, problem: tc.data.problem }))
+  );
+
   if (allShelfQs.length > 0) {
     practiceHtml += `<div class="pq-sep"><span class="pq-sep-label">Pre-Visit Review — Practice Questions</span></div>`;
-    let qNum = 0;
-    allShelfQs.forEach(q => {
-      qNum++;
-      // Prefer AI-provided specialty tag; fall back to the problem name so
-      // legacy cached teaching content still displays sensibly.
-      const specialty = q.specialty || q.problem || "Clinical";
-      practiceHtml += `<div class="pq-item">`;
-      practiceHtml += `<div class="pq-q"><span class="pq-type">${esc(specialty)}</span>${qNum}. ${esc(q.vignette)}</div>`;
-      if (q.options) {
-        practiceHtml += `<ul class="pq-opts">`;
-        Object.entries(q.options).forEach(([letter, opt]) => {
-          const isCorrect = q.correctAnswer === letter;
-          practiceHtml += `<li${isCorrect ? ' class="pq-right"' : ""}><span class="pq-l">${esc(letter)}.</span> ${esc(opt)}</li>`;
+    practiceHtml += `<p class="pq-instructions">Choose an answer to reveal the explanation. The correct option and explanation are shown automatically when printing.</p>`;
+
+    allShelfQs.forEach((question, index) => {
+      const questionNumber = index + 1;
+      const questionId = `shelf-question-${questionNumber}`;
+      const specialty = question.specialty || question.problem || "Clinical";
+      const correctAnswer = String(question.correctAnswer || "").trim().toUpperCase();
+      const options = question.options && typeof question.options === "object"
+        ? Object.entries(question.options)
+        : [];
+
+      practiceHtml += `<div class="pq-item" id="${questionId}" data-correct-answer="${esc(correctAnswer)}">`;
+      practiceHtml += `<div class="pq-q"><span class="pq-type">${esc(specialty)}</span>${questionNumber}. ${esc(question.vignette || "")}</div>`;
+
+      if (options.length > 0) {
+        practiceHtml += `<div class="pq-options-interactive" role="group" aria-label="Answer choices for question ${questionNumber}">`;
+        options.forEach(([letter, optionText]) => {
+          const normalizedLetter = String(letter || "").trim().toUpperCase();
+          const isCorrect = normalizedLetter === correctAnswer;
+          practiceHtml += `<button type="button" class="pq-option-btn" data-letter="${esc(normalizedLetter)}" data-is-correct="${isCorrect ? "true" : "false"}" onclick="answerShelfQuestion(this)"><span class="pq-option-letter">${esc(normalizedLetter)}.</span><span>${esc(optionText)}</span><span class="pq-option-indicator" aria-hidden="true"></span></button>`;
         });
-        practiceHtml += `</ul>`;
+        practiceHtml += `</div>`;
       }
-      practiceHtml += `<p class="pq-exp"><b>Correct: ${esc(q.correctAnswer)}.</b> ${esc(q.explanation)}</p>`;
+
+      const answerInitiallyVisible = options.length === 0;
+      practiceHtml += `<div class="pq-answer${answerInitiallyVisible ? " revealed" : ""}" aria-live="polite"><div class="pq-answer-label">Answer · ${esc(correctAnswer || "Not specified")}</div><div>${esc(question.explanation || "")}</div></div>`;
+      if (options.length > 0) {
+        practiceHtml += `<button type="button" class="pq-reset-btn hidden" onclick="resetShelfQuestion(this)"><i class="fa-solid fa-rotate-left"></i> Try again</button>`;
+      }
       practiceHtml += `</div>`;
     });
   }
@@ -17440,6 +17901,80 @@ body.dark .oneliner strong { color: var(--accent); }
 }
 body.dark .allergy { background: rgba(99,143,168,.14); color: var(--accent); border-color: rgba(99,143,168,.34); }
 body.dark .allergy.allergy-warn { background: var(--danger-soft); color: var(--danger); border-color: rgba(255,87,87,.42); }
+
+/* Restored overview sections */
+.overview-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  margin-bottom: 10px;
+  overflow: hidden;
+  page-break-inside: avoid;
+}
+.overview-card-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 10px;
+  background: var(--panel-h);
+  border-bottom: 1px solid var(--border);
+  color: var(--accent);
+  font-size: 7.5pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+}
+.overview-kv-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.overview-kv {
+  display: grid;
+  grid-template-columns: minmax(105px, 30%) minmax(0, 1fr);
+  gap: 8px;
+  padding: 8px 10px;
+  border-right: 1px solid var(--border-l);
+  border-bottom: 1px solid var(--border-l);
+  min-width: 0;
+}
+.overview-kv:nth-child(even) { border-right: none; }
+.overview-kv-wide { grid-column: 1 / -1; border-right: none; }
+.overview-k {
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.overview-v { color: var(--fg-m); font-size: 9pt; line-height: 1.45; }
+.overview-problem-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.overview-problem-tags span {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid rgba(55,108,139,.24);
+  border-radius: 10px;
+  background: rgba(99,143,168,.10);
+  color: var(--accent);
+  font-size: 7.5pt;
+  line-height: 1.35;
+}
+.overview-support-grid {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.4fr);
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.overview-support-grid-single { grid-template-columns: 1fr; }
+.overview-goal-card { background: var(--warm-soft); border-color: rgba(55,108,139,.20); }
+.overview-goal-text { padding: 10px 12px; color: var(--fg); font-size: 9pt; font-weight: 600; line-height: 1.5; }
+.overview-focus-list { padding: 8px 10px; }
+.overview-focus-item { display: flex; gap: 8px; padding: 4px 0; color: var(--fg-m); font-size: 8.5pt; line-height: 1.4; }
+.overview-focus-num { flex: 0 0 22px; color: var(--accent-2); font-size: 7pt; font-weight: 800; letter-spacing: .08em; padding-top: 1px; }
+.overview-focus-item b { color: var(--fg); }
+@media (max-width: 680px) {
+  .overview-kv-grid, .overview-support-grid { grid-template-columns: 1fr; }
+  .overview-kv { border-right: none; }
+}
 
 /* Full-width patient narrative boxes */
 .narrative-stack {
@@ -17935,6 +18470,75 @@ body.dark .pill-reg { background: var(--warm-soft); color: var(--palette-sand); 
   font-weight: 400;
   line-height: 1.42;
 }
+
+/* Restored per-problem teaching subsections */
+.prob-focus-line {
+  margin-top: 5px;
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-style: italic;
+  line-height: 1.35;
+}
+.teaching-detail { page-break-inside: avoid; }
+.teaching-intro { margin-bottom: 6px !important; color: var(--fg-d) !important; font-size: 8pt !important; font-style: italic; }
+.mini-teach-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  background: rgba(255,255,255,.34);
+  border: 1px solid var(--border-l);
+}
+body.dark .mini-teach-table { background: rgba(255,255,255,.02); }
+.mini-teach-table th,
+.mini-teach-table td {
+  padding: 5px 7px;
+  border-bottom: 1px solid var(--border-l);
+  vertical-align: top;
+  text-align: left;
+  font-size: 8.5pt;
+  line-height: 1.45;
+}
+.mini-teach-table tr:last-child th,
+.mini-teach-table tr:last-child td { border-bottom: none; }
+.mini-teach-table th { width: 22%; color: var(--fg-d); font-size: 7pt; text-transform: uppercase; letter-spacing: .05em; }
+.differential-table thead th { width: auto; background: var(--panel-h); color: var(--fg-d); }
+.differential-table thead th:first-child { width: 34%; }
+.history-question-list { list-style: none; margin: 0; padding: 0; }
+.history-question-list li { padding: 6px 8px; margin-bottom: 5px; border: 1px solid var(--border-l); border-radius: 4px; background: rgba(255,255,255,.34); }
+body.dark .history-question-list li { background: rgba(255,255,255,.02); }
+.history-question { color: var(--fg); font-size: 8.75pt; font-weight: 600; line-height: 1.45; }
+.history-rationale { margin-top: 2px; color: var(--fg-d); font-size: 8pt; font-style: italic; line-height: 1.4; }
+.exam-maneuver { margin-bottom: 4px !important; }
+.exam-step-list { margin: 0 0 5px; padding-left: 18px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.45; }
+.exam-step-list li { margin-bottom: 3px; }
+.exam-interpretation { color: var(--fg-d) !important; font-size: 8pt !important; font-style: italic; }
+.communication-script {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border: 1px solid rgba(55,108,139,.20);
+  border-radius: 4px;
+  background: var(--warm-soft);
+  color: var(--fg);
+  font-size: 8.75pt;
+  font-style: italic;
+  line-height: 1.5;
+}
+.reading-list { margin: 0; padding-left: 20px; }
+.reading-list li { margin-bottom: 6px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.4; }
+.reading-reference { color: var(--fg); font-weight: 600; }
+.reading-relevance { margin-top: 2px; color: var(--fg-d); font-size: 8pt; font-style: italic; }
+.patient-voice-box {
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(55,108,139,.22);
+  border-radius: 5px;
+  background: rgba(99,143,168,.08);
+  page-break-inside: avoid;
+}
+.patient-voice-label { color: var(--accent); font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 5px; }
+.patient-voice-text { color: var(--fg); font-size: 9pt; font-style: italic; line-height: 1.5; }
+.figure-ref-links { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--accent); font-size: 7.5pt; font-style: normal; white-space: normal; }
+.figure-ref-links a { color: var(--accent); font-weight: 700; text-decoration: underline; text-decoration-style: dotted; }
 
 /* Teaching callouts — warm sand surface with a deep-blue cue.
    The coral is reserved for genuine warning content only. */
@@ -18607,6 +19211,88 @@ body.dark .diag-teaching {
 body.dark .prev-due { background: var(--danger-soft); color: var(--danger); }
 body.dark .prev-done { background: rgba(99,143,168,.18); color: var(--accent); }
 
+/* Restored document-level teaching sections */
+.section-card,
+.evidence-box,
+.closing-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  overflow: hidden;
+  page-break-inside: avoid;
+}
+.trend-teaching-table,
+.evidence-reference-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+.trend-teaching-table th,
+.evidence-reference-table th {
+  padding: 6px 8px;
+  background: var(--panel-h);
+  border-bottom: 1px solid var(--border);
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 800;
+  text-align: left;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.trend-teaching-table th:nth-child(1) { width: 22%; }
+.trend-teaching-table th:nth-child(2) { width: 31%; }
+.trend-teaching-table td,
+.evidence-reference-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-l);
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.45;
+  vertical-align: top;
+}
+.trend-teaching-table tr:last-child td,
+.evidence-reference-table tr:last-child td { border-bottom: none; }
+.theme-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.theme-item { display: flex; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--panel); color: var(--fg-m); font-size: 8.75pt; font-style: italic; line-height: 1.45; }
+.theme-item > span { flex: 0 0 24px; color: var(--accent-2); font-size: 7pt; font-weight: 800; letter-spacing: .08em; padding-top: 1px; }
+.evidence-box { padding: 12px; background: rgba(99,143,168,.045); }
+.evidence-intro { margin-bottom: 10px; color: var(--fg-d); font-size: 8pt; font-style: italic; line-height: 1.45; }
+.evidence-subhead { margin: 8px 0 5px; color: var(--accent); font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+.evidence-takeaways { margin-bottom: 10px; padding: 8px 10px; border-radius: 4px; background: var(--warm-soft); }
+.evidence-takeaways ul { margin: 0; padding-left: 17px; }
+.evidence-takeaways li { margin-bottom: 3px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.45; }
+.evidence-topic { margin-top: 9px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); page-break-inside: avoid; }
+.evidence-topic-title { color: var(--accent); font-size: 9pt; font-weight: 800; line-height: 1.35; }
+.evidence-claim { padding: 7px 0; border-bottom: 1px solid var(--border-l); }
+.evidence-claim:last-child { border-bottom: none; padding-bottom: 0; }
+.evidence-claim-line { display: flex; align-items: flex-start; gap: 7px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.5; }
+.evidence-strength { flex: 0 0 auto; padding: 2px 6px; border-radius: 8px; background: rgba(99,143,168,.12); color: var(--accent); font-size: 6.5pt; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; }
+.evidence-strength-conflict { background: var(--danger-soft); color: var(--danger-text); }
+.evidence-citations,
+.evidence-provenance { margin: 3px 0 0 74px; color: var(--fg-d); font-size: 7.5pt; line-height: 1.4; }
+.evidence-citations b,
+.evidence-provenance b { color: var(--fg-d); }
+.evidence-reference-head { margin-top: 12px; }
+.closing-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.closing-grid-single { grid-template-columns: 1fr; }
+.closing-card { padding: 10px 12px; }
+.closing-card-title { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; color: var(--accent); font-size: 8pt; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; }
+.closing-subhead { margin: 8px 0 4px; color: var(--fg-d); font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
+.goal-list,
+.reflection-list,
+.prep-list { margin: 0; padding-left: 18px; }
+.goal-list li,
+.reflection-list li,
+.prep-list li { margin-bottom: 5px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.45; }
+.goal-list li span { display: block; margin-top: 2px; color: var(--fg-d); font-size: 7pt; text-transform: uppercase; letter-spacing: .04em; }
+.closing-note { margin-top: 6px; color: var(--fg-d); font-size: 7.5pt; font-style: italic; }
+@media (max-width: 680px) {
+  .theme-list, .closing-grid { grid-template-columns: 1fr; }
+  .evidence-claim-line { display: block; }
+  .evidence-strength { display: inline-block; margin-bottom: 4px; }
+  .evidence-citations, .evidence-provenance { margin-left: 0; }
+}
+
 /* Figures — final Step 4 visual appendix placed immediately before questions */
 .figures-box {
   margin: 20px 0 18px;
@@ -18696,10 +19382,10 @@ body.dark .figures-box {
   .figures-grid { grid-template-columns: 1fr; }
 }
 
-/* Practice questions */
+/* Interactive practice questions */
 .pq-sep {
   border-top: 2px dashed var(--fg-d);
-  margin: 20px 0 14px;
+  margin: 22px 0 14px;
   position: relative;
 }
 .pq-sep-label {
@@ -18714,33 +19400,48 @@ body.dark .figures-box {
   text-transform: uppercase;
   letter-spacing: .1em;
   color: var(--fg-d);
+  white-space: nowrap;
 }
-.pq-item {
-  margin-bottom: 12px;
-  page-break-inside: avoid;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-vl);
+.pq-instructions { margin: 0 0 10px; color: var(--fg-d); font-size: 8pt; font-style: italic; text-align: center; }
+.pq-item { margin-bottom: 14px; padding: 11px 12px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); page-break-inside: avoid; }
+.pq-q { font-size: 9pt; font-weight: 600; color: var(--fg); line-height: 1.5; margin-bottom: 7px; }
+.pq-type { display: block; margin-bottom: 2px; color: var(--accent-2); font-size: 7pt; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; }
+.pq-options-interactive { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 8px; }
+.pq-option-btn {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--fg-m);
+  font: inherit;
+  font-size: 8.5pt;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color .15s, background .15s, transform .1s;
 }
-.pq-item:last-child { border-bottom: none; margin-bottom: 0; }
-.pq-q { font-size: 9pt; font-weight: 600; color: var(--fg); line-height: 1.5; margin-bottom: 4px; }
-.pq-type {
-  font-size: 7pt;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .05em;
-  color: var(--accent-2);
-  display: block;
-  margin-bottom: 2px;
+.pq-option-btn:hover:not(:disabled),
+.pq-option-btn:focus-visible:not(:disabled) { border-color: var(--accent-2); background: rgba(99,143,168,.11); outline: none; transform: translateY(-1px); }
+.pq-option-btn:disabled { cursor: default; }
+.pq-option-letter { flex: 0 0 auto; color: var(--fg-d); font-weight: 800; }
+.pq-option-indicator { margin-left: auto; flex: 0 0 auto; font-size: 7pt; font-weight: 800; }
+.pq-option-btn.chosen-correct,
+.pq-option-btn.revealed-correct { border-color: var(--accent-2); background: rgba(99,143,168,.14); color: var(--accent); font-weight: 700; }
+.pq-option-btn.chosen-wrong { border-color: var(--danger); background: var(--danger-soft); color: var(--danger-text); }
+.pq-option-btn.revealed-wrong { opacity: .58; }
+.pq-answer { max-height: 0; overflow: hidden; opacity: 0; margin-top: 0; padding: 0 9px; border: 0 solid rgba(55,108,139,.22); border-radius: 4px; background: rgba(99,143,168,.08); color: var(--fg-m); font-size: 8.5pt; line-height: 1.5; transition: max-height .25s ease, opacity .2s ease, margin .2s ease, padding .2s ease; }
+.pq-answer.revealed { max-height: 1400px; opacity: 1; margin-top: 8px; padding: 8px 9px; border-width: 1px; }
+.pq-answer-label { margin-bottom: 3px; color: var(--accent); font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: .07em; }
+.pq-reset-btn { margin-top: 7px; padding: 4px 7px; border: 1px solid var(--border); border-radius: 4px; background: transparent; color: var(--fg-d); font: inherit; font-size: 7pt; font-weight: 700; cursor: pointer; }
+.pq-reset-btn.hidden { display: none; }
+@media (max-width: 620px) {
+  .pq-options-interactive { grid-template-columns: 1fr; }
+  .pq-sep-label { position: static; display: block; transform: none; text-align: center; margin-top: -9px; }
 }
-body.dark .pq-type { color: var(--accent); }
-.pq-opts { list-style: none; margin: 4px 0; padding: 0; }
-.pq-opts li { font-size: 9pt; color: var(--fg-m); padding: 2px 0; line-height: 1.4; }
-.pq-opts li .pq-l { font-weight: 700; margin-right: 5px; color: var(--fg-d); }
-.pq-opts li.pq-right { color: var(--accent); font-weight: 700; }
-body.dark .pq-opts li.pq-right { color: var(--accent); }
-.pq-opts li.pq-right .pq-l { color: var(--accent); }
-body.dark .pq-opts li.pq-right .pq-l { color: var(--accent); }
-.pq-exp { font-size: 9pt; color: var(--fg-m); line-height: 1.45; margin-top: 4px; }
 
 /* Footer */
 .doc-footer {
@@ -18771,6 +19472,12 @@ body.dark .pq-opts li.pq-right .pq-l { color: var(--accent); }
   .tch, .ask, .wrn { break-inside: avoid; page-break-inside: avoid; }
   .figure-card { break-inside: avoid; page-break-inside: avoid; }
   .figure-image-wrap img { max-height: 4.8in; }
+  .pq-instructions, .pq-reset-btn { display: none !important; }
+  .pq-options-interactive { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pq-option-btn { background: #fff !important; border-color: #d1d5db !important; color: #374151 !important; transform: none !important; }
+  .pq-option-btn[data-is-correct="true"] { border-color: #638fa8 !important; background: rgba(99,143,168,.12) !important; color: #376c8b !important; font-weight: 700 !important; }
+  .pq-option-btn[data-is-correct="true"] .pq-option-indicator::after { content: "Correct"; color: #376c8b; }
+  .pq-answer { max-height: none !important; opacity: 1 !important; margin-top: 8px !important; padding: 8px 9px !important; border-width: 1px !important; }
   h1, h2, h3, h4, h5, h6, .sec-div, .prob-head { page-break-after: avoid; break-after: avoid; }
   p, li, div { orphans: 3; widows: 3; }
   tr { page-break-inside: avoid; }
@@ -18795,8 +19502,8 @@ body.dark .pq-opts li.pq-right .pq-l { color: var(--accent); }
 .tl-compact li,
 .prev-list li,
 .pq-q,
-.pq-opts li,
-.pq-exp,
+.pq-option-btn,
+.pq-answer,
 .lab-tbl,
 .lab-note {
   font-size: 9pt;
@@ -18833,8 +19540,76 @@ body.dark .pq-opts li.pq-right .pq-l { color: var(--accent); }
     });
   }
 })();
+
+function answerShelfQuestion(button) {
+  var question = button && button.closest ? button.closest('.pq-item') : null;
+  if (!question) return;
+
+  var selectedLetter = String(button.getAttribute('data-letter') || '').toUpperCase();
+  var correctLetter = String(question.getAttribute('data-correct-answer') || '').toUpperCase();
+  var options = Array.prototype.slice.call(question.querySelectorAll('.pq-option-btn'));
+
+  options.forEach(function(option) {
+    var letter = String(option.getAttribute('data-letter') || '').toUpperCase();
+    var indicator = option.querySelector('.pq-option-indicator');
+    option.disabled = true;
+    option.classList.remove('chosen-correct', 'chosen-wrong', 'revealed-correct', 'revealed-wrong');
+
+    if (letter === correctLetter) {
+      option.classList.add(letter === selectedLetter ? 'chosen-correct' : 'revealed-correct');
+      if (indicator) indicator.textContent = letter === selectedLetter ? 'Correct' : 'Correct answer';
+    } else if (letter === selectedLetter) {
+      option.classList.add('chosen-wrong');
+      if (indicator) indicator.textContent = 'Not quite';
+    } else {
+      option.classList.add('revealed-wrong');
+      if (indicator) indicator.textContent = '';
+    }
+  });
+
+  var answer = question.querySelector('.pq-answer');
+  if (answer) answer.classList.add('revealed');
+  var reset = question.querySelector('.pq-reset-btn');
+  if (reset) reset.classList.remove('hidden');
+}
+
+function resetShelfQuestion(button) {
+  var question = button && button.closest ? button.closest('.pq-item') : null;
+  if (!question) return;
+
+  Array.prototype.slice.call(question.querySelectorAll('.pq-option-btn')).forEach(function(option) {
+    option.disabled = false;
+    option.classList.remove('chosen-correct', 'chosen-wrong', 'revealed-correct', 'revealed-wrong');
+    var indicator = option.querySelector('.pq-option-indicator');
+    if (indicator) indicator.textContent = '';
+  });
+
+  var answer = question.querySelector('.pq-answer');
+  if (answer) answer.classList.remove('revealed');
+  button.classList.add('hidden');
+}
+
 function printDoc(){ window.print(); }
 `;
+
+  const renderCoverageChecks = [
+    [s.caseAtGlance?.enabled !== false && (glanceRows.length > 0 || selectedProblemLabels.length > 0), overviewHtml.includes("Case at a Glance"), "Case at a Glance"],
+    [Boolean(goalText), overviewHtml.includes("Session Goal"), "Session Goal"],
+    [showFocusFraming, overviewHtml.includes("What This Document Focuses On"), "Focus framing"],
+    [s.labTrends?.enabled && trendTeachingItems.length > 0, trendTeachingHtml.includes("Lab &amp; Vital Trends"), "Lab & Vital Trends"],
+    [s.crossCuttingThemes?.enabled && crossCuttingThemes.length > 0, crossCuttingHtml.includes("Cross-Cutting Themes"), "Cross-Cutting Themes"],
+    [s.synthesizedEvidence?.enabled && Boolean(evidenceContent), Boolean(evidenceHtml), "Step 4 Evidence Summary"],
+    [longTermGoalItems.length > 0, learningCloseHtml.includes("Ongoing Learning Goals"), "Ongoing Learning Goals"],
+    [s.nextSessionPrep?.enabled, learningCloseHtml.includes("Prep for Next Session"), "Prep for Next Session"],
+    [documentFigures.length > 0, figuresHtml.includes("Figures"), "Figures"],
+    [allShelfQs.length > 0, practiceHtml.includes("Practice Questions"), "Practice Questions"],
+  ];
+  const missingRenderedFeatures = renderCoverageChecks
+    .filter(([expected, rendered]) => expected && !rendered)
+    .map(([, , label]) => label);
+  if (missingRenderedFeatures.length > 0) {
+    console.warn("[previsit-render-audit] Populated sections were not rendered:", missingRenderedFeatures);
+  }
 
   // ──────────────────────────────────────────────────────────────
   // ASSEMBLE
@@ -18860,6 +19635,7 @@ function printDoc(){ window.print(); }
 ${headerHtml}
 ${oneLinerHtml}
 ${allergyBarHtml}
+${overviewHtml}
 ${complexTeachingHtml}
 ${priorityFocusHtml}
 ${topNarrativeHtml}
@@ -18868,11 +19644,15 @@ ${vitalsHtml}
 ${medsSectionHtml}
 ${socialHtml}
 ${labsHtml}
+${trendTeachingHtml}
 ${diagnosticsHtml}
 ${preventiveHtml}
 ${problemsHtml}
 ${crossProblemHtml}
+${crossCuttingHtml}
 ${timelineHtml}
+${evidenceHtml}
+${learningCloseHtml}
 ${figuresHtml}
 ${practiceHtml}
 <div class="doc-footer">Prenote for ${esc(primaryLabel)} — Generated for clinical education use — Session ${esc(sessionId)}</div>
