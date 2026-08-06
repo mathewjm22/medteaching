@@ -968,8 +968,10 @@ const extractPrenoteSections = (rawText) => {
     { title: "FOLLOW-UP", regex: /^(?:FOLLOW[- ]?UP|PENDING\s+WORKUP\s*(?:&|AND|\/)\s*FOLLOW[- ]?UP)/i },
     { title: "ADVANCE DIRECTIVES", regex: /^ADVANCE\s+(?:DIRECTIVES|CARE\s+PLANNING)/i },
     { title: "ACTIVE ORDERS", regex: /^ACTIVE\s+ORDERS/i },
-    { title: "CONSULTS", regex: /^(?:CONSULTS\b|ACTIVE\s+CONSULTS?\s*(?:&|AND|\/)\s*REFERRALS?)/i },
-    { title: "SUMMARY KEY ISSUES", regex: /^SUMMARY\s*(?:&|AND)\s*KEY\s+ISSUES(?:\s+FOR\s+TODAY['’]S\s+VISIT)?/i },
+    { title: "CARE TEAM", regex: /^CARE\s+TEAM\b/i },
+    { title: "PENDING STUDIES / REFERRALS", regex: /^PENDING\s+(?:STUDIES|WORKUP)\s*(?:\/|&|AND)\s*REFERRALS?\b/i },
+    { title: "CONSULTS", regex: /^(?:SPECIALTY\s+CARE\s*(?:\/|&|AND)\s*CONSULTS?|CONSULTS\b|ACTIVE\s+CONSULTS?\s*(?:&|AND|\/)\s*REFERRALS?)/i },
+    { title: "SUMMARY KEY ISSUES", regex: /^SUMMARY\s*(?:&|AND)\s+KEY\s+ISSUES(?:\s+FOR\s+TODAY['’]S\s+VISIT)?/i },
   ];
 
   const matchKnownHeading = (rawLine) => {
@@ -11884,9 +11886,19 @@ const buildInRoomHtml = (doc, session) => {
     fallbackSection("HEALTH MAINTENANCE")
   );
 
+  const fallbackSpecialtyCareText = joinUniqueSections([
+    fallbackSection("SPECIALTY CARE / CONSULTS", "SPECIALTY CARE", "CONSULTS"),
+    fallbackSection("CARE TEAM")
+      ? `CARE TEAM:\n${fallbackSection("CARE TEAM")}`
+      : "",
+    fallbackSection("PENDING STUDIES / REFERRALS", "PENDING STUDIES/REFERRALS")
+      ? `PENDING STUDIES / REFERRALS:\n${fallbackSection("PENDING STUDIES / REFERRALS", "PENDING STUDIES/REFERRALS")}`
+      : "",
+  ]);
+
   const specialtyCareText = firstNonEmptyText(
     prenoteSections.specialtyCare,
-    fallbackSection("SPECIALTY CARE / CONSULTS", "SPECIALTY CARE", "CONSULTS")
+    fallbackSpecialtyCareText
   );
 
   const hospitalizationsText = firstNonEmptyText(
@@ -13150,102 +13162,259 @@ const buildInRoomHtml = (doc, session) => {
     }
     return `<div class="ref-subsection"><div class="ref-subsection-title"><i class="fa-solid ${icon}"></i> ${esc(label)}</div><div class="ref-subsection-body">${contentHtml}</div></div>`;
   };
-// Helper: render a hospitalization / specialty-care / consult list with
-  // hierarchical bullets. Detects three types of lines:
-  //   1. Section headers ("Hospitalizations", "Emergency Department Visits",
-  //      "Active Consults", "Completed Consults (Past Year)") — render as
-  //      small caps subheading
-  //   2. Dated encounter openers ("11/2025: Bozeman Health – chest pain") —
-  //      render as top-level bullets in the group's list
-  //   3. Continuation lines describing the encounter — render as nested
-  //      sub-bullets under the most recent top-level bullet
-  // This keeps distinct encounters visually separated and their details
-  // scannable at a smaller font size.
+// Helper: render specialty-care, referral, and encounter text as a true
+  // hierarchy. The source frequently uses:
+  //   SECTION HEADING
+  //   Subsection:
+  //   1. Primary item
+  //      - Label: detail
+  //      - Additional detail
+  // Hard-wrapped continuation lines are rejoined to the item or detail they
+  // belong to rather than becoming independent bullets.
   const renderHierarchicalEncounterList = (text) => {
     if (!text) return "";
-    const rawLines = text.split(/\r?\n/)
-      .map(l => l.replace(/^[\s]*[-*•●○▪▫►◆·]\s*/, "").trim())
-      .filter(Boolean);
-    if (rawLines.length === 0) return "";
 
-    // A line is a section header if it's short, capitalized, no colon in the
-    // middle, and matches known section labels.
-    const sectionHeaderRegex = /^(?:Hospitalizations?|Emergency Department Visits?|ER Visits?|Urgent Care|Active Consults?|Completed Consults?(?:\s*\([^)]*\))?|Pending Consults?|Recent Encounters?|Past Encounters?|Inpatient Stays?|Outpatient Visits?)$/i;
+    const sourceLines = String(text)
+      .replace(/\r\n?/g, "\n")
+      .replace(/\t/g, "    ")
+      .split("\n")
+      .filter((line) => line.trim());
 
-    // A line is a "dated encounter opener" if it starts with a date pattern
-    // followed by a colon (e.g., "11/2025: Bozeman Health – chest pain").
-    const encounterOpenerRegex = /^(\d{1,2}\/\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})[\s]*:\s*/i;
+    if (sourceLines.length === 0) return "";
 
-    // A line is a "consult opener" like "Neurology (09/2025): consult #3786680"
-    // or "Community Care Neurology (06/2026): consult #4043670"
-    const consultOpenerRegex = /^[A-Z][A-Za-z\s&/-]+\s*\((\d{1,2}\/\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2,4})\)\s*:/;
+    const sectionHeaderRegex = /^(?:CARE\s+TEAM|PENDING\s+(?:STUDIES|WORKUP)\s*(?:\/|&|AND)\s*REFERRALS?|PRIMARY\s+CARE|SPECIALTY\s+CARE|ACTIVE\s+CONSULTS?|COMPLETED\s+CONSULTS?(?:\s*\([^)]*\))?|PENDING\s+CONSULTS?|PENDING\s+LABS?|PENDING\s+RECORDS?|SCHEDULED\s+APPOINTMENTS?|HOSPITALIZATIONS?|EMERGENCY\s+DEPARTMENT\s+VISITS?|ER\s+VISITS?|URGENT\s+CARE|RECENT\s+ENCOUNTERS?|PAST\s+ENCOUNTERS?|INPATIENT\s+STAYS?|OUTPATIENT\s+VISITS?|ACTIVE\s+REFERRALS?|COMPLETED\s+REFERRALS?)$/i;
 
-    const isEncounterOpener = (line) =>
-      encounterOpenerRegex.test(line) || consultOpenerRegex.test(line);
+    const detailLabelRegex = /^(?:Status|Provider|Indication|Reason|Purpose|Valid\s+through|Veteran\s+preference|Patient\s+preference|Location|Facility|Specialist|Service|Appointment|Scheduled|Ordered|Result|Records?|Authorization|Consult\s+(?:number|status)|VA\s+(?:authorization|number|ID))\s*:/i;
 
-    // Walk the lines and build a nested structure: sections → encounters → details
-    const sections = [];
-    let currentSection = { header: null, encounters: [] };
-    let currentEncounter = null;
+    const encounterOpenerRegex = /^(?:\d{1,2}\/\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+\d{4})\s*:/i;
+    const consultOpenerRegex = /^[A-Z][A-Za-z0-9\s&/–—-]+\s*\((?:\d{1,2}\/\d{2,4}|\d{1,2}\/\d{1,2}\/\d{2,4})\)\s*:/;
 
-    const commitSection = () => {
-      if (currentSection.encounters.length > 0 || currentSection.header) {
-        sections.push(currentSection);
+    const normalizeHeader = (value) =>
+      String(value || "")
+        .replace(/:\s*$/, "")
+        .replace(/\s*\/\s*/g, " / ")
+        .replace(/\s+/g, " ")
+        .trim();
+
+    const parseSourceLine = (rawLine) => {
+      const raw = String(rawLine || "");
+      const indent = (raw.match(/^\s*/) || [""])[0].length;
+      const trimmed = raw.trim();
+
+      const numbered = trimmed.match(/^(\d+)[.)]\s+(.+)$/);
+      if (numbered) {
+        return {
+          kind: "number",
+          indent,
+          number: Number(numbered[1]),
+          text: numbered[2].trim(),
+        };
+      }
+
+      const bullet = trimmed.match(/^[-*•●○▪▫►◆·]\s+(.+)$/);
+      if (bullet) {
+        return {
+          kind: "bullet",
+          indent,
+          number: null,
+          text: bullet[1].trim(),
+        };
+      }
+
+      return {
+        kind: "plain",
+        indent,
+        number: null,
+        text: trimmed,
+      };
+    };
+
+    const isSectionHeader = (entry) => {
+      if (!entry?.text || entry.kind !== "plain") return false;
+      const normalized = normalizeHeader(entry.text);
+      if (sectionHeaderRegex.test(normalized)) return true;
+
+      // Preserve unanticipated but obvious source subsection labels while
+      // excluding clinical label/value rows such as "Status: Active".
+      if (
+        /:\s*$/.test(entry.text) &&
+        entry.text.length <= 64 &&
+        !detailLabelRegex.test(entry.text)
+      ) {
+        return true;
+      }
+
+      return (
+        entry.text.length <= 64 &&
+        /^[A-Z][A-Z\s/&–—-]+:?$/.test(entry.text) &&
+        !detailLabelRegex.test(entry.text)
+      );
+    };
+
+    const splitInlineDetail = (value) => {
+      const match = String(value || "").match(
+        /^(.*?)\s+[–—-]\s+((?:Status|Provider|Indication|Reason|Purpose|Valid\s+through|Veteran\s+preference|Patient\s+preference|Location|Facility|Specialist|Service|Appointment|Scheduled|Ordered|Result|Records?|Authorization|Consult\s+(?:number|status))\s*:\s*.*)$/i
+      );
+      if (!match || !match[1].trim()) {
+        return { title: String(value || "").trim(), detail: "" };
+      }
+      return { title: match[1].trim(), detail: match[2].trim() };
+    };
+
+    const groups = [];
+    let currentGroup = { header: "", items: [] };
+    let currentItem = null;
+    let currentDetailIndex = -1;
+
+    const commitGroup = () => {
+      if (currentGroup.header || currentGroup.items.length > 0) {
+        groups.push(currentGroup);
+      }
+      currentGroup = { header: "", items: [] };
+      currentItem = null;
+      currentDetailIndex = -1;
+    };
+
+    const startItem = (entry) => {
+      const split = splitInlineDetail(entry.text);
+      currentItem = {
+        title: split.title,
+        details: split.detail ? [split.detail] : [],
+        number: entry.kind === "number" ? entry.number : null,
+        indent: entry.indent,
+      };
+      currentGroup.items.push(currentItem);
+      currentDetailIndex = split.detail ? 0 : -1;
+    };
+
+    const addDetail = (value) => {
+      if (!currentItem) return;
+      const detail = String(value || "").trim();
+      if (!detail) return;
+      currentItem.details.push(detail);
+      currentDetailIndex = currentItem.details.length - 1;
+    };
+
+    const appendContinuation = (value) => {
+      const continuation = String(value || "").trim();
+      if (!continuation || !currentItem) return;
+
+      if (currentDetailIndex >= 0) {
+        const previous = currentItem.details[currentDetailIndex] || "";
+        currentItem.details[currentDetailIndex] = `${previous} ${continuation}`
+          .replace(/\s+/g, " ")
+          .trim();
+      } else {
+        currentItem.title = `${currentItem.title} ${continuation}`
+          .replace(/\s+/g, " ")
+          .trim();
       }
     };
 
-    for (const line of rawLines) {
-      if (sectionHeaderRegex.test(line)) {
-        // New section header — commit prior, start fresh
-        commitSection();
-        currentSection = { header: line, encounters: [] };
-        currentEncounter = null;
-        continue;
-      }
-      if (isEncounterOpener(line)) {
-        // New encounter — attach to current section
-        currentEncounter = { opener: line, details: [] };
-        currentSection.encounters.push(currentEncounter);
-        continue;
-      }
-      // Continuation line — attach to current encounter as a detail.
-      // If there's no current encounter yet, treat it as a standalone item.
-      if (currentEncounter) {
-        currentEncounter.details.push(line);
-      } else {
-        currentSection.encounters.push({ opener: line, details: [] });
-        currentEncounter = null;
-      }
-    }
-    commitSection();
+    sourceLines.map(parseSourceLine).forEach((entry) => {
+      if (!entry.text) return;
 
-    if (sections.length === 0) return "";
-
-    // Render each section
-    let html = "";
-    sections.forEach((section, si) => {
-      if (section.header) {
-        html += `<div style="font-size:7.5pt;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:var(--fg-d);margin:${si === 0 ? "0" : "10px"} 0 4px;">${esc(section.header)}</div>`;
+      if (isSectionHeader(entry)) {
+        commitGroup();
+        currentGroup.header = normalizeHeader(entry.text);
+        return;
       }
-      if (section.encounters.length === 0) return;
-      html += `<ul style="margin:0;padding-left:16px;list-style:disc;">`;
-      section.encounters.forEach(enc => {
-        html += `<li style="margin-bottom:5px;font-size:9pt;line-height:1.45;">`;
-        html += `<span style="font-weight:500;color:var(--fg);">${esc(enc.opener)}</span>`;
-        if (enc.details.length > 0) {
-          // Sub-bullets, smaller font, muted color for hierarchy contrast
-          html += `<ul style="margin:2px 0 0;padding-left:14px;list-style:circle;">`;
-          enc.details.forEach(detail => {
-            html += `<li style="font-size:8pt;color:var(--fg-d);line-height:1.4;margin-bottom:1px;">${esc(detail)}</li>`;
-          });
-          html += `</ul>`;
+
+      if (entry.kind === "number") {
+        startItem(entry);
+        return;
+      }
+
+      if (
+        entry.kind === "plain" &&
+        (encounterOpenerRegex.test(entry.text) || consultOpenerRegex.test(entry.text))
+      ) {
+        startItem(entry);
+        return;
+      }
+
+      if (entry.kind === "bullet") {
+        const belongsToNumberedItem = currentItem?.number !== null;
+        const isIndentedDetail =
+          Boolean(currentItem) &&
+          (entry.indent > currentItem.indent || belongsToNumberedItem);
+
+        if (isIndentedDetail) {
+          addDetail(entry.text);
+        } else {
+          startItem(entry);
         }
-        html += `</li>`;
-      });
-      html += `</ul>`;
+        return;
+      }
+
+      if (!currentItem) {
+        startItem(entry);
+        return;
+      }
+
+      if (detailLabelRegex.test(entry.text)) {
+        addDetail(entry.text);
+        return;
+      }
+
+      // Plain indented lines are almost always hard wraps of the preceding
+      // item/detail. A short single-token continuation also completes values
+      // such as "Status:" followed by "Pending" on the next physical line.
+      if (
+        entry.indent > currentItem.indent ||
+        currentDetailIndex >= 0 ||
+        /^[A-Za-z0-9][A-Za-z0-9 /()-]{0,30}$/.test(entry.text)
+      ) {
+        appendContinuation(entry.text);
+        return;
+      }
+
+      startItem(entry);
     });
 
-    return html;
+    commitGroup();
+    if (groups.length === 0) return "";
+
+    const renderDetail = (detail) => {
+      const match = String(detail || "").match(/^([^:]{1,32}:)\s*(.*)$/);
+      if (!match) return esc(detail);
+      return `<span class="encounter-detail-label">${esc(match[1])}</span>${match[2] ? ` ${esc(match[2])}` : ""}`;
+    };
+
+    return groups
+      .map((group, groupIndex) => {
+        const headerHtml = group.header
+          ? `<div class="encounter-group-title${group.items.length === 0 ? " encounter-group-title-overview" : ""}">${esc(group.header)}</div>`
+          : "";
+
+        if (group.items.length === 0) {
+          return `<div class="encounter-group${groupIndex === 0 ? " encounter-group-first" : ""}">${headerHtml}</div>`;
+        }
+
+        const ordered = group.items.every((item) => item.number !== null);
+        const listTag = ordered ? "ol" : "ul";
+        const listClass = ordered
+          ? "encounter-list encounter-list-ordered"
+          : "encounter-list encounter-list-unordered";
+
+        const itemsHtml = group.items
+          .map((item) => {
+            const valueAttribute = ordered && item.number
+              ? ` value="${item.number}"`
+              : "";
+            const detailsHtml = item.details.length > 0
+              ? `<ul class="encounter-detail-list">${item.details
+                  .map((detail) => `<li>${renderDetail(detail)}</li>`)
+                  .join("")}</ul>`
+              : "";
+
+            return `<li${valueAttribute}><div class="encounter-item-title">${esc(item.title)}</div>${detailsHtml}</li>`;
+          })
+          .join("");
+
+        return `<div class="encounter-group${groupIndex === 0 ? " encounter-group-first" : ""}">${headerHtml}<${listTag} class="${listClass}">${itemsHtml}</${listTag}></div>`;
+      })
+      .join("");
   };
   const isFormattingArtifactLine = (value) =>
     /^(?:(?:[-=_]{2,}|[─━═—–]{2,})(?:\s*#{1,6})?|#{1,6})$/.test(
@@ -17111,6 +17280,96 @@ body.dark .pmh-sc { background: var(--warm-soft); color: var(--palette-sand); bo
   gap: 5px;
 }
 .ref-text { font-size: 9pt; color: var(--fg-m); line-height: 1.45; }
+
+/* Hierarchical specialty care, referrals, and encounter lists */
+.encounter-group {
+  margin: 0;
+  padding: 8px 0 2px;
+  border-top: 1px solid var(--border-vl);
+}
+.encounter-group-first {
+  padding-top: 0;
+  border-top: none;
+}
+.encounter-group-title {
+  margin: 0 0 5px;
+  padding: 4px 7px;
+  border-radius: 3px;
+  background: rgba(99,143,168,.10);
+  color: var(--accent);
+  font-size: 7.5pt;
+  font-weight: 800;
+  letter-spacing: .07em;
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+.encounter-group-title-overview {
+  margin-bottom: 0;
+  background: rgba(242,217,187,.34);
+  color: var(--fg-d);
+}
+.encounter-list {
+  margin: 0;
+  padding-left: 21px;
+  color: var(--fg-m);
+}
+.encounter-list > li {
+  margin: 0 0 6px;
+  padding-left: 2px;
+  font-size: 9pt;
+  line-height: 1.42;
+}
+.encounter-list > li:last-child {
+  margin-bottom: 1px;
+}
+.encounter-list > li::marker {
+  color: var(--accent);
+  font-weight: 800;
+}
+.encounter-list-unordered {
+  list-style: disc;
+}
+.encounter-item-title {
+  color: var(--fg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.encounter-detail-list {
+  margin: 3px 0 0;
+  padding-left: 18px;
+  list-style: circle;
+}
+.encounter-detail-list > li {
+  margin: 0 0 2px;
+  padding-left: 1px;
+  color: var(--fg-d);
+  font-size: 8.2pt;
+  font-weight: 400;
+  line-height: 1.38;
+  overflow-wrap: anywhere;
+}
+.encounter-detail-list > li::marker {
+  color: var(--accent-2);
+}
+.encounter-detail-label {
+  color: var(--fg-d);
+  font-weight: 700;
+}
+body.dark .encounter-group-title {
+  background: rgba(99,143,168,.18);
+  color: var(--palette-sand);
+}
+body.dark .encounter-group-title-overview {
+  background: rgba(242,217,187,.12);
+  color: var(--fg-m);
+}
+@media print {
+  .encounter-group,
+  .encounter-list > li {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}
 
 /* Vitals row */
 .vitals-row {

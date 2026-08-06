@@ -123,7 +123,13 @@ const SECTION_DEFINITIONS = [
       value === "SPECIALTY CARE / CONSULTS" ||
       value === "SPECIALTY CARE" ||
       value === "CONSULTS" ||
-      value === "ACTIVE CONSULTS",
+      value === "ACTIVE CONSULTS" ||
+      value === "CARE TEAM" ||
+      value === "PENDING STUDIES/REFERRALS" ||
+      value === "PENDING STUDIES / REFERRALS" ||
+      value === "PENDING STUDIES AND REFERRALS" ||
+      value === "PENDING WORKUP / REFERRALS" ||
+      value === "PENDING WORKUP AND REFERRALS",
   },
   {
     key: "hospitalizations",
@@ -909,8 +915,14 @@ export function extractPrenoteSections(input) {
     const parts = occurrences[key] ?? [];
     const uniqueTexts = [];
     for (const part of parts) {
-      const text = part.text;
-      if (!text) continue;
+      const bodyText = part.text;
+      if (!bodyText) continue;
+
+      const text =
+        key === "specialtyCare" && part.header
+          ? `${String(part.header).replace(/:\s*$/, "").trim()}:\n${bodyText}`
+          : bodyText;
+
       if (uniqueTexts.some((existing) => bodiesAreSimilar(existing, text))) {
         continue; // silently drop duplicate
       }
