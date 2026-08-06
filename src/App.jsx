@@ -1990,7 +1990,7 @@ const parseMedNames = (text) => {
 const normalizePrenoteProblemKey = (value) =>
   String(value || "")
     .toLowerCase()
-    .replace(/\s*\([A-Z]\d{2}(?:\.\d{1,4})?\)\s*$/i, "")
+    .replace(/\s*\([A-Z]\d{2}(?:\.[A-Z0-9]{1,4})?\)\s*$/i, "")
     .replace(
       /\b(history of|stable|chronic|active|changing|resolved|controlled)\b/g,
       " "
@@ -2052,6 +2052,26 @@ const readPrenoteProblemField = (
   return null;
 };
 
+// Normalize a problem name for chart-block lookup. The PMH header often
+// contains both an ICD code and a status parenthetical, while the selected
+// problem name may contain one, both, or neither. Removing those administrative
+// suffixes makes the lookup deterministic without changing what is displayed.
+const normalizeProblemLookupKey = (value) =>
+  String(value || "")
+    .toLowerCase()
+    .replace(/\(\s*[a-z]\d{2}(?:\.[a-z0-9]{1,4})?\s*\)/gi, " ")
+    .replace(
+      /\(\s*(?:active(?:\s*\/\s*changing)?|changing|stable(?:\s*\/\s*chronic)?|chronic|resolved|controlled|suspected|remission|in remission|registry|uncontrolled|unknown)\s*\)/gi,
+      " "
+    )
+    .replace(
+      /\b(?:active|changing|stable|chronic|resolved|controlled|suspected|remission|registry|uncontrolled|unknown|unspecified|history of)\b/gi,
+      " "
+    )
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
 const buildDeterministicProblemBlockMap = (
   pmhProblems
 ) => {
@@ -2067,6 +2087,7 @@ const buildDeterministicProblemBlockMap = (
 
     blocks[rawHeader.toLowerCase().trim()] = {
       rawHeader,
+      normalizedKey: normalizeProblemLookupKey(rawHeader),
       rawBody: problem.rawText || "",
       currentMeds: readPrenoteProblemField(
         fields,
@@ -2090,9 +2111,19 @@ const buildDeterministicProblemBlockMap = (
         "Imaging/procedures",
         "Imaging"
       ),
+      complications: readPrenoteProblemField(
+        fields,
+        "Complications checked",
+        "Complications"
+      ),
       careTeam: readPrenoteProblemField(
         fields,
+        "Care team/Specialists",
         "Care team"
+      ),
+      consult: readPrenoteProblemField(
+        fields,
+        "Consult"
       ),
       currentStatus: readPrenoteProblemField(
         fields,
@@ -10651,38 +10682,389 @@ const findKeyDiagnosisBlock = (problemName, keyDxBlocks) => {
 };
 
 
+const cleanProblemNarrativeText = (value) =>
+  String(value || "")
+    .replace(/\r?\n/g, " ")
+    .replace(/^[\s*•●○▪▫►◆·-]+/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\s+([,.;:])/g, "$1")
+    .replace(/[.;]+$/, "");
+
+const isProblemSummaryNoneValue = (value) => {
+  const text = cleanProblemNarrativeText(value);
+  if (!text) return true;
+
+  return /^(?:none\b.*|n\/?a\b.*|not documented\b.*|not available\b.*|no (?:current )?(?:medications?|treatment|relevant (?:labs?|laboratory findings?|imaging|procedures?)|active consults?|complications?)\b.*)$/i.test(
+    text
+  );
+};
+
+const ensureProblemSummarySentence = (value) => {
+  const text = cleanProblemNarrativeText(value);
+  if (!text) return "";
+  return /[.!?]$/.test(text) ? text : `${text}.`;
+};
+
+const lowerProblemSummaryInitial = (value) => {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (/^[A-Z0-9]{2,}(?:\b|[-/])/.test(text)) return text;
+  return `${text.charAt(0).toLowerCase()}${text.slice(1)}`;
+};
+
+const neutralizeProblemSummaryPronouns = (value) =>
+  String(value || "")
+    .replace(/\b(?:he|she)\s+has\b/gi, "they have")
+    .replace(/\b(?:he|she)\s+is\b/gi, "they are")
+    .replace(/\b(?:he|she)\s+was\b/gi, "they were")
+    .replace(/\b(?:he|she)\s+does\b/gi, "they do")
+    .replace(/\b(?:keeps?|wakes?|helps?|makes?|leaves?)\s+her\b/gi, (match) =>
+      match.replace(/her$/i, "them")
+    )
+    .replace(/\b(?:he|she)\b/gi, "they")
+    .replace(/\b(?:himself|herself)\b/gi, "themselves")
+    .replace(/\bhim\b/gi, "them")
+    .replace(/\bhis\b/gi, "their")
+    .replace(/\bher\b/gi, "their")
+    .replace(/\bhers\b/gi, "theirs");
+
+const getProblemNarrativeDiagnosisLabel = (rawHeader) => {
+  let label = String(rawHeader || "")
+    .replace(/\s*\([A-Z]\d{2}(?:\.[A-Z0-9]{1,4})?\)\s*/gi, " ")
+    .replace(
+      /\s*\((?:Active(?:\/Changing)?|Changing|Stable(?:\/Chronic)?|Chronic|Resolved|Controlled|Suspected|Remission|In Remission|Registry|Uncontrolled|Unknown)\)\s*$/i,
+      ""
+    )
+    .replace(/,?\s*unspecified(?:\s+type)?\b/gi, "")
+    .replace(/\s+/g, " ")
+    .replace(/\s+,/g, ",")
+    .replace(/[,\s]+$/, "")
+    .trim();
+
+  const qualifierMatch = label.match(/^(.+),\s*(bilateral|chronic|borderline)$/i);
+  if (qualifierMatch) {
+    label = `${qualifierMatch[2]} ${lowerProblemSummaryInitial(
+      qualifierMatch[1]
+    )}`;
+  }
+
+  const stageMatch = label.match(/^(.+),\s*(stage\s+[a-z0-9]+)$/i);
+  if (stageMatch) {
+    label = `${stageMatch[2].toLowerCase()} ${lowerProblemSummaryInitial(
+      stageMatch[1]
+    )}`;
+  }
+
+  const historyMatch = label.match(/^(.+),\s*history of$/i);
+  if (historyMatch) {
+    label = `history of ${lowerProblemSummaryInitial(historyMatch[1])}`;
+  }
+
+  return label;
+};
+
+const buildProblemNarrativeOpening = (rawHeader, diagnosisLabel) => {
+  const label = String(diagnosisLabel || "").trim();
+  if (!label) return "";
+
+  const lowerLabel = lowerProblemSummaryInitial(label);
+  if (/\(\s*suspected\s*\)\s*$/i.test(String(rawHeader || ""))) {
+    return `The patient is being evaluated for suspected ${lowerLabel}`;
+  }
+
+  if (/^overweight$/i.test(label)) {
+    return "The patient is overweight";
+  }
+
+  if (/^toxic exposure,\s*military service$/i.test(label)) {
+    return "The patient has documented military-related toxic exposure";
+  }
+
+  let match = label.match(/^(.+),\s*(stage\s+[a-z0-9]+)$/i);
+  if (match) {
+    return `The patient has ${match[2].toLowerCase()} ${lowerProblemSummaryInitial(match[1])}`;
+  }
+
+  match = label.match(/^(.+),\s*in remission$/i);
+  if (match) {
+    return `The patient has ${lowerProblemSummaryInitial(match[1])} in remission`;
+  }
+
+  match = label.match(/^(.+),\s*status post\s+(.+)$/i);
+  if (match) {
+    return `The patient has ${lowerProblemSummaryInitial(match[1])} status post ${match[2]}`;
+  }
+
+  match = label.match(/^(.+),\s*probable\s+(.+)$/i);
+  if (match) {
+    return `The patient has ${lowerProblemSummaryInitial(match[1])} with probable ${match[2]}`;
+  }
+
+  const article = /^history of\b/i.test(lowerLabel) ? "a " : "";
+  return `The patient has ${article}${lowerLabel}`;
+};
+
+const splitProblemSummarySentences = (value) =>
+  neutralizeProblemSummaryPronouns(cleanProblemNarrativeText(value))
+    .split(/(?<=[.!?])\s+(?=[A-Z0-9])/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean);
+
+// Convert the compact, note-like fragments used in PMH blocks into readable
+// patient-facing prose without adding any facts that were not in the source.
+const humanizeProblemSummarySentence = (value) => {
+  let sentence = cleanProblemNarrativeText(
+    neutralizeProblemSummaryPronouns(value)
+  );
+  if (!sentence) return "";
+
+  let match = sentence.match(
+    /^Time to fall asleep\s+([^,]+),\s*wakes\s+([^,]+),\s*estimated solid sleep\s+(.+)$/i
+  );
+  if (match) {
+    let awakenings = match[2].replace(/\s+unsure why$/i, " without a clear reason");
+    let solidSleep = match[3];
+    const despiteMatch = solidSleep.match(/^(.+?)\s+despite\s+(.+)$/i);
+    if (despiteMatch) {
+      solidSleep = `${despiteMatch[1]} of solid sleep despite ${despiteMatch[2]}`;
+    } else {
+      solidSleep = `${solidSleep} of solid sleep`;
+    }
+    sentence = `They take ${match[1]} to fall asleep, awaken ${awakenings}, and estimate ${solidSleep}`;
+  } else if ((match = sentence.match(/^Goes to bed\s+(.+?),\s*wakes\s+(.+)$/i))) {
+    sentence = `They go to bed ${match[1]} and wake ${match[2]}`;
+  } else if (/^No naps\b/i.test(sentence)) {
+    sentence = sentence.replace(/^No naps\b/i, "They do not nap");
+  } else if (/^Unrefreshing sleep\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Unrefreshing sleep\b/i, "Sleep remains unrefreshing");
+  } else if (/^Sleep study ordered\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Sleep study ordered\b/i, "A sleep study was ordered");
+  } else if (/^In-lab polysomnography ordered\b/i.test(sentence)) {
+    sentence = sentence.replace(
+      /^In-lab polysomnography ordered\b/i,
+      "An in-lab polysomnography study was ordered"
+    );
+  } else if (/^\d+%\s+service-connected\b/i.test(sentence)) {
+    sentence = `The condition is ${lowerProblemSummaryInitial(sentence)}`;
+  } else if (/^Diagnosed\b/i.test(sentence)) {
+    sentence = `It was ${lowerProblemSummaryInitial(sentence)}`;
+  } else if (/^PCL-5 score\b/i.test(sentence)) {
+    sentence = sentence.replace(/^PCL-5 score\s+/i, "PCL-5 was ");
+  } else if (/^PHQ-9\s+\d/i.test(sentence)) {
+    sentence = sentence.replace(/^PHQ-9\s+/i, "PHQ-9 was ");
+  } else if ((match = sentence.match(/^Deployed to\s+(.+?);\s*exposed to\s+(.+)$/i))) {
+    sentence = `They deployed to ${match[1]} and were exposed to ${match[2]}`;
+  } else if (/^Reports\b/i.test(sentence)) {
+    sentence = sentence
+      .replace(/^Reports\b/i, "They report")
+      .replace(/,\s*describes\b/i, ", and describe");
+  } else if (/^Describes\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Describes\b/i, "They describe");
+  } else if (/^Denies\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Denies\b/i, "They deny");
+  } else if (/^Declined\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Declined\b/i, "They declined");
+  } else if (/^Currently engaged\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Currently engaged\b/i, "They are currently engaged");
+  } else if (/^Referred for\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Referred for\b/i, "They were referred for");
+  } else if (/^Veteran scheduled\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Veteran scheduled\b/i, "They are scheduled");
+  } else if (/^Veteran\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Veteran\b/i, "They");
+  } else if (/^Keeps them\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Keeps them\b/i, "It keeps them");
+  } else if (/^Received\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Received\b/i, "They received");
+  } else if (/^Contributes\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Contributes\b/i, "It contributes");
+  } else if (/^Comorbid\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Comorbid\b/i, "Comorbidities include");
+  } else if (/^Physically active\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Physically active\b/i, "They are physically active");
+  } else if (/^Requires\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Requires\b/i, "This requires");
+  } else if (/^Exposed to\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Exposed to\b/i, "They were exposed to");
+  } else if (/^Mother has\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Mother has\b/i, "Their mother has");
+  } else if (/^Active problem on problem list\b/i.test(sentence)) {
+    sentence = sentence.replace(
+      /^Active problem on problem list\b/i,
+      "This remains an active problem on the problem list"
+    );
+  } else if (/^Has\b/i.test(sentence)) {
+    sentence = sentence.replace(/^Has\b/i, "They have");
+  }
+
+  sentence = sentence.replace(/^no\b/i, "No");
+  if (/^[a-z]/.test(sentence)) {
+    sentence = `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}`;
+  }
+  return ensureProblemSummarySentence(sentence);
+};
+
+const formatProblemSummaryList = (value) => {
+  const parts = cleanProblemNarrativeText(value)
+    .split(/\s*;\s*/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 1) return parts[0] || "";
+  if (parts.length === 2) return `${parts[0]} and ${parts[1]}`;
+  return `${parts.slice(0, -1).join(", ")}, and ${parts[parts.length - 1]}`;
+};
+
 const buildProblemNarrativeParagraph = (block) => {
   if (!block) return "";
 
   const sentences = [];
-  const clean = (s) => String(s || "").trim().replace(/\s+/g, " ").replace(/\.+$/, "");
+  const seen = new Set();
+  const pushSentence = (value) => {
+    const sentence = ensureProblemSummarySentence(value);
+    if (!sentence) return;
+    const fingerprint = sentence
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!fingerprint || seen.has(fingerprint)) return;
 
-  // Sentence 1-2: current status / historical course (this is usually the
-  // richest field and often contains the full clinical story)
-  if (block.currentStatus) {
-    sentences.push(clean(block.currentStatus));
+    const factFingerprint = fingerprint
+      .replace(/\b(?:current|currently|recent|measures|clinical|status|include|includes)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    const existingFacts = sentences
+      .join(" ")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\b(?:current|currently|recent|measures|clinical|status|include|includes)\b/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (
+      factFingerprint.length >= 24 &&
+      existingFacts.includes(factFingerprint)
+    ) {
+      return;
+    }
+
+    seen.add(fingerprint);
+    sentences.push(sentence);
+  };
+
+  const diagnosisLabel = getProblemNarrativeDiagnosisLabel(block.rawHeader);
+  if (diagnosisLabel) {
+    pushSentence(buildProblemNarrativeOpening(block.rawHeader, diagnosisLabel));
   }
 
-  // Recent control / trend — only if it adds something beyond current status
-  if (block.recentControl) {
-    const rc = clean(block.recentControl);
-    const cs = clean(block.currentStatus);
-    if (rc && rc.toLowerCase() !== cs.toLowerCase() && !/^(stable|unchanged|no change)$/i.test(rc)) {
-      sentences.push(`Recent trend: ${rc.charAt(0).toLowerCase()}${rc.slice(1)}`);
+  splitProblemSummarySentences(block.currentStatus).forEach((sentence) => {
+    pushSentence(humanizeProblemSummarySentence(sentence));
+  });
+
+  if (block.currentMeds) {
+    if (isProblemSummaryNoneValue(block.currentMeds)) {
+      const statusAlreadySaysNoMedication =
+        /\bno (?:current )?[^.!?]{0,80}\bmedications?\b/i.test(
+          cleanProblemNarrativeText(block.currentStatus)
+        );
+      if (!statusAlreadySaysNoMedication) {
+        pushSentence("No medication is currently documented specifically for this problem");
+      }
+    } else {
+      pushSentence(
+        `Current treatment includes ${lowerProblemSummaryInitial(
+          cleanProblemNarrativeText(block.currentMeds)
+        )}`
+      );
     }
   }
 
-  // Status notes — often contains recent recommendations (e.g., "vascular
-  // surgery recommends d/c clopidogrel")
-  if (block.statusNotes) {
-    sentences.push(clean(block.statusNotes));
+  if (block.pastMeds && !isProblemSummaryNoneValue(block.pastMeds)) {
+    pushSentence(
+      `Past treatment included ${lowerProblemSummaryInitial(
+        cleanProblemNarrativeText(block.pastMeds)
+      )}`
+    );
   }
 
-  return sentences
-    .filter(Boolean)
-    .join(". ")
-    .replace(/\.\s*\./g, ".")
-    + ".";
+  const undocumentedDomains = [];
+  if (block.labTrends) {
+    if (isProblemSummaryNoneValue(block.labTrends)) {
+      undocumentedDomains.push("laboratory trends");
+    } else {
+      pushSentence(
+        `Relevant laboratory findings include ${lowerProblemSummaryInitial(
+          cleanProblemNarrativeText(block.labTrends)
+        )}`
+      );
+    }
+  }
+
+  if (block.recentControl) {
+    const recentControl = cleanProblemNarrativeText(block.recentControl);
+    if (recentControl && !/^(?:stable|unchanged|no change)$/i.test(recentControl)) {
+      pushSentence(
+        `Recent measures and clinical status include ${lowerProblemSummaryInitial(
+          recentControl
+        )}`
+      );
+    }
+  }
+
+  if (block.imaging) {
+    if (isProblemSummaryNoneValue(block.imaging)) {
+      undocumentedDomains.push("imaging/procedures");
+    } else {
+      const imagingSentence = humanizeProblemSummarySentence(block.imaging);
+      if (/^(?:An? |The )/i.test(imagingSentence)) {
+        pushSentence(imagingSentence);
+      } else {
+        pushSentence(
+          `Relevant imaging or procedures include ${lowerProblemSummaryInitial(
+            cleanProblemNarrativeText(block.imaging)
+          )}`
+        );
+      }
+    }
+  }
+
+  if (undocumentedDomains.length > 0) {
+    const missingText = undocumentedDomains.length === 1
+      ? undocumentedDomains[0]
+      : `${undocumentedDomains.slice(0, -1).join(", ")} or ${undocumentedDomains[undocumentedDomains.length - 1]}`;
+    pushSentence(`No relevant ${missingText} are documented`);
+  }
+
+  if (block.complications && !isProblemSummaryNoneValue(block.complications)) {
+    neutralizeProblemSummaryPronouns(cleanProblemNarrativeText(block.complications))
+      .split(/,\s*(?=no\b)/i)
+      .map((sentence) => sentence.trim())
+      .filter(Boolean)
+      .forEach((sentence) => {
+        pushSentence(humanizeProblemSummarySentence(sentence));
+      });
+  }
+
+  if (block.careTeam && !isProblemSummaryNoneValue(block.careTeam)) {
+    pushSentence(
+      `They are followed by ${formatProblemSummaryList(block.careTeam)}`
+    );
+  }
+
+  if (block.consult && !isProblemSummaryNoneValue(block.consult)) {
+    pushSentence(
+      `Consult history includes ${formatProblemSummaryList(block.consult)}`
+    );
+  }
+
+  if (block.statusNotes) {
+    pushSentence(
+      `Additional status notes: ${cleanProblemNarrativeText(block.statusNotes)}`
+    );
+  }
+
+  return sentences.join(" ");
 };
 
 
@@ -11438,19 +11820,47 @@ const buildInRoomHtml = (doc, session) => {
   const currentMedNames = parseMedNames(currentMedsText);
   const medDesc = doc.medDescriptions || {};
 
-  // Fuzzy match a case problem to a PMH block
+  // Fuzzy-match a selected problem to its source PMH block. Match the
+  // normalized diagnosis first, then use conservative substring/token overlap
+  // as a fallback for small wording differences such as "history of".
   const problemBlocks = buildDeterministicProblemBlockMap(parsedPrenote.pmhProblems);
   const findBlockFor = (problemName) => {
-    if (!problemName) return null;
-    const target = problemName.toLowerCase().trim();
-    if (problemBlocks[target]) return problemBlocks[target];
-    for (const [k, v] of Object.entries(problemBlocks)) {
-      if (k.includes(target) || target.includes(k)) return v;
-      const cleanK = k.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
-      const cleanT = target.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/gi, "").trim();
-      if (cleanK && cleanT && (cleanK.includes(cleanT) || cleanT.includes(cleanK))) return v;
+    const target = normalizeProblemLookupKey(problemName);
+    if (!target) return null;
+
+    let bestBlock = null;
+    let bestScore = 0;
+    const targetTokens = new Set(target.split(" ").filter(Boolean));
+
+    for (const block of Object.values(problemBlocks)) {
+      const candidate = block.normalizedKey || normalizeProblemLookupKey(block.rawHeader);
+      if (!candidate) continue;
+
+      let score = 0;
+      if (candidate === target) {
+        score = 100;
+      } else if (candidate.includes(target) || target.includes(candidate)) {
+        score = 85;
+      } else {
+        const candidateTokens = new Set(candidate.split(" ").filter(Boolean));
+        const smaller = targetTokens.size <= candidateTokens.size
+          ? targetTokens
+          : candidateTokens;
+        const larger = smaller === targetTokens ? candidateTokens : targetTokens;
+        let shared = 0;
+        smaller.forEach((token) => {
+          if (larger.has(token)) shared += 1;
+        });
+        score = smaller.size > 0 ? (shared / smaller.size) * 70 : 0;
+      }
+
+      if (score > bestScore) {
+        bestScore = score;
+        bestBlock = block;
+      }
     }
-    return null;
+
+    return bestScore >= 50 ? bestBlock : null;
   };
 
   // Status → pill class
@@ -12993,9 +13403,17 @@ const buildProblemCard = (tc, idx, isSelected) => {
   // subsections (Meds table, Labs bullets, Diagnostics list, Care team).
   const narrative = buildProblemNarrativeParagraph(chartBlock);
   if (narrative && narrative.length > 15) {
-    html += `<p style="margin-bottom:10px;font-size:9pt;line-height:1.55;color:var(--fg);">${esc(narrative)}</p>`;
-  } else if (c.primaryDiagnosis?.briefDefinition) {
-    html += `<p style="margin-bottom:10px;">${esc(c.primaryDiagnosis.briefDefinition)}</p>`;
+    html += `<p class="problem-chart-summary" data-source="prenote-pmh" style="margin-bottom:10px;font-size:9pt;line-height:1.55;color:var(--fg);">${esc(narrative)}</p>`;
+  } else {
+    // Do not silently substitute the AI's generic diagnosis definition here.
+    // This location is reserved for a source-faithful summary of the PMH block.
+    console.warn("[buildProblemCard] Chart-derived problem summary unavailable", {
+      problemName,
+      chartBlockFound: Boolean(chartBlock),
+      availableProblemHeaders: Object.values(problemBlocks).map(
+        (block) => block.rawHeader
+      ),
+    });
   }
 
   // ── Problem-specific Medications (structured table) ──
@@ -13309,13 +13727,21 @@ const buildProblemCard = (tc, idx, isSelected) => {
            /^(?:medication|preventive|hospitalizations?|specialty|allergies|social|family|surgical|military|health|assessment|plan|follow[- ]?up)\b/i.test(value);
   };
 
-  const selectedNames = new Set(enabledCases.map(tc => (tc.data?.problem || tc.problem || "").toLowerCase().trim()));
+  const selectedNames = new Set(
+    enabledCases
+      .map((tc) => normalizeProblemLookupKey(tc.data?.problem || tc.problem || ""))
+      .filter(Boolean)
+  );
   Object.entries(problemBlocks).forEach(([key, block], idx) => {
     if (isNonClinicalHeader(block.rawHeader)) return;
-    const headerLower = block.rawHeader.toLowerCase().trim();
+    const headerKey = block.normalizedKey || normalizeProblemLookupKey(block.rawHeader);
     let alreadyCovered = false;
     for (const selectedName of selectedNames) {
-      if (headerLower.includes(selectedName) || selectedName.includes(headerLower)) {
+      if (
+        headerKey === selectedName ||
+        headerKey.includes(selectedName) ||
+        selectedName.includes(headerKey)
+      ) {
         alreadyCovered = true;
         break;
       }
