@@ -17,6 +17,216 @@ const deriveDocTitle = ({ workingDx, chiefConcern, sessionDate }) => {
   return `Untitled · ${date}`;
 };
 
+
+// ===== Text-native PDF printing =====
+// OCR is for scanned images. The generated document is already HTML text, so
+// the reliable way to create a searchable PDF is to print that text from a
+// top-level document instead of rasterizing the preview iframe. The print-only
+// compatibility layer also uses standard system fonts so browsers embed a
+// dependable text map in the PDF.
+const TEXT_NATIVE_PDF_STYLE = `
+<style id="text-native-pdf-style">
+@media print {
+  html, body {
+    -webkit-text-size-adjust: 100% !important;
+    text-size-adjust: 100% !important;
+    text-rendering: geometricPrecision !important;
+  }
+
+  body,
+  .page,
+  .page p,
+  .page li,
+  .page td,
+  .page th,
+  .page h1,
+  .page h2,
+  .page h3,
+  .page h4,
+  .page h5,
+  .page h6,
+  .page label,
+  .page summary,
+  .page figcaption,
+  .page button,
+  .page a,
+  .page span {
+    font-family: Arial, Helvetica, sans-serif !important;
+  }
+
+  .page pre,
+  .page code,
+  .page kbd,
+  .page samp,
+  .page .mono,
+  .page [class*="mono"] {
+    font-family: "Courier New", Courier, monospace !important;
+  }
+
+  .page i,
+  .page .fa,
+  .page [class^="fa-"],
+  .page [class*=" fa-"] {
+    font-family: "Font Awesome 6 Free" !important;
+  }
+
+  body,
+  .page {
+    transform: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    perspective: none !important;
+    contain: none !important;
+    isolation: auto !important;
+  }
+}
+</style>`;
+
+const prepareTextNativePrintHtml = (rawHtml, title = "Clinical Teaching Document") => {
+  let html = String(rawHtml || "");
+  if (!html.trim()) return "";
+
+  // The print window does not need the Google web-font request. Keeping the
+  // document on system fonts avoids a known source of weak or missing ToUnicode
+  // maps in some browser-generated PDFs while preserving the same layout.
+  html = html.replace(
+    /<link[^>]+fonts\.googleapis\.com[^>]*>\s*/gi,
+    ""
+  );
+
+  if (!/<meta\s+name=["']pdf-export-mode["']/i.test(html)) {
+    html = html.replace(
+      /<head([^>]*)>/i,
+      `<head$1><meta name="pdf-export-mode" content="text-native-searchable">`
+    );
+  }
+
+  if (!/id=["']text-native-pdf-style["']/i.test(html)) {
+    html = html.replace(/<\/head>/i, `${TEXT_NATIVE_PDF_STYLE}</head>`);
+  }
+
+  if (/<title>[\s\S]*?<\/title>/i.test(html)) {
+    html = html.replace(
+      /<title>[\s\S]*?<\/title>/i,
+      `<title>${String(title).replace(/[<>]/g, "")}</title>`
+    );
+  }
+
+  return html;
+};
+
+const waitForPrintableAssets = async (printWindow) => {
+  if (!printWindow?.document) return;
+  const printDocument = printWindow.document;
+
+  try {
+    if (printDocument.fonts?.ready) {
+      await printDocument.fonts.ready;
+    }
+  } catch {}
+
+  const images = Array.from(printDocument.images || []);
+  await Promise.all(
+    images.map((image) => {
+      if (image.complete) {
+        if (typeof image.decode === "function") {
+          return image.decode().catch(() => {});
+        }
+        return Promise.resolve();
+      }
+
+      return new Promise((resolve) => {
+        const finish = () => resolve();
+        image.addEventListener("load", finish, { once: true });
+        image.addEventListener("error", finish, { once: true });
+        setTimeout(finish, 5000);
+      });
+    })
+  );
+
+  await new Promise((resolve) => {
+    const raf = printWindow.requestAnimationFrame || window.requestAnimationFrame;
+    if (typeof raf !== "function") {
+      setTimeout(resolve, 50);
+      return;
+    }
+    raf(() => raf(resolve));
+  });
+};
+
+const downloadPrintReadyHtml = ({ html, filename }) => {
+  const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename || "searchable-pdf-print-view.html";
+  document.body.appendChild(anchor);
+  anchor.click();
+  document.body.removeChild(anchor);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+const openTextNativePrintDialog = async ({
+  html,
+  title,
+  fallbackFilename,
+}) => {
+  const preparedHtml = prepareTextNativePrintHtml(html, title);
+  if (!preparedHtml) {
+    throw new Error("The document did not contain printable HTML.");
+  }
+
+  // Open synchronously from the click event so popup blockers allow it. The
+  // actual print call waits for fonts and figures to finish loading.
+  const printWindow = window.open("", "_blank", "width=1100,height=850");
+
+  if (!printWindow) {
+    downloadPrintReadyHtml({
+      html: preparedHtml,
+      filename: fallbackFilename || "searchable-pdf-print-view.html",
+    });
+    window.alert(
+      "The browser blocked the print window. A print-ready HTML file was downloaded instead. Open it, then choose Print > Save as PDF. The document text will remain selectable and searchable."
+    );
+    return false;
+  }
+
+  try {
+    printWindow.opener = null;
+    printWindow.document.open();
+    printWindow.document.write(preparedHtml);
+    printWindow.document.close();
+
+    const runPrint = async () => {
+      try {
+        await waitForPrintableAssets(printWindow);
+        printWindow.addEventListener(
+          "afterprint",
+          () => {
+            try { printWindow.close(); } catch {}
+          },
+          { once: true }
+        );
+        printWindow.focus();
+        printWindow.print();
+      } catch (error) {
+        console.error("Text-native PDF print failed:", error);
+      }
+    };
+
+    if (printWindow.document.readyState === "complete") {
+      runPrint();
+    } else {
+      printWindow.addEventListener("load", runPrint, { once: true });
+    }
+
+    return true;
+  } catch (error) {
+    try { printWindow.close(); } catch {}
+    throw error;
+  }
+};
+
 // ===== PHI de-identification =====
 // Client-side de-identification for VA prenotes. Runs a series of pattern
 // passes and returns { deidentified, findings } where findings is a list
@@ -20051,6 +20261,43 @@ body.dark .figures-box {
 /* Print */
 @page { size: letter; margin: 0.5in 0.55in 0.6in 0.55in; }
 @media print {
+  /* Keep the PDF text-native and searchable. Browser print engines sometimes
+     rasterize sandboxed or transformed preview layers; the top-level print
+     path plus standard print fonts preserves an actual text layer. */
+  body,
+  .page,
+  .page p,
+  .page li,
+  .page td,
+  .page th,
+  .page h1,
+  .page h2,
+  .page h3,
+  .page h4,
+  .page h5,
+  .page h6,
+  .page label,
+  .page summary,
+  .page figcaption,
+  .page a,
+  .page span {
+    font-family: Arial, Helvetica, sans-serif !important;
+  }
+  .page pre,
+  .page code,
+  .page .mono,
+  .page [class*="mono"] {
+    font-family: "Courier New", Courier, monospace !important;
+  }
+  body,
+  .page {
+    transform: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    perspective: none !important;
+    contain: none !important;
+    isolation: auto !important;
+  }
   .background-problem-details > summary { display: none !important; }
   .background-problem-details > .background-problem-details-body { display: block !important; }
   .problem-index-item { color: var(--fg-m) !important; }
@@ -20187,7 +20434,18 @@ function resetShelfQuestion(button) {
   button.classList.add('hidden');
 }
 
-function printDoc(){ window.print(); }
+function printDoc(){
+  var run = function(){
+    try { window.focus(); } catch(e) {}
+    window.print();
+  };
+
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(function(){ setTimeout(run, 50); }).catch(run);
+  } else {
+    setTimeout(run, 50);
+  }
+}
 `;
 
   const renderCoverageChecks = [
@@ -20228,7 +20486,7 @@ function printDoc(){ window.print(); }
 <body>
 
 <div class="doc-toolbar">
-  <button class="tb-btn" onclick="printDoc()"><i class="fa-solid fa-print"></i> Print / PDF</button>
+  <button class="tb-btn" onclick="printDoc()"><i class="fa-solid fa-print"></i> Print / Searchable PDF</button>
   <label class="tb-btn" style="cursor:pointer;"><input type="checkbox" id="themeSwitch" style="display:none;"><i class="fa-solid fa-moon"></i> Dark mode</label>
 </div>
 
@@ -20345,11 +20603,10 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  // Print the generated document itself rather than the surrounding React app.
-  // A dedicated window is the most reliable path across Chrome, Edge, Safari,
-  // and Firefox. If a popup blocker intervenes, fall back to the sandboxed
-  // iframe, which explicitly allows the print modal.
-  const printDoc = () => {
+  // Print from a fresh top-level HTML document rather than the sandboxed
+  // preview iframe. This keeps the PDF text-native, selectable, and searchable.
+  // Text that is baked into figures or screenshots remains image content.
+  const printDoc = async () => {
     let html = srcDoc;
 
     if (!html) {
@@ -20357,69 +20614,37 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
         html = buildInRoomHtml(doc, session);
       } catch (error) {
         console.error("Failed to prepare printable document:", error);
-      }
-    }
-
-    const printWindow = window.open(
-      "",
-      "_blank",
-      "width=1100,height=850"
-    );
-
-    if (printWindow && html) {
-      try {
-        printWindow.opener = null;
-        printWindow.document.open();
-        printWindow.document.write(html);
-        printWindow.document.close();
-
-        const triggerPrint = async () => {
-          try {
-            if (printWindow.document.fonts?.ready) {
-              await printWindow.document.fonts.ready;
-            }
-          } catch {}
-
-          setTimeout(() => {
-            try {
-              printWindow.focus();
-              printWindow.print();
-              printWindow.addEventListener(
-                "afterprint",
-                () => printWindow.close(),
-                { once: true }
-              );
-            } catch (error) {
-              console.error("Print window failed:", error);
-            }
-          }, 150);
-        };
-
-        if (printWindow.document.readyState === "complete") {
-          triggerPrint();
-        } else {
-          printWindow.addEventListener(
-            "load",
-            triggerPrint,
-            { once: true }
-          );
-        }
-
+        window.alert(
+          `The document could not be prepared for PDF export: ${error?.message || error}`
+        );
         return;
-      } catch (error) {
-        console.error("Could not open print window:", error);
-        try { printWindow.close(); } catch {}
       }
     }
 
-    const frameWindow = iframeRef.current?.contentWindow;
-    if (frameWindow) {
-      frameWindow.focus();
-      setTimeout(() => frameWindow.print(), 50);
-      return;
-    }
+    const student = doc.student || "Student";
+    const sessionDate = session?.sessionDate || new Date().toISOString().split("T")[0];
+    const titleSlug = (doc.sessionTitle || "")
+      .replace(/·/g, "-")
+      .replace(/[^a-z0-9\s-]/gi, "")
+      .trim()
+      .replace(/\s+/g, "-")
+      .slice(0, 80);
+    const fallbackFilename = titleSlug
+      ? `previsit-${titleSlug}-print-ready.html`
+      : `previsit-${student.replace(/[^a-z0-9]/gi, "_")}-${sessionDate}-print-ready.html`;
 
-    window.print();
+    try {
+      await openTextNativePrintDialog({
+        html,
+        title: doc.sessionTitle || `Pre-visit teaching document - ${sessionDate}`,
+        fallbackFilename,
+      });
+    } catch (error) {
+      console.error("Searchable PDF export failed:", error);
+      window.alert(
+        `The searchable PDF print view could not be opened: ${error?.message || error}`
+      );
+    }
   };
 
   if (!doc) return null;
@@ -20465,11 +20690,11 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
         <button
           onClick={printDoc}
           className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
-          title="Print or save as PDF"
+          title="Print or save a text-searchable PDF"
         >
           <Printer className="w-4 h-4" />
-          <span className="hidden sm:inline">Print / Save as PDF</span>
-          <span className="sm:hidden">Print / PDF</span>
+          <span className="hidden sm:inline">Print / Searchable PDF</span>
+          <span className="sm:hidden">Searchable PDF</span>
         </button>
         <button
           onClick={onEdit}
@@ -20479,7 +20704,7 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
           <span className="sm:hidden">← Preview</span>
         </button>
         <div className="text-xs text-slate-500 italic ml-2 hidden lg:block">
-          This is what the student will see. Use the toggle inside the doc to test dark/light mode.
+          PDF body text remains selectable and searchable. Text inside screenshots or figures remains image content.
         </div>
       </div>
 
@@ -20889,6 +21114,35 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
 
 @page { size: letter; margin: 0.5in 0.55in 0.6in; }
 @media print {
+  .post-visit-document,
+  .post-visit-document p,
+  .post-visit-document li,
+  .post-visit-document td,
+  .post-visit-document th,
+  .post-visit-document h1,
+  .post-visit-document h2,
+  .post-visit-document h3,
+  .post-visit-document h4,
+  .post-visit-document h5,
+  .post-visit-document h6,
+  .post-visit-document a,
+  .post-visit-document span {
+    font-family: Arial, Helvetica, sans-serif !important;
+  }
+  .post-visit-document pre,
+  .post-visit-document code,
+  .post-visit-document .mono,
+  .post-visit-document [class*="mono"] {
+    font-family: "Courier New", Courier, monospace !important;
+  }
+  .post-visit-document {
+    transform: none !important;
+    filter: none !important;
+    backdrop-filter: none !important;
+    perspective: none !important;
+    contain: none !important;
+    isolation: auto !important;
+  }
   body.post-visit-export,
   body.post-visit-export.dark { background: #fff !important; padding: 0 !important; color: #1a1f2e !important; }
   .post-visit-preview-shell { padding: 0 !important; border: 0 !important; background: #fff !important; overflow: visible !important; }
