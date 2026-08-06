@@ -17099,6 +17099,107 @@ const buildProblemCard = (tc, idx, isSelected) => {
   }
 
   // ──────────────────────────────────────────────────────────────
+  // FIGURES — Step 4 source images and attending attachments
+  // ──────────────────────────────────────────────────────────────
+  // The current pre-visit preview/export is rendered by buildInRoomHtml().
+  // Keep figure collection here so the standalone HTML gets the same images
+  // that were extracted during source synthesis. This section intentionally
+  // sits immediately before the shelf-style practice questions.
+  let figuresHtml = "";
+  const documentFigures = [];
+  const seenFigureUrls = new Set();
+
+  const addDocumentFigure = (figure, options = {}) => {
+    if (!figure || typeof figure !== "object") return;
+
+    const dataUrl = String(
+      figure.dataUrl || figure.src || figure.url || ""
+    ).trim();
+
+    if (!dataUrl || seenFigureUrls.has(dataUrl)) return;
+
+    // The rich-paste and attachment pipelines normally convert images to data
+    // URLs. Retain https/blob fallbacks for restored drafts and older sessions.
+    if (!/^(?:data:image\/|blob:|https?:\/\/)/i.test(dataUrl)) return;
+
+    seenFigureUrls.add(dataUrl);
+
+    const rawCaption = String(
+      options.caption ??
+      figure.caption ??
+      figure.alt ??
+      figure.filename ??
+      ""
+    )
+      .replace(/\s+/g, " ")
+      .trim();
+
+    // Tool labels are provenance, not useful student-facing captions.
+    const sourceOnlyCaption =
+      /^figure\s+from\s+/i.test(rawCaption) ||
+      /^(?:openevidence|uptodate|dynamed|doxgpt|pubmed(?:\s+ai)?)(?:\b|\s*:)/i.test(rawCaption);
+
+    const genericFilename =
+      /^(?:image|screenshot|screen\s*shot|photo|img|pasted)(?:[-_\s]*\d+)?(?:\.[a-z0-9]+)?$/i.test(rawCaption);
+
+    const caption = options.trustCaption
+      ? rawCaption
+      : (!sourceOnlyCaption && !genericFilename ? rawCaption : "");
+
+    documentFigures.push({
+      dataUrl,
+      caption,
+      key: String(figure.id || options.key || `figure-${documentFigures.length + 1}`),
+    });
+  };
+
+  // 1. Figures extracted while synthesizing Step 4 source responses.
+  const synthesizedFigures =
+    s.synthesizedEvidence?.content?.allFigures ||
+    doc.synthesizedEvidence?.allFigures ||
+    [];
+
+  (Array.isArray(synthesizedFigures) ? synthesizedFigures : []).forEach(
+    (figure, index) => addDocumentFigure(figure, { key: `synth-${index}` })
+  );
+
+  // 2. Direct fallback for sessions where synthesis was skipped or failed.
+  (Array.isArray(doc.allSourceImages) ? doc.allSourceImages : []).forEach(
+    (figure, index) => addDocumentFigure(figure, { key: `source-${index}` })
+  );
+
+  // 3. Images attached separately in Step 4. The attending-authored caption
+  // is trusted; filename is used only when it is specific rather than generic.
+  (Array.isArray(doc.imageAttachments) ? doc.imageAttachments : []).forEach(
+    (figure, index) => addDocumentFigure(figure, {
+      key: `attachment-${index}`,
+      caption: figure.caption || figure.filename || "",
+      trustCaption: Boolean(String(figure.caption || "").trim()),
+    })
+  );
+
+  if (documentFigures.length > 0) {
+    figuresHtml += `<section class="figures-box">`;
+    figuresHtml += `<div class="figures-box-head"><i class="fa-solid fa-images"></i><div><div class="figures-box-title">Figures</div><div class="figures-box-subtitle">Reference images, algorithms, tables, and diagrams extracted from the Step 4 sources.</div></div></div>`;
+    figuresHtml += `<div class="figures-grid">`;
+
+    documentFigures.forEach((figure, index) => {
+      const label = `Figure ${index + 1}`;
+      const altText = figure.caption || label;
+
+      figuresHtml += `<figure class="figure-card">`;
+      figuresHtml += `<div class="figure-image-wrap"><img src="${esc(figure.dataUrl)}" alt="${esc(altText)}"></div>`;
+      figuresHtml += `<figcaption><div class="figure-number">${label}</div>`;
+      if (figure.caption) {
+        figuresHtml += `<div class="figure-caption">${esc(figure.caption)}</div>`;
+      }
+      figuresHtml += `</figcaption></figure>`;
+    });
+
+    figuresHtml += `</div></section>`;
+  }
+
+  // ──────────────────────────────────────────────────────────────
   // PRACTICE QUESTIONS
   // ──────────────────────────────────────────────────────────────
   let practiceHtml = "";
@@ -18506,6 +18607,95 @@ body.dark .diag-teaching {
 body.dark .prev-due { background: var(--danger-soft); color: var(--danger); }
 body.dark .prev-done { background: rgba(99,143,168,.18); color: var(--accent); }
 
+/* Figures — final Step 4 visual appendix placed immediately before questions */
+.figures-box {
+  margin: 20px 0 18px;
+  padding: 13px 14px 14px;
+  border: 1px solid rgba(55, 108, 139, .26);
+  border-top: 4px solid var(--accent);
+  border-radius: 6px;
+  background: var(--warm-soft);
+}
+.figures-box-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin-bottom: 12px;
+  color: var(--accent);
+}
+.figures-box-head > i {
+  margin-top: 2px;
+  font-size: 10pt;
+}
+.figures-box-title {
+  font-size: 9pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .10em;
+  line-height: 1.25;
+}
+.figures-box-subtitle {
+  margin-top: 2px;
+  color: var(--fg-m);
+  font-size: 8pt;
+  font-style: italic;
+  line-height: 1.4;
+}
+.figures-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: 12px;
+}
+.figure-card {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.figure-image-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 120px;
+  padding: 8px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border-l);
+}
+.figure-image-wrap img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: 500px;
+  object-fit: contain;
+}
+.figure-card figcaption {
+  padding: 8px 9px 9px;
+}
+.figure-number {
+  color: var(--accent);
+  font-size: 7pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .10em;
+}
+.figure-caption {
+  margin-top: 3px;
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.45;
+}
+body.dark .figures-box {
+  background: rgba(242, 217, 187, .08);
+  border-color: rgba(99, 143, 168, .34);
+}
+@media (max-width: 620px) {
+  .figures-grid { grid-template-columns: 1fr; }
+}
+
 /* Practice questions */
 .pq-sep {
   border-top: 2px dashed var(--fg-d);
@@ -18579,6 +18769,8 @@ body.dark .pq-opts li.pq-right .pq-l { color: var(--accent); }
   .narrative-row, .narrative-data { break-inside: avoid; page-break-inside: avoid; }
   .prob { break-inside: avoid; page-break-inside: avoid; }
   .tch, .ask, .wrn { break-inside: avoid; page-break-inside: avoid; }
+  .figure-card { break-inside: avoid; page-break-inside: avoid; }
+  .figure-image-wrap img { max-height: 4.8in; }
   h1, h2, h3, h4, h5, h6, .sec-div, .prob-head { page-break-after: avoid; break-after: avoid; }
   p, li, div { orphans: 3; widows: 3; }
   tr { page-break-inside: avoid; }
@@ -18681,6 +18873,7 @@ ${preventiveHtml}
 ${problemsHtml}
 ${crossProblemHtml}
 ${timelineHtml}
+${figuresHtml}
 ${practiceHtml}
 <div class="doc-footer">Prenote for ${esc(primaryLabel)} — Generated for clinical education use — Session ${esc(sessionId)}</div>
 </div>
