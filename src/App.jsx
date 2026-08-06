@@ -2135,6 +2135,10 @@ const buildDeterministicProblemBlockMap = (
 
     blocks[rawHeader.toLowerCase().trim()] = {
       rawHeader,
+      name: problem.name || rawHeader,
+      code: problem.code || "",
+      sourceStatus: problem.status || "",
+      fields,
       normalizedKey: normalizeProblemLookupKey(rawHeader),
       rawBody: problem.rawText || "",
       currentMeds: readPrenoteProblemField(
@@ -2143,6 +2147,7 @@ const buildDeterministicProblemBlockMap = (
       ),
       pastMeds: readPrenoteProblemField(
         fields,
+        "Medications - Past",
         "Past"
       ),
       labTrends: readPrenoteProblemField(
@@ -2178,10 +2183,17 @@ const buildDeterministicProblemBlockMap = (
         "Current status or brief chronological course",
         "Current status"
       ),
+      whatThisMeansNow: readPrenoteProblemField(
+        fields,
+        "What this means now"
+      ),
       statusNotes: readPrenoteProblemField(
         fields,
         "Status notes"
       ),
+      unstructuredDetails: Array.isArray(problem.details)
+        ? problem.details.join(" ").replace(/\s+/g, " ").trim()
+        : "",
     };
   }
 
@@ -5075,58 +5087,107 @@ The keys in "medications" must EXACTLY match the medication names I provide (cas
     }
   };
 
-  // ===== Lightweight teaching for non-selected problems (pre-visit only) =====
-  // The student sees ALL of the patient's chronic problems in the doc, not just the ones
-  // the attending selected for deep teaching. For non-selected problems we generate
-  // brief content in a single batch call: brief definition, classic picture, one learning
-  // point, one clinical pearl. Just enough to ground the student.
-  const generateLightweightTeaching = async (nonSelectedProblems) => {
-    if (!aiEnabled || !nonSelectedProblems?.length) return {};
-
-    const sys = `You are a teaching attending writing brief background content on a patient's chronic problems that the student will encounter tomorrow. For each problem below, generate lightweight prep content — enough that the student walks in with basic grounding.
-
-Return ONLY valid JSON (no markdown fences):
-{
-  "problems": {
-    "<exact problem name as provided>": {
-      "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences on what this is, anchored to this patient's chart if relevant"},
-      "theClassicPicture": "2-3 sentences on how this typically presents, what to recognize, key features",
-      "oneKeyLearningPoint": {"point": "the ONE most important thing to know", "explanation": "1-2 sentences", "citation": "real trial/guideline reference — NEVER a tool name like OpenEvidence"},
-      "clinicalPearl": "a memorable one-line teaching point"
-    }
-  }
-}
-
-Keep it brief. Skip if a problem name is nonsense or empty. Anchor to the patient's chart context where helpful. Cite real references — society guidelines by year (e.g., "ATA 2014"), landmark trials by name (e.g., "SPRINT"), USPSTF grades — NEVER cite AI tools like OpenEvidence/UpToDate.`;
-
-    // Cap at 8 problems to stay within rate limits. Excess problems still
-    // appear in the doc but without lightweight teaching content — they
-    // render as "background problem, no teaching generated" placeholders.
-    const CAP = 8;
-    const cappedProblems = nonSelectedProblems.slice(0, CAP);
-    const overflow = nonSelectedProblems.length - CAP;
-    if (overflow > 0) {
-      console.log(`[generateLightweightTeaching] Capped at ${CAP}; ${overflow} problem(s) will render without teaching content`);
-    }
-    const problemList = cappedProblems.map((p, i) => `${i + 1}. ${p}`).join("\n");
-    const contextLine = chiefConcern ? `\n\nPatient context: ${chiefConcern}` : "";
-    const user = `Generate lightweight teaching content for these chronic problems on the patient's chart:\n${problemList}${contextLine}\n\nStudent is in month ${phase.monthsIn} of LIC (${phase.name} phase).`;
-
-    try {
-      // Lightweight teaching batches multiple problems in one call. When the
-      // patient has many chronic problems (e.g., 10+ in a complex vet), 4000
-      // tokens gets truncated. Bump to 6000.
-      const response = await callAi(sys, user, 6000);
-      const parsed = extractJson(response);
-      const result = {};
-      Object.entries(parsed.problems || {}).forEach(([name, content]) => {
-        result[name.toLowerCase().trim()] = content;
-      });
-      return result;
-    } catch (e) {
-      console.warn("[generateLightweightTeaching] failed:", e.message);
+  // ===== Concise orientation for non-selected PMH problems (pre-visit only) =====
+  // All source-derived PMH data is rendered deterministically whether this call
+  // succeeds or not. This optional pass adds only one short, chart-grounded
+  // orientation paragraph to each non-selected condition. It receives the full
+  // structured problem block, works in chunks, and never imposes a hard cap.
+  const generateBackgroundProblemOrientations = async (problemBlocks) => {
+    if (!aiEnabled || !Array.isArray(problemBlocks) || problemBlocks.length === 0) {
       return {};
     }
+
+    const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+    const serializableBlocks = problemBlocks
+      .filter((block) => block?.rawHeader)
+      .map((block) => ({
+        problem: clean(block.rawHeader),
+        currentStatus: clean(block.currentStatus),
+        currentTreatment: clean(block.currentMeds),
+        pastTreatment: clean(block.pastMeds),
+        relevantLabs: clean(block.labTrends),
+        recentControl: clean(block.recentControl),
+        imagingProcedures: clean(block.imaging),
+        complicationsMonitoring: clean(block.complications),
+        careTeam: clean(block.careTeam),
+        consultReferral: clean(block.consult),
+        whatThisMeansNow: clean(block.whatThisMeansNow),
+        statusNotes: clean(block.statusNotes),
+        additionalChartDetails: clean(block.unstructuredDetails),
+      }));
+
+    if (serializableBlocks.length === 0) return {};
+
+    const sys = `You are a warm internal-medicine attending adding a very brief orientation to medical problems that were NOT selected for expanded teaching.
+
+The chart block supplied for each problem is authoritative. The app will separately display every source-derived field in full. Your role is only to add a concise orientation that helps the student understand why the condition matters in this patient's chart.
+
+GROUNDING RULES:
+1. Return exactly one or two sentences per problem.
+2. Connect the orientation to the supplied chart facts. Preserve diagnostic uncertainty, pending workup, and problem-list contradictions exactly as documented.
+3. Do not invent symptoms, results, dates, complications, treatments, referrals, or management recommendations.
+4. Do not suggest new testing or treatment. The attending did not select these conditions for a full teaching expansion.
+5. It is acceptable to briefly explain the clinical relationship among the documented facts, but do not replace the chart with generic textbook prose.
+6. Use a friendly, invitational attending voice. Never say "You need to understand," "You should know," or similar command language.
+7. A citation is optional. Include one only when you are highly confident that a real society guideline or landmark reference directly supports the orientation; otherwise return an empty string.
+
+Return ONLY valid JSON:
+{
+  "problems": [
+    {
+      "problem": "exact problem header supplied in the input",
+      "clinicalOrientation": "one or two chart-grounded sentences",
+      "citation": "optional real guideline or society reference, otherwise empty string"
+    }
+  ]
+}`;
+
+    const result = {};
+    const CHUNK_SIZE = 6;
+    const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    for (let offset = 0; offset < serializableBlocks.length; offset += CHUNK_SIZE) {
+      const chunk = serializableBlocks.slice(offset, offset + CHUNK_SIZE);
+      const chunkNumber = Math.floor(offset / CHUNK_SIZE) + 1;
+      const chunkCount = Math.ceil(serializableBlocks.length / CHUNK_SIZE);
+
+      const user = `Write concise clinical orientations for these non-selected PMH problem blocks. Preserve each exact problem header in the response.\n\n${JSON.stringify(chunk, null, 2)}`;
+
+      try {
+        const response = await callAi(sys, user, 4500, {
+          temperature: 0.2,
+          maxRetries: 1,
+        });
+        const parsed = extractJson(response);
+        const items = Array.isArray(parsed?.problems) ? parsed.problems : [];
+
+        items.forEach((item) => {
+          const problem = clean(item?.problem);
+          const clinicalOrientation = softenTeachingVoice(
+            clean(item?.clinicalOrientation || item?.orientation)
+          );
+          if (!problem || !clinicalOrientation) return;
+
+          result[problem.toLowerCase().trim()] = {
+            problem,
+            clinicalOrientation,
+            citation: clean(item?.citation),
+          };
+        });
+      } catch (error) {
+        // The chart reference cards remain complete without this enhancement.
+        console.warn(
+          `[generateBackgroundProblemOrientations] chunk ${chunkNumber}/${chunkCount} failed; chart data will still render:`,
+          error?.message || error
+        );
+      }
+
+      if (offset + CHUNK_SIZE < serializableBlocks.length) {
+        await pause(2500);
+      }
+    }
+
+    return result;
   };
 
   // PubMed AI performs best here with a single, plain-language topic per prompt.
@@ -6329,43 +6390,46 @@ Formatting rules:
             }
           }
 
-          // Also generate LIGHTWEIGHT teaching for all non-selected problems from PMH.
-          // These are the problems the attending didn't pick for deep teaching — the student
-          // still sees them in the doc, but with brief prep content rather than full cases.
-                    const pmhProblems =
-            parsedPrenote.pmhProblems ||
-            [];
+          // Add one concise orientation to every non-selected PMH problem.
+          // The complete chart fields are always rendered deterministically;
+          // this AI pass is optional and never controls whether a problem appears.
+          const pmhProblems = parsedPrenote.pmhProblems || [];
 
           if (pmhProblems.length > 0) {
-            const allProblemNames =
-              pmhProblems
-                .map(
-                  (problem) =>
-                    problem.rawHeader
-                )
-                .filter(Boolean);
-            const selectedLower = new Set((selectedProblems || []).map(p => p.toLowerCase().trim()));
-            // Non-selected = problems in the prenote NOT already in the deep-teaching selection
-            const nonSelected = allProblemNames.filter(name => {
-              const nl = name.toLowerCase().trim();
-              // Fuzzy match: skip if any selected problem shares significant tokens
-              for (const sel of selectedLower) {
-                if (nl.includes(sel) || sel.includes(nl)) return false;
-                // Strip ICD parens and common qualifiers for a looser check
-                const cleanN = nl.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/g, "").trim();
-                const cleanS = sel.replace(/\([^)]*\)/g, "").replace(/\b(untreated|stable|chronic|active|history|of)\b/g, "").trim();
-                if (cleanN && cleanS && (cleanN.includes(cleanS) || cleanS.includes(cleanN))) return false;
-              }
-              return true;
+            const problemBlockMap = buildDeterministicProblemBlockMap(pmhProblems);
+            const selectedKeys = (selectedProblems || [])
+              .map(normalizeProblemLookupKey)
+              .filter(Boolean);
+
+            const nonSelectedBlocks = Object.values(problemBlockMap).filter((block) => {
+              const blockKey = block.normalizedKey || normalizeProblemLookupKey(block.rawHeader);
+              if (!blockKey) return false;
+
+              return !selectedKeys.some(
+                (selectedKey) =>
+                  blockKey === selectedKey ||
+                  blockKey.includes(selectedKey) ||
+                  selectedKey.includes(blockKey)
+              );
             });
-            if (nonSelected.length > 0) {
-              setAiStatus(prev => ({ ...prev, progress: `Generating brief teaching for ${nonSelected.length} background problems` }));
-              try {
-                const lightweight = await generateLightweightTeaching(nonSelected);
-                aiContent.lightweightTeaching = lightweight;
-              } catch (e) {
-                console.warn("Lightweight teaching failed:", e);
-                aiContent.lightweightTeaching = {};
+
+            if (nonSelectedBlocks.length > 0) {
+              const cachedOrientations =
+                retryFailedOnly &&
+                aiTeachingContent?.backgroundProblemOrientations &&
+                Object.keys(aiTeachingContent.backgroundProblemOrientations).length > 0
+                  ? aiTeachingContent.backgroundProblemOrientations
+                  : null;
+
+              if (cachedOrientations) {
+                aiContent.backgroundProblemOrientations = cachedOrientations;
+              } else {
+                setAiStatus((prev) => ({
+                  ...prev,
+                  progress: `Adding concise orientation to ${nonSelectedBlocks.length} additional chart problem${nonSelectedBlocks.length === 1 ? "" : "s"}`,
+                }));
+                aiContent.backgroundProblemOrientations =
+                  await generateBackgroundProblemOrientations(nonSelectedBlocks);
               }
             }
           }
@@ -6462,7 +6526,13 @@ Formatting rules:
       rawPrenote: sessionMode === "pre" ? clinicalNote : null,
       // AI-generated medication descriptions (pre-visit only) — keyed by lowercased med name
       medDescriptions: aiContent?.medDescriptions || null,
-      // Lightweight teaching content for non-selected problems (pre-visit only)
+      // Optional one- to two-sentence orientation for non-selected PMH problems.
+      // The cards themselves are always built from deterministic chart data.
+      backgroundProblemOrientations:
+        aiContent?.backgroundProblemOrientations ||
+        aiTeachingContent?.backgroundProblemOrientations ||
+        null,
+      // Backward compatibility for drafts made before the chart-reference redesign.
       lightweightTeaching: aiContent?.lightweightTeaching || null,
       // Per-report teaching generated from the diagnostic section plus Step 4 evidence.
       diagnosticTeaching: aiContent?.diagnosticTeaching || [],
@@ -10774,7 +10844,7 @@ function PreviewEditor({ previewData, setPreviewData, togglePreviewSection, togg
 //     activeProblems with category/status/shortSubtitle, labTrendsSummary,
 //     diagnosticsSummary, priorityFocusAreas, perProblemRedFlags)
 //   - doc.sections.teachingCases (with new suggestedQuestions + dontMiss fields)
-//   - doc.medDescriptions, doc.lightweightTeaching, doc.rawPrenote
+//   - doc.medDescriptions, doc.backgroundProblemOrientations, doc.rawPrenote
 // ============================================================================
 
 // ============================================================================
@@ -11287,9 +11357,21 @@ const buildProblemNarrativeParagraph = (block) => {
     );
   }
 
+  if (block.whatThisMeansNow) {
+    pushSentence(
+      `What this means now: ${cleanProblemNarrativeText(block.whatThisMeansNow)}`
+    );
+  }
+
   if (block.statusNotes) {
     pushSentence(
       `Additional status notes: ${cleanProblemNarrativeText(block.statusNotes)}`
+    );
+  }
+
+  if (block.unstructuredDetails) {
+    pushSentence(
+      `Additional chart details: ${cleanProblemNarrativeText(block.unstructuredDetails)}`
     );
   }
 
@@ -14295,19 +14377,247 @@ const buildInRoomHtml = (doc, session) => {
   // PROBLEM CARDS (each selected teaching case + non-selected PMH problems)
   // ──────────────────────────────────────────────────────────────
   
-const buildProblemCard = (tc, idx, isSelected) => {
+const isOmittableChartValue = (value) => {
+  const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+  return (
+    !cleaned ||
+    /^(?:none|none documented|not documented|not available|n\/?a|unknown)\.?$/i.test(cleaned)
+  );
+};
+
+const stripProblemStatusSuffixForDisplay = (value) =>
+  String(value || "")
+    .replace(
+      /\s*\(\s*(?:unstable\s*\/\s*new|active\s*\/\s*changing|stable\s*\/\s*chronic|in remission|resolved|controlled|uncontrolled|suspected|remission|registry|unknown|active|changing|stable|chronic|inactive|historical)\s*\)\s*$/i,
+      ""
+    )
+    .trim();
+
+const problemAnchorSlug = (value) =>
+  normalizeProblemLookupKey(value)
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/^-+|-+$/g, "") || "problem";
+
+const findBackgroundProblemOrientation = (problemName) => {
+  const exactKey = String(problemName || "").toLowerCase().trim();
+  const source = doc.backgroundProblemOrientations || {};
+  let match = source[exactKey];
+
+  if (!match) {
+    const target = normalizeProblemLookupKey(problemName);
+    for (const [key, value] of Object.entries(source)) {
+      const candidate = normalizeProblemLookupKey(value?.problem || key);
+      if (
+        candidate &&
+        target &&
+        (candidate === target || candidate.includes(target) || target.includes(candidate))
+      ) {
+        match = value;
+        break;
+      }
+    }
+  }
+
+  if (match) return match;
+
+  // Older drafts used lightweightTeaching. Convert the most useful existing
+  // sentence into the new orientation shape rather than dropping saved work.
+  const legacySource = doc.lightweightTeaching || {};
+  let legacy = legacySource[exactKey];
+  if (!legacy) {
+    const target = normalizeProblemLookupKey(problemName);
+    for (const [key, value] of Object.entries(legacySource)) {
+      const candidate = normalizeProblemLookupKey(key);
+      if (
+        candidate &&
+        target &&
+        (candidate === target || candidate.includes(target) || target.includes(candidate))
+      ) {
+        legacy = value;
+        break;
+      }
+    }
+  }
+
+  if (!legacy) return null;
+  const legacyPoint = legacy.oneKeyLearningPoint || {};
+  const clinicalOrientation = [
+    legacy.primaryDiagnosis?.briefDefinition,
+    legacyPoint.explanation,
+    legacy.theClassicPicture,
+  ]
+    .map((value) => String(value || "").replace(/\s+/g, " ").trim())
+    .find(Boolean);
+
+  return clinicalOrientation
+    ? {
+        clinicalOrientation: softenTeachingVoice(clinicalOrientation),
+        citation: legacyPoint.citation || "",
+      }
+    : null;
+};
+
+const renderBackgroundFactValue = (value, label) => {
+  const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+  if (!cleaned) return "";
+
+  // Consult and referral strings frequently contain several labeled clauses.
+  // Put those clauses on separate indented rows instead of one dense paragraph.
+  let segmented = cleaned;
+  if (/consult|referral/i.test(label)) {
+    segmented = segmented
+      .replace(
+        /\.\s+(?=(?:VA Authorization|Authorization|Valid Dates?|Last visit|Status|Provider|Indication|Scheduled|Community Care)\b)/gi,
+        ".\n"
+      )
+      .replace(
+        /;\s+(?=(?:VA Authorization|Authorization|Valid Dates?|Last visit|Status|Provider|Indication|Scheduled)\s*:)/gi,
+        ";\n"
+      );
+  }
+
+  const parts = segmented
+    .split(/\n+/)
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  const emphasizeLabels = (part) =>
+    esc(part).replace(
+      /\b(Status|Provider|Valid Dates?|Indication|VA Authorization|Authorization|Last visit|Scheduled)\s*:/gi,
+      "<b>$1:</b>"
+    );
+
+  if (parts.length > 1) {
+    return `<ul class="background-fact-list">${parts
+      .map((part) => `<li>${emphasizeLabels(part)}</li>`)
+      .join("")}</ul>`;
+  }
+
+  return `<p>${emphasizeLabels(parts[0])}</p>`;
+};
+
+const buildBackgroundProblemCard = ({
+  problemName,
+  idx,
+  anchorId,
+  chartBlock,
+  status,
+  shortSub,
+  pill,
+}) => {
+  const problemToneClass = idx % 2 === 0 ? "prob-tone-blue" : "prob-tone-sand";
+  const resolvedAnchor = anchorId || `problem-${problemAnchorSlug(problemName)}-${idx + 1}`;
+  const problemKey = normalizeProblemLookupKey(problemName);
+  const orientation = findBackgroundProblemOrientation(problemName);
+  const sourceStatus = String(chartBlock?.sourceStatus || chartBlock?.rawHeader || "");
+  const initiallyOpen =
+    /(?:active\s*\/\s*changing|unstable\s*\/\s*new|uncontrolled|suspected)/i.test(sourceStatus) ||
+    status === "active";
+
+  const displayTitle = chartBlock?.name
+    ? `${chartBlock.name}${chartBlock.code ? ` (${chartBlock.code})` : ""}`
+    : stripProblemStatusSuffixForDisplay(problemName);
+  let html = `<div id="${esc(resolvedAnchor)}" class="prob background-problem ${problemToneClass}" data-problem-key="${esc(problemKey)}"><div class="prob-head"><div><div class="prob-title">${esc(displayTitle)}</div>`;
+  if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
+  html += `</div><span class="prob-pill ${pill.cls}">${esc(pill.label)}</span></div>`;
+  html += `<div class="prob-body">`;
+
+  const currentState = String(chartBlock?.currentStatus || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const recentControl = String(chartBlock?.recentControl || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const visibleSummary = currentState || recentControl;
+
+  if (visibleSummary) {
+    html += `<div class="background-current-state"><div class="background-current-state-label">Current chart summary</div><p>${esc(visibleSummary)}</p></div>`;
+  }
+
+  if (orientation?.clinicalOrientation) {
+    html += `<div class="background-orientation"><div class="background-orientation-label"><i class="fa-solid fa-compass"></i> Clinical Orientation</div><p>${esc(softenTeachingVoice(orientation.clinicalOrientation))}`;
+    if (orientation.citation) {
+      html += ` <em>(${esc(orientation.citation)})</em>`;
+    }
+    html += `</p></div>`;
+  }
+
+  const factRows = [
+    ["Current treatment", chartBlock?.currentMeds],
+    ["Past treatment", chartBlock?.pastMeds],
+    ["Relevant laboratory trends", chartBlock?.labTrends],
+    ["Recent control / trajectory", chartBlock?.recentControl],
+    ["Imaging / procedures", chartBlock?.imaging],
+    ["Complications / surveillance", chartBlock?.complications],
+    ["Care team", chartBlock?.careTeam],
+    ["Consult / referral", chartBlock?.consult],
+    ["What this means now", chartBlock?.whatThisMeansNow],
+    ["Additional status notes", chartBlock?.statusNotes],
+    ["Additional chart details", chartBlock?.unstructuredDetails],
+  ].filter(([, value]) => !isOmittableChartValue(value));
+
+  if (factRows.length > 0) {
+    html += `<details class="background-problem-details"${initiallyOpen ? " open" : ""}>`;
+    html += `<summary><span><i class="fa-solid fa-folder-open"></i> Complete chart details</span><span class="details-hint">details</span></summary>`;
+    html += `<div class="background-problem-details-body"><div class="background-facts-grid">`;
+
+    factRows.forEach(([label, value]) => {
+      const cleaned = String(value || "").replace(/\s+/g, " ").trim();
+      const wide =
+        cleaned.length > 145 ||
+        /^(?:Current treatment|Imaging|Consult|Additional status)/i.test(label);
+      html += `<div class="background-fact${wide ? " background-fact-wide" : ""}">`;
+      html += `<div class="background-fact-label">${esc(label)}</div>`;
+      html += `<div class="background-fact-value">${renderBackgroundFactValue(cleaned, label)}</div>`;
+      html += `</div>`;
+    });
+
+    html += `</div></div></details>`;
+  } else if (!visibleSummary) {
+    html += `<p class="background-no-details">No structured PMH details were available for this problem.</p>`;
+  }
+
+  html += `</div></div>`;
+  return html;
+};
+
+const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   const c = tc.data || tc;
   const problemName = c.problem || c.rawHeader || "Problem";
   const apMatch = (na.activeProblems || []).find(ap => ap.problem?.toLowerCase().trim() === problemName.toLowerCase().trim());
-  const status = c.status || apMatch?.status || (isSelected ? "active" : "stable");
-  const shortSub = c.shortSubtitle || apMatch?.shortSubtitle || c.primaryDiagnosis?.name || "";
-  const pill = statusPill[status] || statusPill.active;
   const chartBlock = findBlockFor(problemName) || findBlockFor(c.primaryDiagnosis?.name);
+  const status = normalizePrenoteProblemStatus(
+    c.status ||
+      apMatch?.status ||
+      chartBlock?.sourceStatus ||
+      chartBlock?.rawHeader ||
+      (isSelected ? "active" : "stable")
+  );
+  const shortSub = isSelected
+    ? c.shortSubtitle || apMatch?.shortSubtitle || c.primaryDiagnosis?.name || chartBlock?.code || ""
+    : chartBlock?.code
+      ? `ICD-10 ${chartBlock.code}`
+      : "";
+  const pill = statusPill[status] || statusPill.active;
   const perProbRedFlagsRaw = na.perProblemRedFlags?.[problemName];
   const perProbRedFlags = Array.isArray(perProbRedFlagsRaw) ? perProbRedFlagsRaw : [];
 
+  if (!isSelected) {
+    return buildBackgroundProblemCard({
+      problemName,
+      idx,
+      anchorId,
+      chartBlock,
+      status,
+      shortSub,
+      pill,
+    });
+  }
+
   const problemToneClass = idx % 2 === 0 ? "prob-tone-blue" : "prob-tone-sand";
-  let html = `<div class="prob ${problemToneClass}"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
+  const resolvedAnchor = anchorId || `problem-${problemAnchorSlug(problemName)}-${idx + 1}`;
+  let html = `<div id="${esc(resolvedAnchor)}" class="prob ${problemToneClass}" data-problem-key="${esc(normalizeProblemLookupKey(problemName))}"><div class="prob-head"><div><div class="prob-title">${esc(problemName)}</div>`;
   if (shortSub) html += `<div class="prob-sub">${esc(shortSub)}</div>`;
   if (isSelected && activeFocusItems.length > 0) {
     html += `<div class="prob-focus-line">Taught with focus on: ${activeFocusItems.map((item) => esc(item.label)).join(" · ")}</div>`;
@@ -14729,25 +15039,6 @@ const buildProblemCard = (tc, idx, isSelected) => {
     if (teachingText(c.quoteToDiscuss)) {
       html += `<div class="patient-voice-box"><div class="patient-voice-label"><i class="fa-solid fa-quote-left"></i> Patient's Voice</div><div class="patient-voice-text">${esc(teachingText(c.quoteToDiscuss))}</div></div>`;
     }
-  } else {
-    // Non-selected: lightweight teaching if available
-    const lwtKey = problemName.toLowerCase().trim();
-    let lwt = doc.lightweightTeaching?.[lwtKey];
-    if (!lwt && doc.lightweightTeaching) {
-      for (const [k, v] of Object.entries(doc.lightweightTeaching)) {
-        if (lwtKey.includes(k) || k.includes(lwtKey)) { lwt = v; break; }
-      }
-    }
-    if (lwt) {
-      if (lwt.theClassicPicture) {
-        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Quick Background</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(lwt.theClassicPicture)}</p></div>`;
-      }
-      if (lwt.oneKeyLearningPoint) {
-        html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Key Point</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;"><b>${esc(lwt.oneKeyLearningPoint.point || "")}:</b> ${esc(lwt.oneKeyLearningPoint.explanation || "")}`;
-        if (lwt.oneKeyLearningPoint.citation) html += ` <em style="opacity:.75;">(${esc(lwt.oneKeyLearningPoint.citation)})</em>`;
-        html += `</p></div>`;
-      }
-    }
   }
 
   html += `</div></div>`;
@@ -14755,16 +15046,8 @@ const buildProblemCard = (tc, idx, isSelected) => {
 };
 
 
-  let problemsHtml = `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Active Problems — Full Detail &amp; Teaching</div><div class="sec-div-line"></div></div>`;
-  let renderedProblemCount = 0;
-  enabledCases.forEach((tc) => {
-    problemsHtml += buildProblemCard(tc, renderedProblemCount, true);
-    renderedProblemCount += 1;
-  });
-  // Non-selected problems — with defense against section-header labels
-  // that slipped through upstream ("Current Medications", "Recently
-  // Discontinued", etc.). These sometimes get parsed as PMH problems by
-  // the deterministic parser and would otherwise render as empty cards.
+  // Build the selected and background problem inventories first so the
+  // problem index can link to the exact cards rendered below.
   const isNonClinicalHeader = (label) => {
     const value = String(label || "").trim();
     if (!value) return true;
@@ -14772,34 +15055,135 @@ const buildProblemCard = (tc, idx, isSelected) => {
            /^(?:medication|preventive|hospitalizations?|specialty|allergies|social|family|surgical|military|health|assessment|plan|follow[- ]?up)\b/i.test(value);
   };
 
-  const selectedNames = new Set(
-    enabledCases
-      .map((tc) => normalizeProblemLookupKey(tc.data?.problem || tc.problem || ""))
-      .filter(Boolean)
-  );
-  Object.entries(problemBlocks).forEach(([, block]) => {
+  const sameProblemKey = (left, right) => {
+    if (!left || !right) return false;
+    return left === right || left.includes(right) || right.includes(left);
+  };
+
+  const selectedProblemEntries = enabledCases.map((tc, selectedIndex) => {
+    const data = tc.data || tc;
+    const problemName = data?.problem || data?.rawHeader || `Teaching problem ${selectedIndex + 1}`;
+    const block = findBlockFor(problemName) || findBlockFor(data?.primaryDiagnosis?.name);
+    return {
+      tc,
+      problemName,
+      block,
+      normalizedKey: normalizeProblemLookupKey(problemName),
+      anchorId: `problem-${problemAnchorSlug(problemName)}-${selectedIndex + 1}`,
+      isSelected: true,
+      isTangential: data?.kind === "tangential",
+    };
+  });
+
+  const selectedKeys = selectedProblemEntries
+    .map((entry) => entry.normalizedKey)
+    .filter(Boolean);
+
+  const backgroundProblemEntries = [];
+  Object.values(problemBlocks).forEach((block) => {
     if (isNonClinicalHeader(block.rawHeader)) return;
     const headerKey = block.normalizedKey || normalizeProblemLookupKey(block.rawHeader);
-    let alreadyCovered = false;
-    for (const selectedName of selectedNames) {
-      if (
-        headerKey === selectedName ||
-        headerKey.includes(selectedName) ||
-        selectedName.includes(headerKey)
-      ) {
-        alreadyCovered = true;
-        break;
-      }
-    }
-    if (!alreadyCovered) {
-      problemsHtml += buildProblemCard(
-        { data: { problem: block.rawHeader } },
-        renderedProblemCount,
-        false
-      );
-      renderedProblemCount += 1;
-    }
+    const alreadyCovered = selectedKeys.some((selectedKey) => sameProblemKey(headerKey, selectedKey));
+    if (alreadyCovered) return;
+
+    const globalIndex = selectedProblemEntries.length + backgroundProblemEntries.length;
+    backgroundProblemEntries.push({
+      tc: { data: { problem: block.rawHeader } },
+      problemName: block.rawHeader,
+      normalizedKey: headerKey,
+      anchorId: `problem-${problemAnchorSlug(block.rawHeader)}-${globalIndex + 1}`,
+      isSelected: false,
+      isTangential: false,
+      block,
+    });
   });
+
+  const problemIndexEntries = [
+    ...selectedProblemEntries.filter((entry) => !entry.isTangential),
+    ...backgroundProblemEntries,
+  ];
+
+  const splitProblemIndexLabel = (entry) => {
+    if (entry?.block?.name) {
+      return {
+        name: String(entry.block.name).trim(),
+        code: String(entry.block.code || "").trim(),
+      };
+    }
+
+    const withoutStatus = stripProblemStatusSuffixForDisplay(entry?.problemName);
+    const combinedStatusCleaned = withoutStatus.replace(
+      /\(\s*([A-Z][0-9][0-9A-Z](?:\.[0-9A-Z]{1,7})?)\s*[-,]\s*(?:unstable\s*\/\s*new|active\s*\/\s*changing|stable\s*\/\s*chronic|in remission|resolved|controlled|uncontrolled|suspected|remission|registry|unknown|active|changing|stable|chronic|inactive|historical)\s*\)\s*$/i,
+      "($1)"
+    );
+    const codeMatch = combinedStatusCleaned.match(/^(.*?)\s*\(((?:[A-Z][0-9][0-9A-Z](?:\.[0-9A-Z]{1,7})?)(?:\s*,\s*[A-Z][0-9][0-9A-Z](?:\.[0-9A-Z]{1,7})?)*)\)\s*$/i);
+    return codeMatch
+      ? { name: codeMatch[1].trim(), code: codeMatch[2].trim() }
+      : { name: combinedStatusCleaned, code: "" };
+  };
+
+  let problemIndexHtml = "";
+  if (problemIndexEntries.length > 0) {
+    problemIndexHtml += `<section class="problem-index-card">`;
+    problemIndexHtml += `<div class="problem-index-head"><i class="fa-solid fa-list-check"></i><div><div class="problem-index-title">Problem Index</div><div class="problem-index-subtitle">Every condition from Past Medical History is included below. Bold items receive expanded teaching.</div></div></div>`;
+    problemIndexHtml += `<div class="problem-index-grid">`;
+
+    problemIndexEntries.forEach((entry, index) => {
+      const label = splitProblemIndexLabel(entry);
+      problemIndexHtml += `<a class="problem-index-item${entry.isSelected ? " problem-index-selected" : ""}" href="#${esc(entry.anchorId)}">`;
+      problemIndexHtml += `<span class="problem-index-number">${String(index + 1).padStart(2, "0")}</span>`;
+      problemIndexHtml += `<span class="problem-index-text"><span class="problem-index-name">${esc(label.name)}</span>${label.code ? `<span class="problem-index-code">${esc(label.code)}</span>` : ""}</span>`;
+      problemIndexHtml += `</a>`;
+    });
+
+    problemIndexHtml += `</div></section>`;
+  }
+
+  let selectedProblemsHtml = "";
+  if (selectedProblemEntries.length > 0) {
+    selectedProblemsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Teaching Focus — Expanded Problems</div><div class="sec-div-line"></div></div>`;
+    selectedProblemEntries.forEach((entry, index) => {
+      selectedProblemsHtml += buildProblemCard(entry.tc, index, true, entry.anchorId);
+    });
+  }
+
+  let backgroundProblemsHtml = "";
+  if (backgroundProblemEntries.length > 0) {
+    backgroundProblemsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Additional Medical Problems — Chart Reference</div><div class="sec-div-line"></div></div>`;
+    backgroundProblemsHtml += `<p class="background-problems-intro">These conditions were not selected for full teaching expansion, but their chart-documented status, treatments, trends, procedures, complications, and care coordination remain available for the visit.</p>`;
+
+    backgroundProblemEntries.forEach((entry, backgroundIndex) => {
+      const globalIndex = selectedProblemEntries.length + backgroundIndex;
+      backgroundProblemsHtml += buildProblemCard(
+        entry.tc,
+        globalIndex,
+        false,
+        entry.anchorId
+      );
+    });
+  }
+
+  const problemsHtml = selectedProblemsHtml + backgroundProblemsHtml;
+
+  // Regression guard: every parsed PMH block should map to exactly one card.
+  const parsedClinicalProblemCount = Object.values(problemBlocks).filter(
+    (block) => !isNonClinicalHeader(block.rawHeader)
+  ).length;
+  const mappedPmhProblemCount =
+    selectedProblemEntries.filter((entry) =>
+      Object.values(problemBlocks).some((block) =>
+        sameProblemKey(entry.normalizedKey, block.normalizedKey || normalizeProblemLookupKey(block.rawHeader))
+      )
+    ).length + backgroundProblemEntries.length;
+
+  if (mappedPmhProblemCount !== parsedClinicalProblemCount) {
+    console.warn("[previsit-problem-audit] PMH problem/card count mismatch", {
+      parsedClinicalProblemCount,
+      mappedPmhProblemCount,
+      selectedProblems: selectedProblemEntries.map((entry) => entry.problemName),
+      backgroundProblems: backgroundProblemEntries.map((entry) => entry.problemName),
+    });
+  }
 
   // ──────────────────────────────────────────────────────────────
   // LAB RESULTS — master table + per-panel breakdowns
@@ -18341,6 +18725,93 @@ body.dark .encounter-group-title-overview {
 body.dark .drug-n { color: var(--accent); }
 .med-ind { color: var(--fg-d); font-size: 9pt; }
 
+/* Problem index */
+.problem-index-card {
+  margin: 14px 0 18px;
+  border: 1px solid rgba(55,108,139,.22);
+  border-radius: 7px;
+  background: rgba(255,255,255,.74);
+  overflow: hidden;
+}
+.problem-index-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  background: rgba(99,143,168,.10);
+  border-bottom: 1px solid rgba(55,108,139,.18);
+  color: var(--accent);
+}
+.problem-index-head > i { margin-top: 2px; }
+.problem-index-title {
+  font-size: 9pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+}
+.problem-index-subtitle {
+  margin-top: 2px;
+  font-size: 7.5pt;
+  line-height: 1.35;
+  color: var(--fg-d);
+}
+.problem-index-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0;
+  padding: 5px 8px 7px;
+}
+.problem-index-item {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px 7px;
+  border-radius: 4px;
+  color: var(--fg-m);
+  text-decoration: none;
+  line-height: 1.28;
+}
+.problem-index-item:hover {
+  background: rgba(99,143,168,.09);
+}
+.problem-index-number {
+  flex: 0 0 auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 6.5pt;
+  color: var(--fg-d);
+}
+.problem-index-text {
+  display: inline-flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+.problem-index-name {
+  font-size: 8.25pt;
+}
+.problem-index-selected .problem-index-name {
+  color: var(--accent);
+  font-weight: 750;
+}
+.problem-index-code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 6.5pt;
+  color: var(--fg-d);
+  white-space: nowrap;
+}
+body.dark .problem-index-card { background: rgba(17,24,39,.55); }
+body.dark .problem-index-head { background: rgba(99,143,168,.13); }
+
+.background-problems-intro {
+  margin: -3px 0 11px;
+  padding: 0 2px;
+  color: var(--fg-d);
+  font-size: 8pt;
+  line-height: 1.45;
+}
+
 /* Problem cards
    The card itself no longer uses a strong vertical rail. Alternating quiet
    blue and sand surfaces separate adjacent problems, leaving vertical bars
@@ -18426,6 +18897,123 @@ body.dark .pill-reg { background: var(--warm-soft); color: var(--palette-sand); 
 .prob-body { padding: 10px 12px; }
 .prob-body p { font-size: 9pt; color: var(--fg-m); line-height: 1.5; margin-bottom: 6px; }
 .prob-body p:last-child { margin-bottom: 0; }
+
+.background-problem { scroll-margin-top: 18px; }
+.background-current-state {
+  margin-bottom: 8px;
+  padding: 8px 9px;
+  border-radius: 4px;
+  background: rgba(255,255,255,.55);
+  border: 1px solid rgba(55,108,139,.12);
+}
+.background-current-state-label,
+.background-orientation-label,
+.background-fact-label {
+  font-size: 7pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .07em;
+  color: var(--fg-d);
+}
+.background-current-state p {
+  margin: 3px 0 0;
+  color: var(--fg) !important;
+  font-size: 8.75pt !important;
+  line-height: 1.5 !important;
+}
+.background-orientation {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border: 1px solid rgba(55,108,139,.16);
+  border-radius: 4px;
+  background: rgba(242,217,187,.24);
+}
+.background-orientation-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+}
+.background-orientation p {
+  margin: 4px 0 0;
+  color: var(--fg-m) !important;
+  font-size: 8.5pt !important;
+  line-height: 1.48 !important;
+}
+.background-problem-details {
+  margin-top: 8px;
+  border-top: 1px dashed var(--border-l);
+  padding-top: 7px;
+}
+.background-problem-details > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--accent);
+  font-size: 7.75pt;
+  font-weight: 750;
+  user-select: none;
+}
+.background-problem-details > summary::-webkit-details-marker { display: none; }
+.background-problem-details > summary::before {
+  content: '\\25B8';
+  margin-right: 6px;
+  font-size: 7pt;
+}
+.background-problem-details[open] > summary::before { content: '\\25BE'; }
+.background-problem-details > summary > span:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.details-hint {
+  margin-left: auto;
+  color: var(--fg-d);
+  font-size: 6.5pt;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .06em;
+}
+.background-problem-details-body { padding-top: 7px; }
+.background-facts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.background-fact {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid rgba(55,108,139,.12);
+  border-radius: 4px;
+  background: rgba(255,255,255,.44);
+}
+.background-fact-wide { grid-column: 1 / -1; }
+.background-fact-value { margin-top: 3px; }
+.background-fact-value p {
+  margin: 0;
+  font-size: 8.25pt !important;
+  line-height: 1.45 !important;
+  color: var(--fg-m) !important;
+}
+.background-fact-list {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--fg-m);
+  font-size: 8.25pt;
+  line-height: 1.45;
+}
+.background-fact-list li { margin-bottom: 3px; }
+.background-fact-list li:last-child { margin-bottom: 0; }
+.background-no-details {
+  color: var(--fg-d) !important;
+  font-style: italic;
+}
+body.dark .background-current-state,
+body.dark .background-fact { background: rgba(17,24,39,.32); }
+body.dark .background-orientation { background: rgba(242,217,187,.055); }
 .prob-subsec {
   margin-top: 8px;
   padding-top: 6px;
@@ -19454,9 +20042,19 @@ body.dark .figures-box {
   letter-spacing: .03em;
 }
 
+@media (max-width: 700px) {
+  .problem-index-grid,
+  .background-facts-grid { grid-template-columns: 1fr; }
+  .background-fact-wide { grid-column: auto; }
+}
+
 /* Print */
 @page { size: letter; margin: 0.5in 0.55in 0.6in 0.55in; }
 @media print {
+  .background-problem-details > summary { display: none !important; }
+  .background-problem-details > .background-problem-details-body { display: block !important; }
+  .problem-index-item { color: var(--fg-m) !important; }
+  .problem-index-item::after { content: none !important; }
   body { background: #fff !important; color: #1a1f2e !important; padding: 0 !important; }
   body.dark { background: #fff !important; color: #1a1f2e !important; }
   html { font-size: 9.5pt; }
@@ -19596,6 +20194,9 @@ function printDoc(){ window.print(); }
     [s.caseAtGlance?.enabled !== false && (glanceRows.length > 0 || selectedProblemLabels.length > 0), overviewHtml.includes("Case at a Glance"), "Case at a Glance"],
     [Boolean(goalText), overviewHtml.includes("Session Goal"), "Session Goal"],
     [showFocusFraming, overviewHtml.includes("What This Document Focuses On"), "Focus framing"],
+    [problemIndexEntries.length > 0, problemIndexHtml.includes("Problem Index"), "Problem Index"],
+    [selectedProblemEntries.length > 0, selectedProblemsHtml.includes("Teaching Focus"), "Expanded teaching problems"],
+    [backgroundProblemEntries.length > 0, backgroundProblemsHtml.includes("Chart Reference"), "Additional chart-reference problems"],
     [s.labTrends?.enabled && trendTeachingItems.length > 0, trendTeachingHtml.includes("Lab &amp; Vital Trends"), "Lab & Vital Trends"],
     [s.crossCuttingThemes?.enabled && crossCuttingThemes.length > 0, crossCuttingHtml.includes("Cross-Cutting Themes"), "Cross-Cutting Themes"],
     [s.synthesizedEvidence?.enabled && Boolean(evidenceContent), Boolean(evidenceHtml), "Step 4 Evidence Summary"],
@@ -19636,6 +20237,7 @@ ${headerHtml}
 ${oneLinerHtml}
 ${allergyBarHtml}
 ${overviewHtml}
+${problemIndexHtml}
 ${complexTeachingHtml}
 ${priorityFocusHtml}
 ${topNarrativeHtml}
