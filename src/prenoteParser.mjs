@@ -17,7 +17,14 @@ const STATUS_VALUES = [
   "unstable/new",
   "active/changing",
   "stable/chronic",
+  "in remission",
   "resolved",
+  "controlled",
+  "uncontrolled",
+  "suspected",
+  "remission",
+  "registry",
+  "unknown",
   "active",
   "changing",
   "stable",
@@ -216,12 +223,18 @@ const DIAGNOSTIC_SUBSECTION_NAMES = new Set([
 
 const PMH_FIELD_PREFIXES = [
   "Current status or brief chronological course",
+  "Current status",
   "Medications - Current",
+  "Medications - Past",
   "Past",
   "Lab trends relevant",
   "Recent control/trends",
+  "Recent control",
   "Imaging/procedures",
+  "Imaging",
   "Complications checked",
+  "Complications",
+  "Care team/Specialists",
   "Care team",
   "What this means now",
   "Status notes",
@@ -346,6 +359,18 @@ function reintroduceStructuralNewlines(text) {
     const re = new RegExp(`\\s+(${label.replace(/[-\/]/g, m => "\\" + m)})(?=\\s|:)`, "g");
     t = t.replace(re, "\n$1");
   }
+
+  // The inline-field pass above can split a normal bullet such as
+  // "* Current status: ..." into an orphan "*" line followed by the field.
+  // Reattach those markers before the line-oriented PMH parser runs.
+  const knownFieldSource = knownFieldLabels
+    .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  t = t.replace(
+    new RegExp(`^\\s*([*-])\\s*\\n\\s*(?=(?:${knownFieldSource})(?:\\s|:))`, "gim"),
+    "$1 ",
+  );
+
 
   // Break before "Living status:", "Marital status:", etc. in social section
   const socialLabels = [
@@ -902,43 +927,85 @@ export function extractPrenoteSections(input) {
   };
 }
 
+function normalizeProblemStatus(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isRecognizedProblemStatus(value) {
+  return STATUS_VALUES.includes(normalizeProblemStatus(value));
+}
+
+const ICD_LIST_RE = new RegExp(
+  `^${ICD_CODE_SOURCE}(?:\\s*,\\s*${ICD_CODE_SOURCE})*$`,
+  "i",
+);
+
+const PROBLEM_STATUS_SOURCE = STATUS_VALUES
+  .map((value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  .join("|");
+
+const ICD_AND_STATUS_RE = new RegExp(
+  `^(${ICD_CODE_SOURCE}(?:\\s*,\\s*${ICD_CODE_SOURCE})*)\\s*[-,]\\s*(${PROBLEM_STATUS_SOURCE})$`,
+  "i",
+);
+
+// Parse one or more trailing parentheticals. Real prenotes commonly use:
+//   Diagnosis (F43.12) (Active/Changing)
+//   Diagnosis (F43.12, F41.9) (Stable/Chronic)
+//   Diagnosis (F43.12 - Active/Changing)
+// Unrecognized trailing parentheticals are preserved as part of the diagnosis
+// name rather than silently discarded.
 function splitTrailingParenthetical(header) {
-  const match = String(header ?? "").trim().match(/^(.*?)\s*\(([^()]*)\)\s*$/);
-  if (!match) {
-    return {
-      name: String(header ?? "").trim(),
-      code: "",
-      status: "",
-    };
+  const original = String(header ?? "").trim();
+  let remaining = original;
+  const suffixes = [];
+
+  while (true) {
+    const match = remaining.match(/^(.*?)\s*\(([^()]*)\)\s*$/);
+    if (!match) break;
+    suffixes.unshift(match[2].trim());
+    remaining = match[1].trim();
   }
 
-  const name = match[1].trim();
-  const trailing = match[2].trim();
-  const codeMatch = trailing.match(new RegExp(`^${ICD_CODE_SOURCE}$`, "i"));
-  if (codeMatch) {
-    return {
-      name,
-      code: trailing,
-      status: "",
-    };
+  if (suffixes.length === 0) {
+    return { name: original, code: "", status: "" };
   }
 
-  const normalizedStatus = trailing.toLowerCase();
-  if (
-    STATUS_VALUES.includes(normalizedStatus) ||
-    /^(?:active|stable|chronic|resolved|historical|inactive)\b/i.test(trailing)
-  ) {
-    return {
-      name,
-      code: "",
-      status: trailing,
-    };
+  const codes = [];
+  const unrecognized = [];
+  let status = "";
+
+  for (const suffix of suffixes) {
+    if (isRecognizedProblemStatus(suffix)) {
+      status = status || suffix;
+      continue;
+    }
+
+    if (ICD_LIST_RE.test(suffix)) {
+      codes.push(...suffix.split(/\s*,\s*/).filter(Boolean));
+      continue;
+    }
+
+    const combined = suffix.match(ICD_AND_STATUS_RE);
+    if (combined) {
+      codes.push(...combined[1].split(/\s*,\s*/).filter(Boolean));
+      status = status || combined[2];
+      continue;
+    }
+
+    unrecognized.push(suffix);
   }
+
+  const preservedSuffixes = unrecognized.map((value) => `(${value})`).join(" ");
+  const name = [remaining, preservedSuffixes].filter(Boolean).join(" ").trim();
 
   return {
-    name: String(header ?? "").trim(),
-    code: "",
-    status: "",
+    name: name || original,
+    code: [...new Set(codes)].join(", "),
+    status,
   };
 }
 
@@ -953,36 +1020,32 @@ function parseLabelValue(line) {
   };
 }
 
-// Real PMH problem headers in the prenote follow one of these forms:
-//   DiagnosisName (Status)          — e.g., "Hypertension (Active/Changing)"
-//   DiagnosisName (ICD-10)          — e.g., "Hypertension (I10.9)"
-//   DiagnosisName (ICD-10, ICD-10)  — e.g., "Left foot pain (M79.672, M77.42)"
-//   DiagnosisName (ICD-10 - Status) — combined format
-//
-// The parenthetical must contain EITHER a recognized status value OR at
-// least one ICD-10-style code (letter + 2 digits + optional decimal + more digits).
-// This filters out random inline parentheticals from bullet content while
-// accepting the variety of real-world prenote formats.
-const STATUS_ALTERNATION = STATUS_VALUES
-  .map((s) => s.replace(/[/]/g, "\\/"))
-  .join("|");
-const ICD10_PATTERN = "[A-TV-Z][0-9][0-9AB](?:\\.[0-9A-Z]{1,7})?";
+function canonicalPmhFieldLabel(label) {
+  const normalized = String(label ?? "").toLowerCase().trim();
+  if (!normalized) return null;
 
-const PMH_PROBLEM_HEADER_RE = new RegExp(
-  `^([A-Z][^()\\n]{2,140})\\s*\\(` +
-    // The parenthetical must contain a status word OR an ICD-10 code
-    // (possibly multiple, comma-separated, possibly with a status appended)
-    `(?:` +
-      // Case 1: one or more ICD codes, optionally followed by status
-      `(?:${ICD10_PATTERN})(?:\\s*,\\s*${ICD10_PATTERN})*` +
-      `(?:\\s*[-,]\\s*(?:${STATUS_ALTERNATION}))?` +
-    `|` +
-      // Case 2: just a status word (no ICD)
-      `(?:${STATUS_ALTERNATION})` +
-    `)` +
-    `\\.?\\s*\\)\\s*$`,
-  "i",
-);
+  const match = PMH_FIELD_PREFIXES.find((candidate) => {
+    const normalizedCandidate = candidate.toLowerCase();
+    return (
+      normalized === normalizedCandidate ||
+      normalized.startsWith(`${normalizedCandidate} `) ||
+      normalized.startsWith(`${normalizedCandidate}/`)
+    );
+  });
+
+  return match || null;
+}
+
+// Real PMH problem headers may contain one or more trailing parentheticals,
+// including separate ICD and status groups. Header validity is determined by
+// splitTrailingParenthetical(), not by a single-parenthetical regex.
+function parsePmhProblemHeaderValue(value) {
+  const parsed = splitTrailingParenthetical(value);
+  if (!parsed.name || (!parsed.code && !parsed.status)) return null;
+  if (!/^[A-Z]/.test(parsed.name)) return null;
+  if (parsed.name.length > 180) return null;
+  return parsed;
+}
 
 function isPmhProblemHeader(lines, index) {
   const value = String(lines[index] ?? "").trim();
@@ -992,8 +1055,9 @@ function isPmhProblemHeader(lines, index) {
   if (canonicalSectionKey(value)) return false;
   if (isPmhFieldLine(value)) return false;
 
-  // Must match the strict "DiagnosisName (Status)" pattern.
-  if (!PMH_PROBLEM_HEADER_RE.test(value)) return false;
+  // Must contain at least one recognized ICD code or status, including
+  // dual-suffix headers such as "Diagnosis (F43.12) (Active/Changing)".
+  if (!parsePmhProblemHeaderValue(value)) return false;
 
   // Must be followed within a few lines by a bullet or a PMH field line
   // (its detail block), otherwise it's just a mention, not a section header.
@@ -1017,16 +1081,44 @@ export function parsePmhProblemBlocks(pmhText) {
 
     const fields = {};
     const unstructuredDetails = [];
+    let currentFieldLabel = null;
+
+    const appendFieldText = (label, value) => {
+      const cleaned = String(value ?? "").replace(/\s+/g, " ").trim();
+      if (!cleaned) return;
+      fields[label] = [fields[label], cleaned].filter(Boolean).join(" ").trim();
+    };
 
     for (const line of current.detailLines) {
-      const parsed = parseLabelValue(line);
-      if (parsed) {
-        fields[parsed.label] = parsed.value;
-      } else if (String(line ?? "").trim()) {
-        unstructuredDetails.push(
-          String(line).replace(/^\s*[*-]\s*/, "").trim(),
-        );
+      const raw = String(line ?? "");
+      const trimmed = raw.trim();
+      if (!trimmed) continue;
+
+      const parsed = parseLabelValue(raw);
+      const recognizedLabel = parsed
+        ? canonicalPmhFieldLabel(parsed.label)
+        : null;
+
+      if (parsed && recognizedLabel) {
+        // Preserve the source label so existing consumers such as
+        // readPrenoteProblemField() continue to work unchanged.
+        currentFieldLabel = parsed.label.trim();
+        appendFieldText(currentFieldLabel, parsed.value);
+        continue;
       }
+
+      const cleanedLine = raw.replace(/^\s*[*-]\s*/, "").trim();
+
+      // Wrapped continuation lines belong to the most recent PMH field. This
+      // is essential because generated prenotes wrap long values across many
+      // physical lines (for example Current status, Consult, and Care team).
+      if (currentFieldLabel && !isBulletLine(raw)) {
+        appendFieldText(currentFieldLabel, cleanedLine);
+        continue;
+      }
+
+      currentFieldLabel = null;
+      if (cleanedLine) unstructuredDetails.push(cleanedLine);
     }
 
     const parsedHeader = splitTrailingParenthetical(current.rawHeader);
@@ -1357,10 +1449,16 @@ export function parseDiagnosticsContent(diagnosticsText) {
 }
 
 function normalizedProblemKey(problem) {
-  return String(problem?.name ?? problem?.rawHeader ?? "")
+  const source = String(
+    problem?.name ?? problem?.problem ?? problem?.rawHeader ?? "",
+  );
+  const parsed = splitTrailingParenthetical(source);
+
+  return parsed.name
     .toLowerCase()
-    .replace(ICD_AT_END_RE, "")
+    .replace(/\b(?:active|changing|stable|chronic|resolved|controlled|uncontrolled|suspected|remission|registry|unknown|historical|inactive)\b/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
