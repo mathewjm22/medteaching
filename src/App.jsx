@@ -12196,36 +12196,200 @@ const buildInRoomHtml = (doc, session) => {
   // Helpers to parse prenote text sections into structured data
   // ──────────────────────────────────────────────────────────────
 
-  // Parse SOCIAL text into key-value tiles (Living, Marital, Alcohol, etc.)
-  const parseSocialTiles = (text) => {
+  // Parse line-oriented chart sections without turning wrapped continuation
+  // lines into separate cards or bullets. Marker type and indentation are
+  // retained so dedicated renderers can preserve the source hierarchy.
+  const parseStructuredSourceLines = (text) => {
     if (!text) return [];
-    const tiles = [];
-    const lines = text.split(/\r?\n/);
-    for (const line of lines) {
-      const trimmed = line.trim().replace(/^[\-\*•]\s*/, "");
-      const m = trimmed.match(/^([A-Z][A-Za-z /]{2,40}?)\s*:\s*(.+)$/);
-      if (m) {
-        tiles.push({ label: m[1].trim(), text: m[2].trim() });
+
+    const logical = [];
+    const rawLines = String(text)
+      .replace(/\r\n?/g, "\n")
+      .replace(/\t/g, "    ")
+      .split("\n");
+
+    for (const rawLine of rawLines) {
+      const indent = (rawLine.match(/^\s*/) || [""])[0].length;
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+      if (/^(?:[-=_]{3,}|[─━═—–]{3,}|#{1,6}|[-*•])$/.test(trimmed)) continue;
+
+      const markerMatch = trimmed.match(/^([-*•●○▪▫►◆·])\s+(.+)$/);
+      const marker = markerMatch?.[1] || "";
+      const textValue = (markerMatch?.[2] || trimmed).trim();
+      if (!textValue) continue;
+
+      const isHeading = /^[^:]{2,80}:\s*$/.test(textValue);
+      const isLabelValue = /^[^:]{1,60}:\s*\S/.test(textValue);
+      const previous = logical[logical.length - 1];
+
+      // A non-bulleted indented line is a hard-wrapped continuation. Quoted
+      // and lowercase starts are also common continuation shapes in prenotes.
+      if (
+        previous &&
+        !marker &&
+        !isHeading &&
+        !isLabelValue &&
+        (
+          indent > previous.indent ||
+          /^[a-z0-9("'\[]/.test(textValue)
+        )
+      ) {
+        previous.text = `${previous.text} ${textValue}`.replace(/\s+/g, " ").trim();
+        continue;
       }
+
+      logical.push({
+        indent,
+        marker,
+        text: textValue,
+      });
     }
-    return tiles;
+
+    return logical;
   };
 
-  // Map a social-tile label to an icon
+  const normalizeDisplayKey = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
+  const isMilitarySocialGroup = (value) =>
+    /^(?:military service|military history|service history|deployment history)$/i.test(
+      String(value || "").trim()
+    );
+
+  const isMilitarySocialLabel = (value) =>
+    /^(?:branch|branch of service|years of service|service dates?|rank|mos(?:\s*\/\s*specialty)?|military specialty|role|deployments?|combat exposure|service connected disability|separation)$/i.test(
+      normalizeDisplayKey(value)
+    );
+
+  const socialGroupForLabel = (label, currentTitle = "") => {
+    const key = normalizeDisplayKey(label);
+    if (/^(?:living status|living arrangement|address|housing)$/.test(key)) {
+      return "Living Situation";
+    }
+    if (/^(?:marital status|relationship status|relationship|religion|faith)$/.test(key)) {
+      return "Personal & Relationships";
+    }
+    if (/^(?:alcohol|alcohol use)$/.test(key)) return "Alcohol Use";
+    if (/^(?:tobacco|tobacco use|smoking|nicotine)$/.test(key)) return "Tobacco Use";
+    if (/^(?:ivda|drug use|substance use|cannabis|marijuana)$/.test(key)) {
+      return "Substance Use";
+    }
+    if (/^(?:employment|occupation|current occupation|work|education|school)$/.test(key)) {
+      return "Current Occupation";
+    }
+    if (/^(?:support system|social support)$/.test(key)) return "Social Support";
+    return currentTitle || "Additional Social History";
+  };
+
+  const isLikelySocialFieldLabel = (label) => {
+    const raw = String(label || "").trim();
+    const key = normalizeDisplayKey(raw);
+    if (!key) return false;
+    if (/\d{1,2}\/\d{2,4}/.test(raw)) return false;
+    if (raw.includes("(") || raw.includes(")")) return false;
+
+    const known = /^(?:address|living arrangement|living status|housing|marital status|relationship status|relationship|religion|faith|alcohol|alcohol use|tobacco|tobacco use|smoking|nicotine|ivda|drug use|substance use|cannabis|marijuana|employment|occupation|current occupation|work|education|school|support system|social support|status|details|current|history)$/;
+    if (known.test(key)) return true;
+
+    return raw.length <= 32 && key.split(" ").length <= 4;
+  };
+
+
+  // SOCIAL HISTORY is frequently a grouped section that also contains a
+  // "Military Service" subsection. Keep that military content out of the
+  // social display, preserve the remaining subsection headings, and merge
+  // direct later entries (Living status, Alcohol, Tobacco, etc.) into the
+  // appropriate social group instead of flattening every label into a tile.
+  const parseSocialHistoryGroups = (text) => {
+    const lines = parseStructuredSourceLines(text);
+    if (lines.length === 0) return [];
+
+    const groups = [];
+    const byTitle = new Map();
+    let currentTitle = "";
+    let skipCurrentGroup = false;
+
+    const ensureGroup = (title) => {
+      const cleanTitle = String(title || "Additional Social History")
+        .replace(/:\s*$/, "")
+        .trim();
+      const key = normalizeDisplayKey(cleanTitle);
+      if (!byTitle.has(key)) {
+        const group = { title: cleanTitle, items: [], signatures: new Set() };
+        byTitle.set(key, group);
+        groups.push(group);
+      }
+      return byTitle.get(key);
+    };
+
+    const addItem = (group, label, textValue) => {
+      const cleanLabel = String(label || "").trim();
+      const cleanText = String(textValue || "").replace(/\s+/g, " ").trim();
+      if (!cleanText) return;
+      const signature = `${normalizeDisplayKey(cleanLabel)}|${normalizeDisplayKey(cleanText)}`;
+      if (group.signatures.has(signature)) return;
+      group.signatures.add(signature);
+      group.items.push({ label: cleanLabel, text: cleanText });
+    };
+
+    for (const entry of lines) {
+      const headingMatch = entry.text.match(/^([^:]{2,80}):\s*$/);
+      if (headingMatch) {
+        const heading = headingMatch[1].trim();
+        skipCurrentGroup = isMilitarySocialGroup(heading);
+        currentTitle = skipCurrentGroup ? "" : heading;
+        if (!skipCurrentGroup) ensureGroup(currentTitle);
+        continue;
+      }
+
+      const rawKeyValue = entry.text.match(/^([^:]{1,60}):\s*(.+)$/);
+      const keyValue = rawKeyValue && isLikelySocialFieldLabel(rawKeyValue[1])
+        ? rawKeyValue
+        : null;
+      if (keyValue) {
+        const label = keyValue[1].trim();
+        const value = keyValue[2].trim();
+        if (isMilitarySocialLabel(label)) continue;
+
+        const inferredTitle = socialGroupForLabel(label, currentTitle);
+        if (skipCurrentGroup && inferredTitle === currentTitle) continue;
+        if (skipCurrentGroup && inferredTitle === "Additional Social History") continue;
+
+        skipCurrentGroup = false;
+        currentTitle = inferredTitle;
+        addItem(ensureGroup(inferredTitle), label, value);
+        continue;
+      }
+
+      if (skipCurrentGroup) continue;
+      const targetTitle = currentTitle || "Additional Social History";
+      addItem(ensureGroup(targetTitle), "", entry.text);
+    }
+
+    return groups
+      .map((group) => ({ title: group.title, items: group.items }))
+      .filter((group) => group.items.length > 0);
+  };
+
+  // Map a social-group title to an icon.
   const socialIcon = (label) => {
-    const l = label.toLowerCase();
-    if (l.includes("living")) return "fa-house";
-    if (l.includes("marital") || l.includes("relationship")) return "fa-ring";
-    if (l.includes("religion")) return "fa-cross";
-    if (l.includes("employ") || l.includes("job") || l.includes("work")) return "fa-briefcase";
-    if (l.includes("hobb")) return "fa-fish";
+    const l = String(label || "").toLowerCase();
+    if (l.includes("living") || l.includes("housing")) return "fa-house";
+    if (l.includes("personal") || l.includes("relationship") || l.includes("marital")) return "fa-people-arrows";
+    if (l.includes("religion") || l.includes("faith")) return "fa-hands-praying";
+    if (l.includes("employ") || l.includes("occupation") || l.includes("work") || l.includes("education")) return "fa-briefcase";
+    if (l.includes("support")) return "fa-people-group";
+    if (l.includes("mental") || l.includes("behavior")) return "fa-brain";
     if (l.includes("alcohol")) return "fa-wine-bottle";
-    if (l.includes("tobacco") || l.includes("smok")) return "fa-smoking";
-    if (l.includes("cannabis") || l.includes("mariju")) return "fa-cannabis";
-    if (l.includes("caffeine") || l.includes("coffee")) return "fa-mug-hot";
-    if (l.includes("ivda") || l.includes("drug")) return "fa-syringe";
+    if (l.includes("tobacco") || l.includes("smok") || l.includes("nicotine")) return "fa-smoking";
+    if (l.includes("substance") || l.includes("ivda") || l.includes("drug") || l.includes("cannabis") || l.includes("mariju")) return "fa-capsules";
     return "fa-circle-info";
   };
+
 
   // Parse UPDATES/RECENT VISITS into a timeline of {date, event} pairs.
   // Filters out lines that look like tabular lab data (embedded in prenote
@@ -13448,6 +13612,74 @@ const buildInRoomHtml = (doc, session) => {
     return paragraphs.map(p => `<p style="margin:0 0 6px;">${esc(p)}</p>`).join("");
   };
 
+
+  // Preserve the hierarchy of dedicated MILITARY HISTORY blocks. Top-level
+  // fields remain labeled rows, while deployments and service-connected
+  // injuries stay nested beneath their source headings.
+  const parseMilitaryHistoryItems = (text) => {
+    const lines = parseStructuredSourceLines(text);
+    if (lines.length === 0) return [];
+
+    const marked = lines.filter((line) => line.marker);
+    const baseIndent = marked.length > 0
+      ? Math.min(...marked.map((line) => line.indent))
+      : 0;
+    const topMarker = marked[0]?.marker || "";
+    const items = [];
+    let current = null;
+
+    for (const entry of lines) {
+      if (/^military history:?$/i.test(entry.text)) continue;
+
+      const markerSuggestsChild = Boolean(
+        current &&
+        entry.marker &&
+        topMarker &&
+        entry.marker !== topMarker &&
+        (/:\s*$/.test(current.text) || current.children.length > 0)
+      );
+      const indentationSuggestsChild = Boolean(
+        current && entry.indent > baseIndent
+      );
+
+      if (current && (markerSuggestsChild || indentationSuggestsChild)) {
+        const child = entry.text.replace(/\s+/g, " ").trim();
+        if (child && !current.children.some((value) => normalizeDisplayKey(value) === normalizeDisplayKey(child))) {
+          current.children.push(child);
+        }
+        continue;
+      }
+
+      current = {
+        text: entry.text.replace(/\s+/g, " ").trim(),
+        children: [],
+      };
+      if (current.text) items.push(current);
+    }
+
+    return items;
+  };
+
+  const renderMilitaryHistory = (text) => {
+    const items = parseMilitaryHistoryItems(text);
+    if (items.length === 0) return "";
+
+    return `<div class="mil-history">${items.map((item) => {
+      const keyValue = item.text.match(/^([^:]{1,60}):\s*(.*)$/);
+      const label = keyValue?.[1]?.trim() || "";
+      const value = keyValue?.[2]?.trim() || "";
+      const childrenHtml = item.children.length > 0
+        ? `<ul class="mil-child-list">${item.children.map((child) => `<li>${esc(child)}</li>`).join("")}</ul>`
+        : "";
+
+      if (label) {
+        return `<div class="mil-item"><div class="mil-row"><span class="mil-key">${esc(label)}</span>${value ? `<span class="mil-value">${esc(value)}</span>` : ""}</div>${childrenHtml}</div>`;
+      }
+
+      return `<div class="mil-item"><div class="mil-plain">${esc(item.text)}</div>${childrenHtml}</div>`;
+    }).join("")}</div>`;
+  };
+
   // Surgical History
   const surgList = structured.surgicalHistory?.length > 0 ? structured.surgicalHistory : null;
   let surgicalHtml = "";
@@ -13466,10 +13698,14 @@ const buildInRoomHtml = (doc, session) => {
     : renderAsBulletList(familyText);
   refGridHtml += renderRefSubsection("fa-people-roof", "Family History", familyHtml);
 
-  // Military History
-  const militaryHtml = structured.militaryHistory
-    ? renderAsBulletList(structured.militaryHistory)
-    : renderAsBulletList(militaryText);
+  // Military History — prefer the deterministic source section and use
+  // structured AI content only when the source section is absent.
+  const militarySourceText = militaryText || (
+    Array.isArray(structured.militaryHistory)
+      ? structured.militaryHistory.join("\n")
+      : String(structured.militaryHistory || "")
+  );
+  const militaryHtml = renderMilitaryHistory(militarySourceText);
   refGridHtml += renderRefSubsection("fa-shield", "Military History", militaryHtml);
 
   // Advance Directives
@@ -16701,19 +16937,50 @@ const buildProblemCard = (tc, idx, isSelected) => {
   }
 
   // ──────────────────────────────────────────────────────────────
-  // SOCIAL HISTORY GRID
+  // SOCIAL HISTORY — grouped, source-faithful, and separate from military
   // ──────────────────────────────────────────────────────────────
-  const socialTiles = (structured.socialTiles?.length > 0)
+  const structuredSocialFallback = Array.isArray(structured.socialTiles)
     ? structured.socialTiles
-    : parseSocialTiles(socialText);
+        .filter((tile) => tile && typeof tile === "object")
+        .map((tile) => `- ${String(tile.label || "Detail").trim()}: ${String(tile.text || "").trim()}`)
+        .join("\n")
+    : "";
+
+  let socialGroups = parseSocialHistoryGroups(socialText);
+  if (socialGroups.length === 0 && structuredSocialFallback) {
+    socialGroups = parseSocialHistoryGroups(structuredSocialFallback);
+  }
+
   let socialHtml = "";
-  if (socialTiles.length > 0) {
+  if (socialGroups.length > 0) {
     socialHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Social History</div><div class="sec-div-line"></div></div>`;
-    socialHtml += `<div class="soc-grid">`;
-    socialTiles.forEach(tile => {
-      const icon = socialIcon(tile.label);
-      socialHtml += `<div class="soc-card"><div class="soc-label"><i class="fa-solid ${icon}"></i> ${esc(tile.label)}</div><div class="soc-text">${esc(tile.text)}</div></div>`;
+    socialHtml += `<div class="soc-group-grid">`;
+
+    socialGroups.forEach((group) => {
+      const icon = socialIcon(group.title);
+      const totalCharacters = group.items.reduce(
+        (sum, item) => sum + String(item.label || "").length + String(item.text || "").length,
+        0
+      );
+      const wideClass = group.items.length >= 4 || totalCharacters > 260
+        ? " soc-group-card-wide"
+        : "";
+
+      socialHtml += `<div class="soc-group-card${wideClass}">`;
+      socialHtml += `<div class="soc-group-head"><i class="fa-solid ${icon}"></i> ${esc(group.title)}</div>`;
+      socialHtml += `<div class="soc-group-body">`;
+
+      group.items.forEach((item) => {
+        if (item.label) {
+          socialHtml += `<div class="soc-row"><div class="soc-key">${esc(item.label)}</div><div class="soc-value">${esc(item.text)}</div></div>`;
+        } else {
+          socialHtml += `<div class="soc-bullet"><span class="soc-bullet-dot"></span><span>${esc(item.text)}</span></div>`;
+        }
+      });
+
+      socialHtml += `</div></div>`;
     });
+
     socialHtml += `</div>`;
   }
 
@@ -18072,26 +18339,123 @@ body.dark .diag-teaching {
   .diag-row { grid-template-columns: 1fr; gap: 2px; }
   .diag-teaching-row { grid-template-columns: 1fr; gap: 2px; }
 }
-/* Social grid */
-.soc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
-.soc-card {
-  background: var(--panel);
+/* Social history groups. Each source subsection is one card; individual
+   fields remain rows inside that card instead of becoming unrelated tiles. */
+.soc-group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+  margin-bottom: 8px;
+}
+.soc-group-card {
+  min-width: 0;
+  background: rgba(99, 143, 168, .055);
   border: 1px solid var(--border-l);
-  border-radius: 3px;
-  padding: 6px 10px;
+  border-radius: 4px;
+  overflow: hidden;
+  page-break-inside: avoid;
 }
-.soc-label {
-  font-size: 6.5pt;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: .06em;
-  color: var(--fg-d);
-  margin-bottom: 2px;
-  display: inline-flex;
+.soc-group-card-wide { grid-column: 1 / -1; }
+.soc-group-head {
+  display: flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  padding: 6px 9px;
+  border-bottom: 1px solid var(--border-l);
+  background: rgba(99, 143, 168, .08);
+  color: var(--palette-blue-deep);
+  font-size: 7pt;
+  font-weight: 700;
+  letter-spacing: .07em;
+  text-transform: uppercase;
 }
-.soc-text { font-size: 9pt; color: var(--fg-m); line-height: 1.4; }
+.soc-group-body { padding: 3px 9px 6px; }
+.soc-row {
+  display: grid;
+  grid-template-columns: minmax(92px, .34fr) minmax(0, 1fr);
+  gap: 9px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-vl);
+}
+.soc-row:last-child { border-bottom: none; }
+.soc-key {
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 700;
+  letter-spacing: .045em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.soc-value {
+  min-width: 0;
+  color: var(--fg-m);
+  font-size: 9pt;
+  line-height: 1.42;
+  overflow-wrap: anywhere;
+}
+.soc-bullet {
+  display: grid;
+  grid-template-columns: 6px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  padding: 4px 0;
+  color: var(--fg-m);
+  font-size: 9pt;
+  line-height: 1.42;
+}
+.soc-bullet-dot {
+  width: 4px;
+  height: 4px;
+  margin-top: .48em;
+  border-radius: 50%;
+  background: var(--palette-blue-soft);
+}
+
+/* Dedicated military-history hierarchy. */
+.mil-history { display: grid; gap: 0; }
+.mil-item {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-vl);
+  page-break-inside: avoid;
+}
+.mil-item:last-child { border-bottom: none; }
+.mil-row {
+  display: grid;
+  grid-template-columns: minmax(88px, .34fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+}
+.mil-key {
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 700;
+  letter-spacing: .045em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.mil-value,
+.mil-plain {
+  min-width: 0;
+  color: var(--fg-m);
+  font-size: 9pt;
+  line-height: 1.42;
+  overflow-wrap: anywhere;
+}
+.mil-child-list {
+  margin: 5px 0 0;
+  padding-left: 20px;
+  color: var(--fg-m);
+  font-size: 8.7pt;
+  line-height: 1.42;
+}
+.mil-child-list li { margin: 2px 0; }
+
+@media (max-width: 640px) {
+  .soc-group-grid { grid-template-columns: 1fr; }
+  .soc-group-card-wide { grid-column: auto; }
+  .soc-row,
+  .mil-row { grid-template-columns: 1fr; gap: 2px; }
+}
 
 /* Timeline */
 .tl-compact { list-style: none; }
