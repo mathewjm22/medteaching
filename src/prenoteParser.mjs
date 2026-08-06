@@ -317,17 +317,22 @@ function stripCcdaAppendix(text) {
 function reintroduceStructuralNewlines(text) {
   let t = text;
 
+  // IMPORTANT: every inline-boundary expression below uses horizontal
+  // whitespace only. Using \s here also matches existing newlines, which
+  // previously stripped indentation from nested bullets and split normal
+  // lines such as "- Living status: ..." into an orphan dash plus a value.
+
   // Convert triple-backtick fences to newlines
   t = t.replace(/```[a-z0-9_-]*\s*/gi, "\n");
   t = t.replace(/```/g, "\n");
 
   // Break before markdown headers (## Foo, ### Bar) that appear inline
-  t = t.replace(/\s+(#{1,6}\s+[A-Z])/g, "\n$1");
+  t = t.replace(/[ \t]+(#{1,6}\s+[A-Z])/g, "\n$1");
 
   // Break before bullet markers that appear inline: " - " or " * "
   // Only trigger when preceded by 2+ spaces (avoids breaking natural
   // hyphens like "hot-cold" or asterisks inside words)
-  t = t.replace(/\s{2,}([-*])\s+(?=[A-Z0-9])/g, "\n$1 ");
+  t = t.replace(/([^\n])[ \t]{2,}([-*])\s+(?=[A-Z0-9])/g, "$1\n$2 ");
 
   // Break before well-known section headers when they appear inline
   const knownSectionHeaders = [
@@ -342,16 +347,16 @@ function reintroduceStructuralNewlines(text) {
   ];
   for (const header of knownSectionHeaders) {
     // Match " HEADER " when it's not already at line start
-    const re = new RegExp(`\\s+(${header.replace(/\//g, "\\/")})(?=\\s|:)`, "g");
+    const re = new RegExp(`[ \\t]+(${header.replace(/\//g, "\\/")})(?=\\s|:)`, "g");
     t = t.replace(re, "\n$1");
   }
 
   // Break before pipe-delimited table rows (COLLECTION | ... or similar)
   // when they appear inline
-  t = t.replace(/\s+(COLLECTION\s*\|)/gi, "\n$1");
+  t = t.replace(/[ \t]+(COLLECTION\s*\|)/gi, "\n$1");
   // Also break before rows that start with a date like "07/2026 |"
-  t = t.replace(/\s+(\d{1,2}\/\d{4}\s*\|)/g, "\n$1");
-  t = t.replace(/\s+(\d{1,2}\/\d{1,2}\/\d{2,4}\s*\|)/g, "\n$1");
+  t = t.replace(/[ \t]+(\d{1,2}\/\d{4}\s*\|)/g, "\n$1");
+  t = t.replace(/[ \t]+(\d{1,2}\/\d{1,2}\/\d{2,4}\s*\|)/g, "\n$1");
 
   // Break before common PMH field labels that appear inline
   const knownFieldLabels = [
@@ -362,7 +367,7 @@ function reintroduceStructuralNewlines(text) {
     "What this means now", "Status notes", "Consult:",
   ];
   for (const label of knownFieldLabels) {
-    const re = new RegExp(`\\s+(${label.replace(/[-\/]/g, m => "\\" + m)})(?=\\s|:)`, "g");
+    const re = new RegExp(`[ \\t]+(${label.replace(/[-\/]/g, m => "\\" + m)})(?=\\s|:)`, "g");
     t = t.replace(re, "\n$1");
   }
 
@@ -384,19 +389,30 @@ function reintroduceStructuralNewlines(text) {
     "IVDA", "Employment", "Housing", "Support system",
   ];
   for (const label of socialLabels) {
-    const re = new RegExp(`\\s+(${label})(?=:)`, "g");
+    const re = new RegExp(`[ \\t]+(${label})(?=:)`, "g");
     t = t.replace(re, "\n$1");
   }
+
+  // Reattach source bullets when a social label was split after an existing
+  // marker, for example "- Living status: ...". Without this cleanup the
+  // exported document shows an orphan dash followed by an unbulleted value.
+  const socialFieldSource = socialLabels
+    .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  t = t.replace(
+    new RegExp(`^\\s*([-*•])\\s*\\n\\s*(?=(?:${socialFieldSource}):)`, "gim"),
+    "$1 ",
+  );
 
   // Break before common vital-sign labels
   const vitalLabels = ["BP:", "HR:", "Pulse:", "Temp:", "SpO2:", "Wt:", "Weight:", "BMI:", "Resp:"];
   for (const label of vitalLabels) {
-    const re = new RegExp(`\\s+(${label.replace(/:/g, "")})(?=:)`, "g");
+    const re = new RegExp(`[ \\t]+(${label.replace(/:/g, "")})(?=:)`, "g");
     t = t.replace(re, "\n$1");
   }
 
   // Break before date-prefixed timeline entries: "07/13/26:" or "07/13/26 "
-  t = t.replace(/\s+(\d{1,2}\/\d{1,2}\/\d{2,4}:\s)/g, "\n$1");
+  t = t.replace(/[ \t]+(\d{1,2}\/\d{1,2}\/\d{2,4}:\s)/g, "\n$1");
 
   // Collapse runs of 3+ newlines to 2
   t = t.replace(/\n{3,}/g, "\n\n");
