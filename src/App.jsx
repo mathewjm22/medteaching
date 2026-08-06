@@ -14359,7 +14359,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
       } else {
         html += `<ul style="margin:0;padding-left:16px;">`;
         dontMissItems.forEach(item => {
-          html += `<li style="font-size:8pt;color:var(--danger);line-height:1.4;margin-bottom:3px;">${esc(item)}</li>`;
+          html += `<li style="font-size:8pt;color:var(--danger-text);line-height:1.4;margin-bottom:3px;">${esc(item)}</li>`;
         });
         html += `</ul>`;
       }
@@ -14369,7 +14369,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
     // Per-problem red flags (only if don't-miss wasn't already populated)
     if (perProbRedFlags.length > 0 && dontMissItems.length === 0) {
       html += `<div class="wrn"><div class="wrn-label"><i class="fa-solid fa-triangle-exclamation"></i> Screen For</div><ul style="margin:0;padding-left:14px;">`;
-      perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:var(--danger);line-height:1.4;">${esc(rf)}</li>`);
+      perProbRedFlags.forEach(rf => html += `<li style="font-size:7.5pt;color:var(--danger-text);line-height:1.4;">${esc(rf)}</li>`);
       html += `</ul></div>`;
     }
 
@@ -17152,6 +17152,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
   --warm-soft: rgba(242, 217, 187, 0.34);
   --danger: var(--palette-alert);
   --danger-soft: rgba(255, 87, 87, 0.09);
+  --danger-text: #7a1f2b;
   --teach: var(--palette-blue-deep);
   --teach-bg: rgba(242, 217, 187, 0.34);
   --page-bg: #c8cdd5;
@@ -17172,6 +17173,7 @@ body.dark {
   --warm-soft: rgba(242, 217, 187, 0.08);
   --danger: var(--palette-alert);
   --danger-soft: rgba(255, 87, 87, 0.11);
+  --danger-text: #f4b4bb;
   --teach: var(--palette-sand);
   --teach-bg: rgba(242, 217, 187, 0.08);
   --page-bg: #0b1220;
@@ -17878,11 +17880,11 @@ body.dark .wrn { background: var(--danger-soft); }
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: .1em;
-  color: var(--danger);
+  color: var(--danger-text);
   margin-bottom: 5px;
 }
-body.dark .wrn-label { color: var(--danger); }
-.wrn p, .wrn li { font-size: 9pt; color: var(--fg-m); line-height: 1.5; margin: 0 0 3px; }
+body.dark .wrn-label { color: var(--danger-text); }
+.wrn p, .wrn li { font-size: 9pt; color: var(--danger-text); line-height: 1.5; margin: 0 0 3px; }
 .wrn p:last-child, .wrn li:last-child { margin-bottom: 0; }
 
 
@@ -18943,6 +18945,7 @@ const POST_VISIT_DOCUMENT_STYLES = `
   --accent-soft: rgba(99,143,168,.10);
   --danger: var(--palette-alert);
   --danger-soft: rgba(255,87,87,.09);
+  --danger-text: #7a1f2b;
   --teach: var(--palette-blue-deep);
   --teach-bg: rgba(242,217,187,.34);
   --page-bg: #c8cdd5;
@@ -18989,6 +18992,7 @@ body.post-visit-export.dark .post-visit-document {
   --teach-bg: rgba(242,217,187,.08);
   --danger: var(--palette-alert);
   --danger-soft: rgba(255,87,87,.11);
+  --danger-text: #f4b4bb;
   --page-bg: #0b1220;
   --doc-terracotta: var(--palette-blue-soft);
   --doc-consensus: var(--palette-blue-soft);
@@ -19329,6 +19333,7 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
     --teach: #376c8b;
     --teach-bg: rgba(242,217,187,.34);
     --danger: #ff5757;
+    --danger-text: #7a1f2b;
     max-width: none !important;
     margin: 0 !important;
     padding: 0 !important;
@@ -20815,14 +20820,14 @@ function DocumentContent({ doc, phase, session }) {
                   : (typeof c.dontMiss === "string" && c.dontMiss.trim() ? [c.dontMiss.trim()] : []);
                 if (dontMissItems.length === 0) return null;
                 return (
-                  <div className="keep-together" style={{ marginBottom: "1.25rem", padding: "0.85rem 1rem", background: "#fef2f2", borderLeft: "3px solid #dc2626", borderRadius: "0 4px 4px 0" }}>
-                    <div className="doc-meta-label" style={{ color: "#dc2626", marginBottom: "0.4rem" }}>Don't Miss</div>
+                  <div className="keep-together" style={{ marginBottom: "1.25rem", padding: "0.85rem 1rem", background: "var(--danger-soft)", borderLeft: "3px solid var(--danger)", borderRadius: "0 4px 4px 0" }}>
+                    <div className="doc-meta-label" style={{ color: "var(--danger-text)", marginBottom: "0.4rem" }}>Don't Miss</div>
                     {dontMissItems.length === 1 ? (
-                      <div style={{ fontSize: "0.9rem", color: "var(--doc-conflict)" }}>{dontMissItems[0]}</div>
+                      <div style={{ fontSize: "0.9rem", color: "var(--danger-text)" }}>{dontMissItems[0]}</div>
                     ) : (
                       <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
                         {dontMissItems.map((item, i) => (
-                          <li key={i} style={{ fontSize: "0.88rem", color: "var(--doc-conflict)", marginBottom: "0.3rem" }}>{item}</li>
+                          <li key={i} style={{ fontSize: "0.88rem", color: "var(--danger-text)", marginBottom: "0.3rem" }}>{item}</li>
                         ))}
                       </ul>
                     )}
