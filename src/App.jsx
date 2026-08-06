@@ -644,6 +644,34 @@ const getResultValueExplanation = (item, study, result, resultType) =>
     .replace(/\s+/g, " ")
     .trim();
 
+// Keep student-facing teaching prose collaborative and conversational. The AI
+// prompt also requests this tone, but this light display-side normalization
+// protects older saved cases and occasional imperative phrasing without
+// changing the underlying clinical meaning.
+const softenTeachingVoice = (value) => {
+  let text = String(value || "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!text) return "";
+
+  const replacements = [
+    [/^You need to understand that\s+/i, "It may be helpful to understand that "],
+    [/^You need to know that\s+/i, "It may be helpful to know that "],
+    [/^You should understand that\s+/i, "One helpful way to think about this is that "],
+    [/^You should know that\s+/i, "One helpful point to keep in mind is that "],
+    [/^You must remember that\s+/i, "A useful point to keep in mind is that "],
+    [/^Remember that\s+/i, "A useful point to keep in mind is that "],
+    [/^The student needs to understand that\s+/i, "It may be helpful to understand that "],
+  ];
+
+  replacements.forEach(([pattern, replacement]) => {
+    text = text.replace(pattern, replacement);
+  });
+
+  return text;
+};
+
 // True when a proposed "treatment" is actually a diagnostic or monitoring
 // study. These items must never be rendered in a Medications subsection.
 const isDiagnosticOrMonitoringItem = (value) => {
@@ -759,6 +787,21 @@ const normalizeTeachingResults = (
         item.clinicalMeaning ||
           (explicitResult ? item.interpretation : "")
       );
+      const teachingPoint = clean(
+        item.teachingPoint ||
+          item.studentTeachingPoint ||
+          item.attendingTeachingPoint ||
+          ""
+      );
+      const citation = clean(
+        item.citation ||
+          item.evidence ||
+          item.reference ||
+          ""
+      );
+      const provenance = Array.isArray(item.provenance)
+        ? item.provenance.map(clean).filter(Boolean)
+        : [];
       const resultType = inferTeachingResultType(
         item,
         study,
@@ -797,6 +840,9 @@ const normalizeTeachingResults = (
         valueExplanation,
         whyOrdered,
         clinicalMeaning,
+        teachingPoint,
+        citation,
+        provenance,
         explanation,
       };
     })
@@ -4545,13 +4591,17 @@ ${isPreVisit ? `- Write directly TO the student in second person, EXPLAINING and
 - Include the REASONING behind each piece of care: "They chose combination T4+T3 despite guidelines favoring T4 monotherapy because [reasoning]. The tradeoff is [X]. This is worth knowing because [Y]."
 - When the chart shows a trajectory (labs trending, med dose changes, procedures over time), narrate the story: what happened, why, what it means now.
 - Do NOT write anticipatory checklist prose ("you should ask about X") — that content lives in other parts of the document. The learning content is EXPLANATORY prose about the patient's medical story.
-- The student should finish reading and feel like they understand this patient's chart the way a resident who's known them would.` : `- Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
+- The student should finish reading and feel like they understand this patient's chart the way a resident who's known them would.
+- Use an invitational attending voice, not a command. Prefer phrases such as "It may be helpful to think about...", "One way to connect these findings is...", "You may notice...", and "This could be a useful point to discuss with the patient."
+- NEVER begin a teaching point with "You need to understand," "You need to know," "You should know," "You must remember," or similarly scolding language.
+- A teaching point should feel like a brief conversation during pre-clinic huddle: explain the concept, connect it to this patient, and suggest how it might inform the visit.` : `- Write directly TO the student in second person ("Notice how our patient...", "When you saw Ms. X today...", "This is a case where...")
 - Reference the specific patient by their pronoun and clinical story throughout — not "the patient" abstractly, but "our patient today with her 45-lb weight loss on Zepbound and 6-month lapse in levothyroxine"
 - Every learning point should START with what you observed together in this specific encounter, THEN pivot to the teaching principle
 - Sound like a thoughtful attending debriefing a case over coffee, not a textbook chapter
 - Include the WHY behind clinical decisions ("I held off on the GYN referral today because...")
 - Reference the patient's own words, concerns, life context, and social situation when relevant
-- When possible, tie teaching to what YOU as the attending noticed, decided, or would want the student to walk away thinking about`}
+- When possible, tie teaching to what YOU as the attending noticed, decided, or would want the student to walk away thinking about
+- Keep the tone collaborative and invitational. Avoid "You need to understand," "You should know," "You must remember," or other command-like phrasing. Prefer "It may be helpful to think about...", "One way to connect this is...", or "This is a useful point to discuss..."`}
 
 CITATION RULES — READ CAREFULLY:
 
@@ -4599,6 +4649,8 @@ PATIENT RESULTS RULES — MANDATORY:
 - Classify every item as resultType "lab" or "diagnostic". A laboratory analyte or panel is "lab". Imaging, procedures, physiologic studies, device downloads, and their metrics are "diagnostic".
 - ALWAYS populate valueExplanation. Define every unfamiliar abbreviation, score, component, and unit that appears in the result. For a composite panel, distinguish the components rather than treating the panel as one number. Examples: explain HbA1c as the percentage of glycated hemoglobin and what time period it reflects; distinguish LDL, HDL, total cholesterol, and triglycerides; explain AHI as apneas plus hypopneas per hour and RDI as a broader respiratory-disturbance rate. Do not assume the student already knows the shorthand.
 - Keep valueExplanation focused on what the displayed values mean. Do not repeat whyOrdered or clinicalMeaning there.
+- ALWAYS populate teachingPoint for every diagnostic item. Write 2-4 conversational sentences in the attending's voice that connect what the test evaluates, why it was done for this patient, and how its actual result should shape the student's understanding. Use the clinician-selected Step 4 evidence when it addresses the test. Do not use command-like language such as "You need to understand" or "You should know."
+- Populate citation with the real guideline, trial, society statement, or review supporting the teaching point when one is available. Keep AI-tool names only in provenance.
 - Future testing recommendations belong in keyLearningPoints or treatmentApproach.additional, not keyLabsAndImaging.
 
 TREATMENT / CONSULT TEACHING RULES — MANDATORY:
@@ -4619,7 +4671,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 
 {
   "problem": "${problem}",
-  "caseSummary": "ONE italicized-worthy sentence capturing the essence of what YOU as the attending ${isPreVisit ? "want the student to walk into the visit understanding about this patient" : "took away from this specific encounter with this specific patient"}. This should be personal, specific, and clinical — not a definition. Example post-visit: 'This patient's TSH of 13.8 is the clinical story — 6 months off levothyroxine, and the menorrhagia and fatigue we saw today are all downstream of that one gap.' Example pre-visit: 'The tension in this visit will be balancing TSH suppression for her thyroid cancer against the risk of over-suppression given her age and osteoporosis risk.' Written in second person to the student.",
+  "caseSummary": "A brief 2-4 sentence attending-to-student note capturing what would be most helpful to understand about this problem before or after the visit. Use warm, invitational language such as 'It may be helpful to think about...', 'One way to connect these findings is...', or 'This could be a useful point to discuss with the patient.' Explain the clinical idea, connect it to this patient's chart, and suggest how it may inform the conversation or plan. Never begin with 'You need to understand,' 'You should know,' or another command.",
   "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for ${isPreVisit ? "the upcoming visit with THIS patient" : "THIS patient"}"},
   "illnessScript": {
     "epidemiology": "1-2 sentences on who typically gets this. Reference ${isPreVisit ? "the patient's chart-documented demographics" : "our patient's demographics"} where they fit or contrast the pattern.",
@@ -4630,11 +4682,11 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
     "naturalHistory": "1-2 sentences on what happens if untreated, and typical response to first-line treatment. ${isPreVisit ? "Anchor to what the chart trajectory suggests to expect going forward." : "Anchor to what we expect for our patient specifically."}"
   },
   "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "${isPreVisit ? "why you should hold this in mind going into the visit — reference the patient's chart features, meds, or context" : "why you considered it for OUR patient — reference her actual features, meds, or context"}"}],
-  "keyLearningPoints": [{"point": "concise title", "explanation": "2-3 sentences that START with ${isPreVisit ? "something specific from the chart" : "something specific about our patient's presentation"}, THEN ${isPreVisit ? "tell the student what to think about or do in the upcoming visit" : "teach the concept"} — written TO the student. The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
+  "keyLearningPoints": [{"point": "concise title", "explanation": "2-4 conversational sentences that START with ${isPreVisit ? "something specific from the chart" : "something specific about our patient's presentation"}, THEN ${isPreVisit ? "help the student connect that fact to the upcoming discussion or plan" : "teach the concept"}. Write as a supportive attending speaking directly with the student. Prefer 'It may be helpful to...', 'One way to think about this...', or 'You may notice...' and never use 'You need to understand' or 'You should know.' The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
 "shelfQuestions": [{"specialty": "one-word or short specialty tag for this question — e.g., 'Pathophysiology', 'Psychiatry', 'Nephrology', 'Gastroenterology', 'Hepatology', 'Preventive Medicine', 'Veterans Health Policy', 'Clinical Reasoning' — pick what best matches the concept being tested, not the patient's diagnosis", "vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
   "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
-  "keyLabsAndImaging": [{"study": "completed lab, imaging study, or procedure name", "date": "date performed if explicitly documented, otherwise empty string", "result": "this patient's actual chart-documented result — REQUIRED; omit the entire item if no result is documented", "resultType": "lab or diagnostic", "whatItDoes": "plain-language explanation of what the test measures or detects", "valueExplanation": "plain-language definitions of every abbreviation, score, unit, and component shown in result; compare related components when useful", "whyOrdered": "why this test was ordered for this patient in this clinical scenario", "clinicalMeaning": "brief interpretation of what this patient's result means now"}],
+  "keyLabsAndImaging": [{"study": "completed lab, imaging study, or procedure name", "date": "date performed if explicitly documented, otherwise empty string", "result": "this patient's actual chart-documented result — REQUIRED; omit the entire item if no result is documented", "resultType": "lab or diagnostic", "whatItDoes": "plain-language explanation of what the test measures or detects", "valueExplanation": "plain-language definitions of every abbreviation, score, unit, and component shown in result; compare related components when useful", "whyOrdered": "why this test was ordered for this patient in this clinical scenario", "clinicalMeaning": "brief interpretation of what this patient's result means now", "teachingPoint": "2-4 warm, conversational sentences from the attending to the student connecting the test, this patient's indication, and the actual result; use Step 4 evidence when relevant and avoid command-like wording", "citation": "real guideline/trial/society reference when available; never an AI tool name", "provenance": ["AI-tool names for internal tracking only"]}],
 "treatmentApproach": {"firstLine": [{"treatment": "medication or THERAPEUTIC intervention NAME ONLY — never a diagnostic test, lab, imaging study, screening test, surveillance schedule, or monitoring study. Do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', or 'Consider'.", "dosing": "dose/route/frequency or therapeutic schedule", "teachingRationale": "what this treatment or consult actually does, what it targets, the expected benefit, and why that target fits this patient's scenario; for referrals or allied-health consults, explain the clinician's role and specific focus", "monitoring": "what to check and when. For medications: labs to follow (e.g., 'basic metabolic panel at 2 weeks after starting or dose change; then every 6-12 months'), symptoms to reassess, timing of follow-up. For consults or non-drug therapies: how to know it is working. Empty string if not applicable.", "adverseEffectsToWatch": "1-2 sentences on the clinically meaningful adverse effects for THIS patient — reference their comorbidities, other meds, or context where relevant. Do not enumerate every possible side effect; name the ones that would change management or require patient counseling. Empty string if not applicable (e.g., for a consult referral).", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations, including future monitoring recommendations that are not completed results" : "patient-specific considerations, including future monitoring recommendations that are not completed results"}"]},
 "suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
 "dontMiss": ["array of 2-3 short don't-miss items specific to THIS problem in THIS patient — each is one sentence naming a diagnosis to rule out, an iatrogenic risk, a prescribing pitfall, or a red-flag pattern that would change management. Example items: 'Confirm no red-flag features (weight loss, night pain, neurologic deficit) before assuming benign cause.', 'Check for QTc prolongation before starting azithromycin in a patient on citalopram.', 'Do not prescribe topical medications for undiagnosed family members — offer separate evaluation.' Return empty array if no specific warnings apply. Prefer 2-3 items over one when multiple are relevant.",
@@ -4830,6 +4882,153 @@ Provide 2-4 crossProblemInteractions when the patient has 3+ selected problems; 
     }
 
     return { teachingCases, crossCuttingThemes, crossProblemInteractions, questionsForReflection, caseResults, themesStatus, themesError };
+  };
+
+  // ===== Diagnostic teaching (pre-visit only) =====
+  // Generates one teaching object for every chart-documented diagnostic card,
+  // not only the tests attached to a selected problem. The source synthesis
+  // from Step 4 is passed in so the explanations can use the clinician-chosen
+  // evidence while the raw result remains grounded in the prenote.
+  const generateDiagnosticTeachingContent = async (
+    synthesizedEvidenceParam = null
+  ) => {
+    if (!aiEnabled || sessionMode !== "pre" || !clinicalNote.trim()) {
+      return [];
+    }
+
+    const parsedPrenote = parsePrenote(clinicalNote);
+    const diagnosticsText = String(
+      parsedPrenote?.sections?.diagnostics || ""
+    ).trim();
+    if (!diagnosticsText) return [];
+
+    const htmlToDiagnosticEvidenceText = (html) => {
+      if (!html) return "";
+      const div = document.createElement("div");
+      div.innerHTML = html;
+      div.querySelectorAll("script, style").forEach((node) => node.remove());
+      return String(div.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim();
+    };
+
+    const structuredEvidenceSummary = synthesizedEvidenceParam?.synthesized
+      ? (synthesizedEvidenceParam.topics || [])
+          .flatMap((topic) =>
+            (topic.claims || []).map((claim) => {
+              const citations = (claim.citations || []).join(", ");
+              const provenance = (claim.provenance || claim.sources || []).join(", ");
+              return `- ${topic.topic}: ${claim.statement}${citations ? ` [${citations}]` : ""}${provenance ? ` {via ${provenance}}` : ""}`;
+            })
+          )
+          .join("\n")
+      : "";
+
+    const rawEvidenceParts = [];
+    activeSources.forEach((sourceKey) => {
+      if (sourceKey === "pubmedai") {
+        Object.entries(sourceResponses.pubmedai || {}).forEach(([topic, value]) => {
+          const text = htmlToDiagnosticEvidenceText(value?.html);
+          if (text) rawEvidenceParts.push(`[PubMed AI — ${topic}] ${text}`);
+        });
+        return;
+      }
+
+      const text = htmlToDiagnosticEvidenceText(sourceResponses[sourceKey]?.html);
+      if (text) rawEvidenceParts.push(`[${sourceLabels[sourceKey] || sourceKey}] ${text}`);
+    });
+    pdfAttachments
+      .filter((pdf) => pdf?.extractedText?.trim() && !pdf.error)
+      .forEach((pdf) => {
+        const label = pdf.shortLabel || pdf.filename || "PDF";
+        rawEvidenceParts.push(`[${label}] ${pdf.extractedText}`);
+      });
+
+    const evidenceSummary = (
+      structuredEvidenceSummary || rawEvidenceParts.join("\n\n")
+    ).slice(0, 12000);
+
+    const sys = `You are a warm internal-medicine attending preparing a diagnostic-results teaching section for a medical student.
+
+Your job is to read the chart-documented DIAGNOSTICS section and return one teaching object for EACH distinct diagnostic evaluation, imaging study, procedure, physiologic test, or specialist diagnostic assessment that appears in it. Include completed studies with results and pending studies when the chart clearly states why they were ordered.
+
+GROUNDING RULES:
+1. Preserve the study title and date as written closely enough that the app can match your object back to the correct diagnostic card.
+2. Never invent a result, measurement, diagnosis, or date. Put the chart's actual result in result. For a pending study, write "Pending" in result and explain only what is known.
+3. Use the clinician-selected Step 4 evidence when it addresses the study. Cite the real guideline, trial, or society statement; never cite an AI tool in prose.
+4. Put AI-tool names only in provenance.
+5. Explain unfamiliar abbreviations, scales, scores, units, and components.
+
+VOICE RULES:
+- Write like an attending talking with the student during a pre-clinic huddle.
+- Use collaborative, invitational language: "It may be helpful to think about...", "One way to connect these findings is...", "You may notice...", or "This could be useful to discuss with the patient."
+- NEVER say "You need to understand," "You should know," "You must remember," or use a scolding/commanding tone.
+- teachingPoint should be 2-4 sentences: explain the test, connect it to this patient's indication and result, and show how it might inform the visit.
+
+Return ONLY valid JSON:
+{
+  "diagnostics": [
+    {
+      "study": "study/evaluation title matching the chart",
+      "date": "date if documented, otherwise empty string",
+      "result": "actual chart result or Pending",
+      "resultType": "diagnostic",
+      "whatItDoes": "plain-language description of what the test evaluates",
+      "valueExplanation": "definitions of abbreviations, scores, units, and important components",
+      "whyOrdered": "patient-specific reason this study was ordered",
+      "clinicalMeaning": "what the actual result means for this patient now; for pending studies, what question remains unanswered",
+      "teachingPoint": "2-4 warm, conversational attending-to-student sentences",
+      "citation": "real guideline/trial/society reference if available, otherwise empty string",
+      "provenance": ["Step 4 source labels that contributed"]
+    }
+  ]
+}`;
+
+    const user = `Patient problems selected for teaching: ${(selectedProblems || []).join("; ") || workingDx || "not specified"}
+Chief concern: ${chiefConcern || "not specified"}
+
+CHART-DOCUMENTED DIAGNOSTICS:
+${diagnosticsText.slice(0, 26000)}
+
+${evidenceSummary ? `CLINICIAN-SELECTED STEP 4 EVIDENCE:
+${evidenceSummary}` : "No Step 4 evidence was supplied for these diagnostics; use standard medical knowledge and be transparent with citations."}
+
+Return one object for each distinct diagnostic card in the chart section.`;
+
+    try {
+      const response = await callAi(sys, user, 8000, {
+        temperature: 0.25,
+      });
+      const parsed = extractJson(response);
+      const items = Array.isArray(parsed?.diagnostics)
+        ? parsed.diagnostics
+        : [];
+
+      return items
+        .filter((item) => item && (item.study || item.name))
+        .map((item) => ({
+          ...item,
+          resultType: "diagnostic",
+          study: String(item.study || item.name || "").trim(),
+          date: String(item.date || "").trim(),
+          result: String(item.result || item.actualResult || "").trim(),
+          whatItDoes: String(item.whatItDoes || item.whatItMeasures || "").trim(),
+          valueExplanation: String(item.valueExplanation || "").trim(),
+          whyOrdered: String(item.whyOrdered || item.purpose || "").trim(),
+          clinicalMeaning: String(item.clinicalMeaning || item.interpretation || "").trim(),
+          teachingPoint: softenTeachingVoice(item.teachingPoint || ""),
+          citation: String(item.citation || item.evidence || "").trim(),
+          provenance: Array.isArray(item.provenance)
+            ? item.provenance.filter(Boolean)
+            : [],
+        }));
+    } catch (error) {
+      console.warn(
+        "[generateDiagnosticTeachingContent] failed; deterministic teaching fallbacks will be used:",
+        error?.message || error
+      );
+      return [];
+    }
   };
 
   // ===== Med descriptions (pre-visit only) =====
@@ -6083,6 +6282,24 @@ Formatting rules:
       try {
         aiContent = await generateAiTeachingContent(synthesized, cachedSuccessfulCases, retryFailedOnly);
 
+        if (sessionMode === "pre") {
+          if (
+            retryFailedOnly &&
+            Array.isArray(aiTeachingContent?.diagnosticTeaching) &&
+            aiTeachingContent.diagnosticTeaching.length > 0
+          ) {
+            aiContent.diagnosticTeaching = aiTeachingContent.diagnosticTeaching;
+          } else {
+            setAiStatus(prev => ({
+              ...prev,
+              progress: "Adding teaching points to diagnostic reports",
+            }));
+            aiContent.diagnosticTeaching = await generateDiagnosticTeachingContent(
+              synthesized
+            );
+          }
+        }
+
         // Pre-visit only: extract current-medications from the prenote and get brief
         // descriptions for each. This annotates the top medication table in the in-room doc.
                 if (sessionMode === "pre") {
@@ -6245,6 +6462,8 @@ Formatting rules:
       medDescriptions: aiContent?.medDescriptions || null,
       // Lightweight teaching content for non-selected problems (pre-visit only)
       lightweightTeaching: aiContent?.lightweightTeaching || null,
+      // Per-report teaching generated from the diagnostic section plus Step 4 evidence.
+      diagnosticTeaching: aiContent?.diagnosticTeaching || [],
       sessionMode,
       sections: {
         caseAtGlance: { enabled: true, editable: false },
@@ -11153,13 +11372,25 @@ const DIAGNOSTIC_TEACHING = {
     },
   },
   sleep_study: {
-    match: /\b(sleep study|polysomnography|HSAT|home sleep apnea)\b/i,
-    whatItIs: "Polysomnography (in-lab) or home sleep apnea testing (HSAT) measures respiratory events, oxygen desaturation, and arousals during sleep to diagnose obstructive sleep apnea.",
-    whyOrdered: "Workup of witnessed apneas, loud snoring with daytime sleepiness, resistant hypertension, unexplained pulmonary hypertension, or high pretest probability by STOP-BANG.",
+    match: /\b(sleep study|polysomnography|HSAT|home sleep apnea|sleep disorders? evaluation|epworth sleepiness)\b/i,
+    whatItIs: "A sleep-medicine evaluation estimates pretest probability for sleep disorders and decides whether in-lab polysomnography or home sleep apnea testing is appropriate. Polysomnography measures airflow, respiratory effort, oxygen saturation, sleep stage, arousals, heart rhythm, and limb movement.",
+    whyOrdered: "Common reasons include witnessed apneas, snoring with daytime sleepiness, nocturnal gasping, unrefreshing sleep, or concern that insomnia symptoms may be partly driven by sleep-disordered breathing.",
     commonTerms: {
+      "epworth": "The Epworth Sleepiness Scale (ESS) is an eight-item questionnaire scored from 0-24; higher scores indicate greater propensity to doze during daytime situations.",
       "ahi": "Apnea-Hypopnea Index — respiratory events per hour of sleep. Mild 5-14, moderate 15-29, severe ≥30.",
       "rdi": "Respiratory Disturbance Index — AHI plus respiratory-effort-related arousals; captures milder events.",
       "cpap": "Continuous positive airway pressure — first-line treatment for moderate-severe OSA.",
+    },
+  },
+  audiology: {
+    match: /\b(audiometry|audiogram|audiology|QuickSIN|speech[- ]in[- ]noise|tympanometry|hearing evaluation)\b/i,
+    whatItIs: "A comprehensive audiology evaluation measures pure-tone hearing thresholds, speech recognition, speech-in-noise performance, and middle-ear mechanics. Together these tests distinguish peripheral hearing loss from conductive problems and show how hearing functions in real-world listening environments.",
+    whyOrdered: "It is commonly obtained for reported difficulty hearing speech, tinnitus, occupational or military noise exposure, classroom difficulty, or concern that standard quiet-room testing underestimates functional impairment.",
+    commonTerms: {
+      "pta": "Pure-tone average (PTA) summarizes hearing thresholds across key speech frequencies; higher dB HL values indicate more hearing loss.",
+      "quicksin": "QuickSIN estimates the signal-to-noise ratio needed to understand speech in background noise; larger SNR loss means greater difficulty in noisy settings.",
+      "tympanometry": "Tympanometry evaluates eardrum mobility and middle-ear pressure. A Type A tracing generally indicates normal middle-ear function.",
+      "stenger": "The Stenger test helps assess possible nonorganic or asymmetric hearing responses; a negative result supports reliable behavioral thresholds.",
     },
   },
   abi: {
@@ -11239,7 +11470,9 @@ const buildInRoomHtml = (doc, session) => {
   // Pull the AI's value definitions into the main pre-visit laboratory and
   // diagnostic sections. This keeps the raw chart data easy to scan while
   // still giving the student a nearby glossary for unfamiliar values.
+  const teachingResultItems = [];
   const teachingResultGuides = [];
+  const seenTeachingItems = new Set();
   const seenTeachingGuides = new Set();
   enabledCases.forEach((teachingCase) => {
     const caseData = teachingCase?.data || teachingCase || {};
@@ -11247,13 +11480,73 @@ const buildInRoomHtml = (doc, session) => {
       caseData.keyLabsAndImaging,
       DEFAULT_TEACHING_DETAIL_OPTIONS
     ).forEach((item) => {
+      const itemKey = `${item.resultType}|${item.study}|${item.date}|${item.result}`.toLowerCase();
+      if (!seenTeachingItems.has(itemKey)) {
+        seenTeachingItems.add(itemKey);
+        teachingResultItems.push(item);
+      }
+
       if (!item.valueExplanation) return;
-      const key = `${item.resultType}|${item.study}|${item.valueExplanation}`.toLowerCase();
-      if (seenTeachingGuides.has(key)) return;
-      seenTeachingGuides.add(key);
+      const guideKey = `${item.resultType}|${item.study}|${item.valueExplanation}`.toLowerCase();
+      if (seenTeachingGuides.has(guideKey)) return;
+      seenTeachingGuides.add(guideKey);
       teachingResultGuides.push(item);
     });
   });
+
+  // The dedicated diagnostic-teaching pass covers every report card, including
+  // pending studies that are intentionally excluded from the completed-results
+  // list. Keep them available for per-card matching without pretending that a
+  // pending test has a completed result.
+  (Array.isArray(doc.diagnosticTeaching) ? doc.diagnosticTeaching : []).forEach(
+    (rawItem) => {
+      if (!rawItem || typeof rawItem !== "object") return;
+      const clean = (value) => String(value || "").replace(/\s+/g, " ").trim();
+      const item = {
+        study: clean(rawItem.study || rawItem.name),
+        date: clean(rawItem.date),
+        result: clean(rawItem.result || rawItem.actualResult),
+        resultType: "diagnostic",
+        whatItDoes: clean(rawItem.whatItDoes || rawItem.whatItMeasures),
+        valueExplanation: clean(rawItem.valueExplanation),
+        whyOrdered: clean(rawItem.whyOrdered || rawItem.purpose),
+        clinicalMeaning: clean(rawItem.clinicalMeaning || rawItem.interpretation),
+        teachingPoint: softenTeachingVoice(rawItem.teachingPoint),
+        citation: clean(rawItem.citation || rawItem.evidence),
+        provenance: Array.isArray(rawItem.provenance)
+          ? rawItem.provenance.map(clean).filter(Boolean)
+          : [],
+      };
+      if (!item.study) return;
+
+      const itemKey = `${item.resultType}|${item.study}|${item.date}|${item.result}`.toLowerCase();
+      const existingIndex = teachingResultItems.findIndex(
+        (entry) =>
+          `${entry.resultType}|${entry.study}|${entry.date}|${entry.result}`.toLowerCase() === itemKey
+      );
+      if (existingIndex >= 0) {
+        teachingResultItems[existingIndex] = {
+          ...teachingResultItems[existingIndex],
+          ...Object.fromEntries(
+            Object.entries(item).filter(([, value]) =>
+              Array.isArray(value) ? value.length > 0 : Boolean(value)
+            )
+          ),
+        };
+      } else {
+        teachingResultItems.push(item);
+        seenTeachingItems.add(itemKey);
+      }
+
+      if (item.valueExplanation) {
+        const guideKey = `${item.resultType}|${item.study}|${item.valueExplanation}`.toLowerCase();
+        if (!seenTeachingGuides.has(guideKey)) {
+          seenTeachingGuides.add(guideKey);
+          teachingResultGuides.push(item);
+        }
+      }
+    }
+  );
 
   const renderStudentValueGuide = (resultType) => {
     const optionEnabled = resultType === "lab"
@@ -13394,7 +13687,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
 
   // ── Attending case summary (italic amber accent) ──
   if (isSelected && c.caseSummary) {
-    html += `<p style="font-style:italic;color:var(--fg);border-left:2px solid #b45309;padding-left:8px;margin-bottom:10px;font-size:9pt;line-height:1.5;">${esc(c.caseSummary)}</p>`;
+    html += `<p style="font-style:italic;color:var(--fg);border-left:2px solid #b45309;padding-left:8px;margin-bottom:10px;font-size:9pt;line-height:1.5;">${esc(softenTeachingVoice(c.caseSummary))}</p>`;
   }
 
   // ── Narrative paragraph: flowing prose synthesis of the PMH block ──
@@ -13606,7 +13899,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
       html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: ${esc(c.primaryDiagnosis?.name || problemName)}</div><ul>`;
       keyLearningPoints.forEach(lp => {
         if (!lp || typeof lp !== "object") return;
-        html += `<li><b>${esc(lp.point || "")}:</b> ${esc(lp.explanation || "")}`;
+        html += `<li><b>${esc(lp.point || "")}:</b> ${esc(softenTeachingVoice(lp.explanation || ""))}`;
         if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
         html += `</li>`;
       });
@@ -14167,6 +14460,64 @@ const buildProblemCard = (tc, idx, isSelected) => {
     return value;
   };
 
+  // EHR and LLM exports often wrap every 70-90 characters with hard
+  // newlines. Those physical line breaks are not semantic boundaries. Merge
+  // continuation lines back into the preceding labeled field or sentence so
+  // the document can use the full available width.
+  const unwrapDiagnosticHardWrappedLines = (lines) => {
+    const output = [];
+    const hasLabel = (value) =>
+      /^[\s*-]*[^:]{2,55}\s*:\s*/.test(String(value || "").trim());
+    const labelOnly = (value) =>
+      /^[\s*-]*[^:]{2,55}\s*:\s*$/.test(String(value || "").trim());
+    const isBullet = (value) => /^\s*[-*•]\s+/.test(String(value || ""));
+    const isNumbered = (value) => /^\s*\d+[.)]\s+/.test(String(value || ""));
+    const endsSentence = (value) => {
+      const stripped = String(value || "")
+        .trim()
+        .replace(/[\]})'"”’]+$/g, "")
+        .trim();
+      return /[.!?;:]$/.test(stripped);
+    };
+
+    (Array.isArray(lines) ? lines : []).forEach((rawLine) => {
+      const current = String(rawLine || "").trim();
+      if (!current) return;
+
+      if (output.length === 0) {
+        output.push(current);
+        return;
+      }
+
+      const previous = output[output.length - 1];
+      const currentStartsStructure =
+        hasLabel(current) ||
+        isBullet(current) ||
+        isNumbered(current) ||
+        isDiagnosticStudyTitle(stripDiagnosticMarker(current)) ||
+        isDiagnosticCategoryHeading(current);
+
+      const previousOwnsContinuations = hasLabel(previous) && !labelOnly(previous);
+      const looksLikeSoftContinuation =
+        !currentStartsStructure &&
+        !labelOnly(previous) &&
+        (previousOwnsContinuations ||
+          !endsSentence(previous) ||
+          /^[a-z(]/.test(current) ||
+          /^(?:and|or|but|with|without|which|that|who|has|have|had|was|were|is|are|been|being|to|of|for|from|in|on|at|by|because|including|especially|although|while|when|where)\b/i.test(current));
+
+      if (looksLikeSoftContinuation) {
+        output[output.length - 1] = `${previous} ${current}`
+          .replace(/\s+/g, " ")
+          .trim();
+      } else {
+        output.push(current);
+      }
+    });
+
+    return output;
+  };
+
   const parseDiagnosticBlockDetails = (block) => {
     let dateLabel = block.dateHint || extractDiagnosticDate(block.title);
     let subtitle = "";
@@ -14213,7 +14564,9 @@ const buildProblemCard = (tc, idx, isSelected) => {
       "LEFT LEG",
     ]);
 
-    block.lines.forEach((rawLine) => {
+    const logicalLines = unwrapDiagnosticHardWrappedLines(block.lines);
+
+    logicalLines.forEach((rawLine) => {
       const isBullet = /^[-*•]\s+/.test(rawLine.trim());
       const line = cleanDiagnosticDisplayText(
         rawLine.replace(/^[-*•]\s+/, "")
@@ -14368,6 +14721,21 @@ const buildProblemCard = (tc, idx, isSelected) => {
       status,
       metaRows,
       sections: sections.filter((section) => section.items.length > 0),
+      searchText: [
+        finalTitle,
+        finalCategory,
+        dateLabel,
+        subtitle,
+        ...metaRows.map((row) => `${row.label}: ${row.value}`),
+        ...sections.flatMap((section) => [
+          section.label,
+          ...section.items.map((item) =>
+            [item.label, item.value].filter(Boolean).join(": ")
+          ),
+        ]),
+      ]
+        .filter(Boolean)
+        .join(" "),
     };
   };
 
@@ -14411,6 +14779,137 @@ const buildProblemCard = (tc, idx, isSelected) => {
     return html;
   };
 
+  const normalizeDiagnosticTeachingMatchText = (value) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/\bpolysomnography\b|\bpsg\b|\bhsat\b|home sleep apnea test|sleep disorders? evaluation/g, " sleep study ")
+      .replace(/\baudiometry\b|\baudiogram\b|\baudiology\b|quicksin|words in noise|\bwin threshold\b/g, " hearing test ")
+      .replace(/\bcomputed tomography\b/g, " ct ")
+      .replace(/\bmagnetic resonance imaging\b/g, " mri ")
+      .replace(/\bechocardiography\b/g, " echocardiogram ")
+      .replace(/\bpulmonary function tests?\b|\bpfts?\b/g, " pulmonary function test ")
+      .replace(/[^a-z0-9]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const diagnosticTeachingFamily = (value) => {
+    const text = String(value || "");
+    if (/sleep study|polysomnography|\bpsg\b|\bhsat\b|sleep disorders? evaluation|apnea|epworth/i.test(text)) return "sleep";
+    if (/audiometr|audiolog|hearing|quicksin|speech in noise|tinnitus|tympanometr/i.test(text)) return "hearing";
+    if (/pulmonary function|spirometry|\bfev1\b|\bfvc\b|\bdlco\b/i.test(text)) return "pft";
+    if (/echocardiogram|echocardiography|\btte\b|\btee\b|ejection fraction/i.test(text)) return "echo";
+    if (/colonoscopy/i.test(text)) return "colonoscopy";
+    if (/egd|upper endoscopy|esophagogastroduodenoscopy/i.test(text)) return "egd";
+    if (/mammogram|mammography/i.test(text)) return "mammography";
+    if (/dexa|bone density/i.test(text)) return "dexa";
+    if (/ultrasound|sonogram|doppler/i.test(text)) return "ultrasound";
+    if (/\bmri\b|magnetic resonance/i.test(text)) return "mri";
+    if (/\bct\b|computed tomography/i.test(text)) return "ct";
+    if (/x-?ray|radiograph/i.test(text)) return "xray";
+    if (/ecg|ekg|electrocardiogram/i.test(text)) return "ecg";
+    return "";
+  };
+
+  const findDiagnosticTeachingForReport = (report) => {
+    const candidates = teachingResultItems.filter(
+      (item) => item.resultType === "diagnostic"
+    );
+    if (candidates.length === 0) return null;
+
+    const reportText = `${report.title || ""} ${report.category || ""} ${report.searchText || ""}`;
+    const reportNorm = normalizeDiagnosticTeachingMatchText(reportText);
+    const reportTokens = new Set(
+      reportNorm.split(" ").filter((token) => token.length > 2)
+    );
+    const reportFamily = diagnosticTeachingFamily(reportText);
+
+    let best = null;
+    let bestScore = 0;
+
+    candidates.forEach((item) => {
+      const itemText = `${item.study || ""} ${item.result || ""} ${item.whatItDoes || ""}`;
+      const itemNorm = normalizeDiagnosticTeachingMatchText(itemText);
+      const itemTokens = itemNorm.split(" ").filter((token) => token.length > 2);
+      const itemFamily = diagnosticTeachingFamily(itemText);
+      let score = 0;
+
+      if (itemNorm && reportNorm.includes(itemNorm)) score += 120;
+      if (reportNorm && itemNorm.includes(reportNorm)) score += 80;
+      if (reportFamily && itemFamily && reportFamily === itemFamily) score += 70;
+      if (item.date && report.dateLabel && String(report.dateLabel).includes(item.date)) score += 20;
+
+      const shared = itemTokens.filter((token) => reportTokens.has(token)).length;
+      score += shared * 12;
+      if (itemTokens.length > 0) score += (shared / itemTokens.length) * 45;
+
+      const detailScore = [
+        item.teachingPoint,
+        item.whatItDoes,
+        item.whyOrdered,
+        item.clinicalMeaning,
+        item.valueExplanation,
+      ].filter(Boolean).length * 2;
+      score += detailScore;
+
+      if (score > bestScore) {
+        bestScore = score;
+        best = item;
+      }
+    });
+
+    return bestScore >= 42 ? best : null;
+  };
+
+  const renderDiagnosticTeachingPanel = (report) => {
+    const aiTeaching = findDiagnosticTeachingForReport(report);
+    const reportText = report.searchText || report.title || "";
+    const fallbackTeaching = !aiTeaching
+      ? getDiagnosticTeaching(report.title, reportText)
+      : null;
+
+    if (!aiTeaching && !fallbackTeaching) return "";
+
+    let html = `<aside class="diag-teaching"><div class="diag-teaching-title"><i class="fa-solid fa-graduation-cap"></i> Teaching point</div>`;
+
+    if (aiTeaching) {
+      const conversationalPoint = softenTeachingVoice(aiTeaching.teachingPoint);
+      if (conversationalPoint) {
+        html += `<p class="diag-teaching-lead">${esc(conversationalPoint)}</p>`;
+      }
+
+      const rows = [
+        ["What this test evaluates", aiTeaching.whatItDoes],
+        ["Why it was ordered here", aiTeaching.whyOrdered],
+        ["How to read this result", aiTeaching.clinicalMeaning],
+        ["Value guide", aiTeaching.valueExplanation],
+      ].filter(([, value]) => value && String(value).trim());
+
+      if (rows.length > 0) {
+        html += `<div class="diag-teaching-grid">${rows
+          .map(
+            ([label, value]) =>
+              `<div class="diag-teaching-row"><div class="diag-teaching-key">${esc(label)}</div><div class="diag-teaching-value">${esc(softenTeachingVoice(value))}</div></div>`
+          )
+          .join("")}</div>`;
+      }
+
+      if (aiTeaching.citation) {
+        html += `<div class="diag-teaching-cite">${esc(aiTeaching.citation)}</div>`;
+      }
+    } else {
+      html += `<p><b>What this test evaluates:</b> ${esc(fallbackTeaching.whatItIs)}</p>`;
+      html += `<p><b>Why it is commonly ordered:</b> ${esc(fallbackTeaching.whyOrdered)}</p>`;
+      if (Object.keys(fallbackTeaching.relevantTerms || {}).length > 0) {
+        html += `<ul class="diag-teaching-terms">${Object.entries(fallbackTeaching.relevantTerms)
+          .map(([term, definition]) => `<li><b>${esc(term)}:</b> ${esc(definition)}</li>`)
+          .join("")}</ul>`;
+      }
+    }
+
+    html += `</aside>`;
+    return html;
+  };
+
   const renderDiagnosticNarrative = (text) => {
     const reports = parseDiagnosticBlocks(text)
       .map(parseDiagnosticBlockDetails)
@@ -14442,7 +14941,11 @@ const buildProblemCard = (tc, idx, isSelected) => {
           ? `<div class="diag-meta-grid">${report.metaRows
               .map(
                 (row) =>
-                  `<div class="diag-meta-item"><div class="diag-key">${esc(
+                  `<div class="diag-meta-item${
+                    row.value.length > 80 || /^(?:chief complaint|history|indication|indications)$/i.test(row.label)
+                      ? " diag-meta-wide"
+                      : ""
+                  }"><div class="diag-key">${esc(
                     row.label
                   )}</div><div class="diag-value">${esc(
                     row.value
@@ -14463,6 +14966,8 @@ const buildProblemCard = (tc, idx, isSelected) => {
           })
           .join("");
 
+        const teachingHtml = renderDiagnosticTeachingPanel(report);
+
         return `<article class="diag-card"><div class="diag-card-head"><div class="diag-card-heading">${categoryHtml}<div class="diag-card-title">${esc(
           report.title
         )}</div>${subtitleHtml}</div>${
@@ -14471,7 +14976,7 @@ const buildProblemCard = (tc, idx, isSelected) => {
           report.dateLabel
             ? `<span class="diag-date">${esc(report.dateLabel)}</span>`
             : ""
-        }</div><div class="diag-card-body">${metaHtml}${sectionsHtml}</div></article>`;
+        }</div><div class="diag-card-body">${metaHtml}${sectionsHtml}${teachingHtml}</div></article>`;
       })
       .join("");
 
@@ -17066,7 +17571,7 @@ body.dark .diag-status-scanned {
 .diag-card-body { padding: 8px 10px 9px; }
 .diag-meta-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: 6px;
   margin-bottom: 8px;
 }
@@ -17076,6 +17581,9 @@ body.dark .diag-status-scanned {
   border: 1px solid var(--border-vl);
   border-radius: 4px;
   background: var(--panel);
+}
+.diag-meta-wide {
+  grid-column: 1 / -1;
 }
 .diag-row {
   display: grid;
@@ -17166,10 +17674,82 @@ body.dark .diag-report-section-emphasis {
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
 }
+.diag-teaching {
+  margin-top: 10px;
+  padding: 10px 11px;
+  border: 1px solid rgba(37, 99, 235, .20);
+  border-left: 3px solid var(--accent);
+  border-radius: 0 5px 5px 0;
+  background: rgba(37, 99, 235, .045);
+}
+body.dark .diag-teaching {
+  border-color: rgba(96, 165, 250, .25);
+  background: rgba(59, 130, 246, .08);
+}
+.diag-teaching-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-bottom: 6px;
+  color: var(--accent);
+  font-size: 7.4pt;
+  font-weight: 800;
+  letter-spacing: .085em;
+  text-transform: uppercase;
+}
+.diag-teaching p,
+.diag-teaching-lead {
+  margin: 0 0 6px;
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.5;
+}
+.diag-teaching-lead {
+  color: var(--fg);
+}
+.diag-teaching-grid {
+  display: grid;
+  gap: 0;
+}
+.diag-teaching-row {
+  display: grid;
+  grid-template-columns: minmax(135px, 23%) minmax(0, 1fr);
+  gap: 9px;
+  padding: 5px 0;
+  border-top: 1px solid rgba(37, 99, 235, .12);
+}
+.diag-teaching-key {
+  color: var(--fg-d);
+  font-size: 7.1pt;
+  font-weight: 750;
+  letter-spacing: .025em;
+  text-transform: uppercase;
+}
+.diag-teaching-value {
+  min-width: 0;
+  color: var(--fg-m);
+  font-size: 8.35pt;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.diag-teaching-cite {
+  margin-top: 6px;
+  color: var(--fg-d);
+  font-size: 7.5pt;
+  font-style: italic;
+}
+.diag-teaching-terms {
+  margin: 5px 0 0;
+  padding-left: 17px;
+  color: var(--fg-m);
+  font-size: 8.25pt;
+  line-height: 1.45;
+}
 @media (max-width: 640px) {
   .diag-card-head { align-items: flex-start; }
   .diag-meta-grid { grid-template-columns: 1fr; }
   .diag-row { grid-template-columns: 1fr; gap: 2px; }
+  .diag-teaching-row { grid-template-columns: 1fr; gap: 2px; }
 }
 /* Social grid */
 .soc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
@@ -19212,7 +19792,7 @@ function DocumentContent({ doc, phase, session }) {
                     lineHeight: 1.55,
                     color: "var(--doc-navy)",
                   }}>
-                    {c.caseSummary}
+                    {softenTeachingVoice(c.caseSummary)}
                   </div>
                 </div>
               )}
@@ -19311,7 +19891,7 @@ function DocumentContent({ doc, phase, session }) {
                         <span style={{ flexShrink: 0, fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: "0.9rem", color: "var(--doc-navy-mid)", minWidth: "1.5rem", textAlign: "right" }}>{i + 1}.</span>
                         <div style={{ flex: 1 }}>
                           <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{lp.point}. </span>
-                          <span>{lp.explanation}</span>
+                          <span>{softenTeachingVoice(lp.explanation)}</span>
                           {lp.citation && (
                             <span style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", fontSize: "0.85em", color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>
                               ({lp.citation})
