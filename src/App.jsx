@@ -18736,6 +18736,31 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   --teach-bg: rgba(242, 217, 187, 0.34);
   --page-bg: #c8cdd5;
 }
+body.theme-light {
+  /* Explicit light-theme tokens. Keeping light mode as a real class (rather
+     than merely the absence of .dark) makes theme invalidation reliable in
+     long srcDoc iframes and prevents stale off-screen paint tiles. */
+  --bg: #ffffff;
+  --fg: #1a1f2e;
+  --fg-m: #374151;
+  --fg-d: #6b7280;
+  --border: #d8dde5;
+  --border-l: #e5e7eb;
+  --border-vl: #f3f4f6;
+  --panel: #f7f8fa;
+  --panel-h: rgba(99, 143, 168, 0.10);
+  --accent: var(--palette-blue-deep);
+  --accent-2: var(--palette-blue-soft);
+  --accent-soft: rgba(99, 143, 168, 0.10);
+  --warm: var(--palette-sand);
+  --warm-soft: rgba(242, 217, 187, 0.34);
+  --danger: var(--palette-alert);
+  --danger-soft: rgba(255, 87, 87, 0.09);
+  --danger-text: #7a1f2b;
+  --teach: var(--palette-blue-deep);
+  --teach-bg: rgba(242, 217, 187, 0.34);
+  --page-bg: #c8cdd5;
+}
 body.dark {
   --bg: #0f1419;
   --fg: #e8edf3;
@@ -18778,7 +18803,10 @@ body {
   min-height: 100vh;
   -webkit-print-color-adjust: exact;
   print-color-adjust: exact;
-  transition: background .2s, color .2s;
+  /* Avoid animated repainting of the very tall preview canvas. Chromium can
+     leave off-screen iframe tiles composited against the page gutter when a
+     theme transition is interrupted by scrolling. Theme changes are instant. */
+  transition: none;
 }
 .page sup {
   font-size: .72em;
@@ -18794,7 +18822,13 @@ body {
   padding: 30px 36px 36px;
   border-radius: 2px;
 }
+body.theme-light .page {
+  /* Opaque paper prevents translucent teaching surfaces from ever compositing
+     against the gray iframe gutter after a dark -> light toggle. */
+  background-color: #ffffff;
+}
 body.dark .page {
+  background-color: #0f1419;
   box-shadow: 0 2px 24px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.05);
 }
 strong, b { font-weight: 700; color: var(--fg); }
@@ -19522,8 +19556,8 @@ body.dark .problem-index-head { background: rgba(99,143,168,.13); }
    blue and sand surfaces separate adjacent problems, leaving vertical bars
    available for the nested teaching, diagnostic, and warning callouts. */
 .prob {
-  --problem-bg: rgba(99, 143, 168, 0.055);
-  --problem-head-bg: rgba(99, 143, 168, 0.115);
+  --problem-bg: #f6f9fa;
+  --problem-head-bg: #edf2f5;
   --problem-border: rgba(55, 108, 139, 0.22);
   border: 1px solid var(--problem-border);
   border-radius: 7px;
@@ -19534,13 +19568,13 @@ body.dark .problem-index-head { background: rgba(99,143,168,.13); }
   box-shadow: 0 1px 3px rgba(15, 23, 42, .035);
 }
 .prob.prob-tone-blue {
-  --problem-bg: rgba(99, 143, 168, 0.055);
-  --problem-head-bg: rgba(99, 143, 168, 0.115);
+  --problem-bg: #f6f9fa;
+  --problem-head-bg: #edf2f5;
   --problem-border: rgba(55, 108, 139, 0.22);
 }
 .prob.prob-tone-sand {
-  --problem-bg: rgba(242, 217, 187, 0.20);
-  --problem-head-bg: rgba(242, 217, 187, 0.38);
+  --problem-bg: #fcf7f1;
+  --problem-head-bg: #faf1e5;
   --problem-border: rgba(55, 108, 139, 0.17);
 }
 .prob-head {
@@ -20988,14 +21022,34 @@ body.dark .figures-box {
 (function(){
   var STORAGE_KEY = 'inroom-${sessionId}-theme';
   var sw = document.getElementById('themeSwitch');
+  var page = document.querySelector('.page');
+
+  function applyDocumentTheme(isDark) {
+    document.body.classList.toggle('dark', !!isDark);
+    document.body.classList.toggle('theme-light', !isDark);
+    document.documentElement.style.colorScheme = isDark ? 'dark' : 'light';
+
+    /* Give the long paper canvas an explicit opaque color on every theme
+       change and force one synchronous style/layout flush. This prevents the
+       off-screen gray paint artifacts Chromium can otherwise expose when the
+       user switches back to light mode and immediately scrolls. */
+    if (page) {
+      page.style.backgroundColor = isDark ? '#0f1419' : '#ffffff';
+      void page.offsetHeight;
+    }
+  }
+
+  var isDark = false;
+  try {
+    isDark = localStorage.getItem(STORAGE_KEY) === 'dark';
+  } catch(e) {}
+
+  applyDocumentTheme(isDark);
   if (sw) {
-    try {
-      var saved = localStorage.getItem(STORAGE_KEY);
-      if (saved === 'dark') { document.body.classList.add('dark'); sw.checked = true; }
-    } catch(e) {}
+    sw.checked = isDark;
     sw.addEventListener('change', function(){
-      if (this.checked) { document.body.classList.add('dark'); try { localStorage.setItem(STORAGE_KEY, 'dark'); } catch(e) {} }
-      else { document.body.classList.remove('dark'); try { localStorage.setItem(STORAGE_KEY, 'light'); } catch(e) {} }
+      applyDocumentTheme(this.checked);
+      try { localStorage.setItem(STORAGE_KEY, this.checked ? 'dark' : 'light'); } catch(e) {}
     });
   }
 })();
@@ -21097,7 +21151,7 @@ function printDoc(){
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <style>${cssBlock}</style>
 </head>
-<body>
+<body class="theme-light">
 
 <div class="doc-toolbar">
   <button class="tb-btn" onclick="printDoc()"><i class="fa-solid fa-print"></i> Print / Searchable PDF</button>
