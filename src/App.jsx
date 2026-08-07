@@ -154,6 +154,175 @@ const waitForPrintableAssets = async (printWindow) => {
   });
 };
 
+// ===== Email-friendly PDF figure optimization =====
+// The document body is already text-native HTML, so PDF bloat comes primarily
+// from high-resolution base64 figures. Before printing, downsample ONLY those
+// images to a print-appropriate resolution. Clinical narrative, tables, labels,
+// and all other document text remain true searchable/selectable PDF text.
+const PDF_FIGURE_MAX_DIMENSION = 1400;
+const PDF_FIGURE_JPEG_QUALITY = 0.86;
+const PDF_FIGURE_MIN_OPTIMIZE_BYTES = 180_000;
+
+const approximateDataUrlBytes = (value) => {
+  const source = String(value || "");
+  const commaIndex = source.indexOf(",");
+  if (commaIndex < 0 || !/^data:/i.test(source)) return 0;
+  const payload = source.slice(commaIndex + 1);
+  return /;base64,/i.test(source)
+    ? Math.floor(payload.length * 0.75)
+    : payload.length;
+};
+
+const optimizeFigureImageForPdf = async (image) => {
+  if (!image || image.dataset?.pdfOptimized === "true") {
+    return { optimized: false, beforeBytes: 0, afterBytes: 0 };
+  }
+
+  const source = String(image.currentSrc || image.src || "");
+  // Data URLs are the main source of oversized PDFs and are safe to draw to a
+  // canvas. Skip remote images so CORS never interferes with PDF generation.
+  if (!/^data:image\//i.test(source)) {
+    return { optimized: false, beforeBytes: 0, afterBytes: 0 };
+  }
+
+  try {
+    if (!image.complete && typeof image.decode === "function") {
+      await image.decode().catch(() => {});
+    }
+
+    const naturalWidth = Number(image.naturalWidth || 0);
+    const naturalHeight = Number(image.naturalHeight || 0);
+    if (!naturalWidth || !naturalHeight) {
+      return { optimized: false, beforeBytes: 0, afterBytes: 0 };
+    }
+
+    const beforeBytes = approximateDataUrlBytes(source);
+    const maxDimension = Math.max(naturalWidth, naturalHeight);
+    const needsResize = maxDimension > PDF_FIGURE_MAX_DIMENSION;
+    const largeEnoughToCompress = beforeBytes >= PDF_FIGURE_MIN_OPTIMIZE_BYTES;
+
+    if (!needsResize && !largeEnoughToCompress) {
+      image.dataset.pdfOptimized = "true";
+      return { optimized: false, beforeBytes, afterBytes: beforeBytes };
+    }
+
+    const scale = needsResize
+      ? PDF_FIGURE_MAX_DIMENSION / maxDimension
+      : 1;
+    const width = Math.max(1, Math.round(naturalWidth * scale));
+    const height = Math.max(1, Math.round(naturalHeight * scale));
+    const canvas = image.ownerDocument.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) {
+      return { optimized: false, beforeBytes, afterBytes: beforeBytes };
+    }
+
+    context.imageSmoothingEnabled = true;
+    if ("imageSmoothingQuality" in context) context.imageSmoothingQuality = "high";
+    context.fillStyle = "#ffffff";
+    context.fillRect(0, 0, width, height);
+    context.drawImage(image, 0, 0, width, height);
+
+    const optimizedSource = canvas.toDataURL("image/jpeg", PDF_FIGURE_JPEG_QUALITY);
+    const afterBytes = approximateDataUrlBytes(optimizedSource);
+
+    // Do not replace an image when recompression would make it larger. If it
+    // was resized, keep the resized version because it prevents the PDF engine
+    // from embedding unnecessary source pixels.
+    if (!needsResize && beforeBytes && afterBytes >= beforeBytes * 0.96) {
+      image.dataset.pdfOptimized = "true";
+      return { optimized: false, beforeBytes, afterBytes: beforeBytes };
+    }
+
+    image.src = optimizedSource;
+    image.dataset.pdfOptimized = "true";
+    return { optimized: true, beforeBytes, afterBytes };
+  } catch (error) {
+    console.warn("[pdf-export] Figure optimization skipped:", error);
+    return { optimized: false, beforeBytes: 0, afterBytes: 0 };
+  }
+};
+
+const optimizeFiguresForPdf = async (printWindow) => {
+  const printDocument = printWindow?.document;
+  if (!printDocument) return { optimizedCount: 0, beforeBytes: 0, afterBytes: 0 };
+
+  const figures = Array.from(printDocument.querySelectorAll(".figures-box img"));
+  if (figures.length === 0) {
+    return { optimizedCount: 0, beforeBytes: 0, afterBytes: 0 };
+  }
+
+  const results = await Promise.all(figures.map(optimizeFigureImageForPdf));
+  const summary = results.reduce(
+    (acc, item) => {
+      if (item.optimized) acc.optimizedCount += 1;
+      acc.beforeBytes += Number(item.beforeBytes || 0);
+      acc.afterBytes += Number(item.afterBytes || 0);
+      return acc;
+    },
+    { optimizedCount: 0, beforeBytes: 0, afterBytes: 0 }
+  );
+
+  if (summary.optimizedCount > 0) {
+    const savedMb = Math.max(0, summary.beforeBytes - summary.afterBytes) / 1024 / 1024;
+    console.info(
+      `[pdf-export] Optimized ${summary.optimizedCount} figure${summary.optimizedCount === 1 ? "" : "s"}; ` +
+      `reduced embedded image payload by approximately ${savedMb.toFixed(1)} MB before PDF generation.`
+    );
+  }
+
+  return summary;
+};
+
+// Reliable file save helper for the interactive HTML export. Chromium/Edge use
+// the native Save dialog when available; other browsers fall back to a normal
+// Blob download. This also avoids silently doing nothing in restrictive hosts.
+const saveBlobToDisk = async ({ blob, filename, mimeType, extension, description }) => {
+  if (!blob) throw new Error("No file content was generated.");
+
+  if (typeof window.showSaveFilePicker === "function" && window.isSecureContext) {
+    try {
+      const handle = await window.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{
+          description: description || "Document",
+          accept: { [mimeType || blob.type || "application/octet-stream"]: [extension || ".bin"] },
+        }],
+      });
+      const writable = await handle.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return { saved: true, method: "file-picker" };
+    } catch (error) {
+      if (error?.name === "AbortError") return { saved: false, cancelled: true, method: "file-picker" };
+      console.warn("Native save dialog unavailable; falling back to browser download:", error);
+    }
+  }
+
+  const url = URL.createObjectURL(blob);
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    anchor.rel = "noopener";
+    anchor.style.position = "fixed";
+    anchor.style.left = "-9999px";
+    anchor.style.top = "-9999px";
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    // Large HTML files may take a moment for the browser download manager to
+    // claim the Blob, so keep the URL alive substantially longer than 1 sec.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return { saved: true, method: "download" };
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+};
+
 const downloadPrintReadyHtml = ({ html, filename }) => {
   const blob = new Blob([html], { type: "text/html;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -186,7 +355,7 @@ const openTextNativePrintDialog = async ({
       filename: fallbackFilename || "searchable-pdf-print-view.html",
     });
     window.alert(
-      "The browser blocked the print window. A print-ready HTML file was downloaded instead. Open it, then choose Print > Save as PDF. The document text will remain selectable and searchable."
+      "The browser blocked the print window. A print-ready HTML file was downloaded instead. Open it and use its Print / Searchable PDF button, then choose Save as PDF. The document text will remain selectable and searchable, and figures will be optimized before printing."
     );
     return false;
   }
@@ -199,6 +368,10 @@ const openTextNativePrintDialog = async ({
 
     const runPrint = async () => {
       try {
+        await waitForPrintableAssets(printWindow);
+        await optimizeFiguresForPdf(printWindow);
+        // Re-wait after swapping figure sources so printing cannot race the
+        // newly optimized images.
         await waitForPrintableAssets(printWindow);
         printWindow.addEventListener(
           "afterprint",
@@ -21102,17 +21275,83 @@ function resetShelfQuestion(button) {
   button.classList.add('hidden');
 }
 
+var pdfFigureOptimizationPromise = null;
+function optimizeFiguresForPrint(){
+  if (pdfFigureOptimizationPromise) return pdfFigureOptimizationPromise;
+
+  var images = Array.prototype.slice.call(document.querySelectorAll('.figures-box img'));
+  pdfFigureOptimizationPromise = Promise.all(images.map(function(image){
+    return new Promise(function(resolve){
+      try {
+        var src = String(image.currentSrc || image.src || '');
+        if (!/^data:image\//i.test(src)) { resolve(); return; }
+
+        var comma = src.indexOf(',');
+        var payload = comma >= 0 ? src.slice(comma + 1) : '';
+        var beforeBytes = /;base64,/i.test(src) ? Math.floor(payload.length * 0.75) : payload.length;
+
+        var process = function(){
+          try {
+            var naturalWidth = Number(image.naturalWidth || 0);
+            var naturalHeight = Number(image.naturalHeight || 0);
+            if (!naturalWidth || !naturalHeight) { resolve(); return; }
+
+            var maxDimension = Math.max(naturalWidth, naturalHeight);
+            var needsResize = maxDimension > 1400;
+            if (!needsResize && beforeBytes < 180000) { resolve(); return; }
+
+            var scale = needsResize ? 1400 / maxDimension : 1;
+            var width = Math.max(1, Math.round(naturalWidth * scale));
+            var height = Math.max(1, Math.round(naturalHeight * scale));
+            var canvas = document.createElement('canvas');
+            canvas.width = width;
+            canvas.height = height;
+            var context = canvas.getContext('2d', { alpha: false });
+            if (!context) { resolve(); return; }
+            context.imageSmoothingEnabled = true;
+            if ('imageSmoothingQuality' in context) context.imageSmoothingQuality = 'high';
+            context.fillStyle = '#ffffff';
+            context.fillRect(0, 0, width, height);
+            context.drawImage(image, 0, 0, width, height);
+            var optimized = canvas.toDataURL('image/jpeg', 0.86);
+            var optimizedPayload = optimized.slice(optimized.indexOf(',') + 1);
+            var afterBytes = Math.floor(optimizedPayload.length * 0.75);
+
+            if (needsResize || !beforeBytes || afterBytes < beforeBytes * 0.96) {
+              image.src = optimized;
+            }
+            resolve();
+          } catch(e) { resolve(); }
+        };
+
+        if (image.complete) {
+          process();
+        } else {
+          image.addEventListener('load', process, { once: true });
+          image.addEventListener('error', resolve, { once: true });
+          setTimeout(resolve, 5000);
+        }
+      } catch(e) { resolve(); }
+    });
+  }));
+  return pdfFigureOptimizationPromise;
+}
+
 function printDoc(){
-  var run = function(){
-    try { window.focus(); } catch(e) {}
-    window.print();
+  var waitForFonts = function(){
+    if (document.fonts && document.fonts.ready) return document.fonts.ready.catch(function(){});
+    return Promise.resolve();
   };
 
-  if (document.fonts && document.fonts.ready) {
-    document.fonts.ready.then(function(){ setTimeout(run, 50); }).catch(run);
-  } else {
-    setTimeout(run, 50);
-  }
+  Promise.all([waitForFonts(), optimizeFiguresForPrint()]).then(function(){
+    setTimeout(function(){
+      try { window.focus(); } catch(e) {}
+      window.print();
+    }, 75);
+  }).catch(function(){
+    try { window.focus(); } catch(e) {}
+    window.print();
+  });
 }
 `;
 
@@ -21200,6 +21439,7 @@ ${practiceHtml}
 function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
   const iframeRef = React.useRef(null);
   const [srcDoc, setSrcDoc] = React.useState("");
+  const [htmlExportState, setHtmlExportState] = React.useState("idle");
 
   // Build the HTML whenever the underlying doc data changes
     React.useEffect(() => {
@@ -21235,40 +21475,53 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
   // Export the in-room doc as a standalone interactive HTML file. Uses the
   // shared buildInRoomHtml() template so the exported file is guaranteed to
   // match what the attending sees in the preview.
-    const exportInRoomAsHtml = () => {
-    let html;
+  const exportInRoomAsHtml = async (event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    if (htmlExportState === "saving") return;
+
+    setHtmlExportState("saving");
 
     try {
-      html = buildInRoomHtml(doc, session);
+      // Reuse the already-rendered preview HTML whenever possible. Rebuilding a
+      // document containing many base64 figures can take long enough that some
+      // browsers lose the original user gesture and silently block the save.
+      const html = srcDoc || buildInRoomHtml(doc, session);
+      if (!html?.trim()) throw new Error("The interactive document is empty.");
+
+      const student = doc.student || "Student";
+      const sessionDate = session?.sessionDate || new Date().toISOString().split("T")[0];
+      const titleSlug = (doc.sessionTitle || "")
+        .replace(/·/g, "-")
+        .replace(/[^a-z0-9\s-]/gi, "")
+        .trim()
+        .replace(/\s+/g, "-")
+        .slice(0, 80);
+      const filename = titleSlug
+        ? `previsit-${titleSlug}.html`
+        : `previsit-${student.replace(/[^a-z0-9]/gi, "_")}-${sessionDate}.html`;
+
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const result = await saveBlobToDisk({
+        blob,
+        filename,
+        mimeType: "text/html",
+        extension: ".html",
+        description: "Interactive clinical teaching HTML",
+      });
+
+      setHtmlExportState(result.cancelled ? "idle" : "saved");
+      if (!result.cancelled) {
+        setTimeout(() => setHtmlExportState("idle"), 2500);
+      }
     } catch (error) {
       console.error("Failed to export in-room document:", error);
+      setHtmlExportState("error");
       window.alert(
-        `The document could not be exported: ${error?.message || error}`
+        `The interactive HTML could not be saved: ${error?.message || error}`
       );
-      return;
+      setTimeout(() => setHtmlExportState("idle"), 3500);
     }
-
-    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-
-    const student = doc.student || "Student";
-    const sessionDate = session?.sessionDate || new Date().toISOString().split("T")[0];
-    const titleSlug = (doc.sessionTitle || "")
-      .replace(/·/g, "-")
-      .replace(/[^a-z0-9\s-]/gi, "")
-      .trim()
-      .replace(/\s+/g, "-")
-      .slice(0, 80);
-    a.download = titleSlug
-      ? `previsit-${titleSlug}.html`
-      : `previsit-${student.replace(/[^a-z0-9]/gi, "_")}-${sessionDate}.html`;
-
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   // Print from a fresh top-level HTML document rather than the sandboxed
@@ -21347,15 +21600,22 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
       {/* Action bar */}
       <div className="in-room-action-bar no-print flex gap-2 mb-4 items-center flex-wrap">
         <button
+          type="button"
           onClick={exportInRoomAsHtml}
-          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
+          disabled={htmlExportState === "saving"}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-60 disabled:cursor-wait text-sm font-medium"
           title="Download a standalone interactive HTML file to give to the student"
         >
-          <FileText className="w-4 h-4" />
-          <span className="hidden sm:inline">Export as Interactive HTML</span>
-          <span className="sm:hidden">Export HTML</span>
+          {htmlExportState === "saving" ? <Loader2 className="w-4 h-4 animate-spin" /> : <FileText className="w-4 h-4" />}
+          <span className="hidden sm:inline">
+            {htmlExportState === "saving" ? "Preparing HTML…" : htmlExportState === "saved" ? "HTML Saved" : "Export as Interactive HTML"}
+          </span>
+          <span className="sm:hidden">
+            {htmlExportState === "saving" ? "Preparing…" : htmlExportState === "saved" ? "Saved" : "Export HTML"}
+          </span>
         </button>
         <button
+          type="button"
           onClick={printDoc}
           className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium"
           title="Print or save a text-searchable PDF"
@@ -21365,6 +21625,7 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
           <span className="sm:hidden">Searchable PDF</span>
         </button>
         <button
+          type="button"
           onClick={onEdit}
           className="px-3 sm:px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm"
         >
@@ -21372,7 +21633,7 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
           <span className="sm:hidden">← Preview</span>
         </button>
         <div className="text-xs text-slate-500 italic ml-2 hidden lg:block">
-          PDF body text remains selectable and searchable. Text inside screenshots or figures remains image content.
+          PDF text remains selectable/searchable; figures are automatically optimized for email-friendly file size.
         </div>
       </div>
 
