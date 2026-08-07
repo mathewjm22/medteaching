@@ -11769,6 +11769,15 @@ const buildInRoomHtml = (doc, session) => {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
+  // Clinical values frequently arrive as plain-text scientific notation such
+  // as "WBC 7.8 x10^9/L". Keep the underlying text selectable/searchable but
+  // render exponents typographically instead of showing literal caret marks.
+  const formatClinicalUnitsHtml = (value) =>
+    esc(value)
+      .replace(/(?:x|×)\s*10\^(-?\d+)/gi, "&times;10<sup>$1</sup>")
+      .replace(/\b10\^(-?\d+)/g, "10<sup>$1</sup>")
+      .replace(/\b([A-Za-zµμ]+)\^(-?\d+)/g, "$1<sup>$2</sup>");
+
 
   const focusAreaDisplay = {
     history: {
@@ -12363,7 +12372,11 @@ const buildInRoomHtml = (doc, session) => {
 
   const assessmentPlanText = firstNonEmptyText(
     prenoteSections.assessmentPlanSummary,
-    fallbackSection("ASSESSMENT & PLAN SUMMARY")
+    fallbackSection(
+      "ASSESSMENT & PLAN SUMMARY",
+      "ASSESSMENT & PLAN CONSIDERATIONS",
+      "ASSESSMENT AND PLAN CONSIDERATIONS"
+    )
   );
 
   const rawPreventiveText = firstNonEmptyText(
@@ -12386,6 +12399,213 @@ const buildInRoomHtml = (doc, session) => {
       /(?:^|\n)\s*(?:#{1,6}\s*)?FOLLOW[- ]?UP\b/im,
     ]
   ).trim();
+
+  // Several prenote templates include a compact assessment/coordination area
+  // with headings such as CHRONIC DISEASE MANAGEMENT NEEDS, MEDICATION SAFETY,
+  // ACUTE CARE UTILIZATION, IMMUNIZATIONS, and SCREENINGS DUE/COMPLETED. Those
+  // are useful facts, but they read poorly as five separate full-width boxes.
+  // Pull the content into structured destinations instead:
+  //   - chronic-disease rows -> their matching problem cards
+  //   - medication safety -> Current Medications
+  //   - acute care -> beside Updates / Recent Visits
+  //   - immunizations + screenings -> one compact two-column preventive area
+  // PRIMARY CARE GAPS is deliberately not rendered as a standalone box.
+  const summarySubsectionSources = [
+    assessmentPlanText,
+    fallbackSection(
+      "ASSESSMENT & PLAN CONSIDERATIONS",
+      "ASSESSMENT AND PLAN CONSIDERATIONS"
+    ),
+    fallbackSection("SUMMARY & CLINICAL IMPRESSION"),
+    fallbackSection("SUMMARY KEY ISSUES"),
+  ].filter((value) => typeof value === "string" && value.trim());
+
+  const summaryStopHeadingSources = [
+    "PRIMARY\\s+CARE\\s+GAPS",
+    "CHRONIC\\s+DISEASE\\s+MANAGEMENT\\s+NEEDS",
+    "MEDICATION\\s+SAFETY",
+    "ACUTE\\s+CARE\\s+UTILIZATION",
+    "IMMUNIZATIONS?",
+    "SCREENINGS?\\s+DUE",
+    "SCREENINGS?\\s+COMPLETED",
+    "PREVENTIVE\\s+(?:MEDICINE|CARE)",
+    "SPECIALTY\\s+CARE\\s+COORDINATION",
+    "SPECIALTY\\s+CARE(?:\\s*(?:&|AND|/)\\s*CONSULTS?)?",
+    "FOLLOW[- ]?UP",
+  ];
+
+  const extractSummarySubsection = (headingSource) => {
+    for (const rawSource of summarySubsectionSources) {
+      const source = String(rawSource || "")
+        .replace(/\r\n?/g, "\n")
+        .replace(/\u00a0/g, " ")
+        .replace(/[ \t]*(?:[-=_]{8,}|[─━═—–]{8,})[ \t]*/g, "\n");
+
+      const headingRegex = new RegExp(
+        `(?:^|\\n)[ \t]*(?:#{1,6}[ \t]*)?${headingSource}[ \t]*:?[ \t]*(?=\\n|$)`,
+        "i"
+      );
+      const match = headingRegex.exec(source);
+      if (!match) continue;
+
+      const bodyStart = match.index + match[0].length;
+      let bodyEnd = source.length;
+
+      summaryStopHeadingSources.forEach((stopSource) => {
+        if (stopSource === headingSource) return;
+        const stopRegex = new RegExp(
+          `(?:^|\\n)[ \t]*(?:#{1,6}[ \t]*)?${stopSource}[ \t]*:?[ \t]*(?=\\n|$)`,
+          "i"
+        );
+        const stopMatch = stopRegex.exec(source.slice(bodyStart));
+        if (stopMatch) {
+          bodyEnd = Math.min(bodyEnd, bodyStart + stopMatch.index);
+        }
+      });
+
+      const body = source
+        .slice(bodyStart, bodyEnd)
+        .replace(/^\s*[-:–—]*\s*/, "")
+        .trim();
+      if (body) return body;
+    }
+    return "";
+  };
+
+  const parseSummaryRows = (value) => {
+    if (!value) return [];
+    const rows = [];
+    let current = null;
+
+    const startRow = (label, detail) => {
+      const cleanedLabel = String(label || "").replace(/\s+/g, " ").trim();
+      const cleanedDetail = String(detail || "").replace(/\s+/g, " ").trim();
+      if (!cleanedLabel && !cleanedDetail) return;
+      current = { label: cleanedLabel, text: cleanedDetail };
+      rows.push(current);
+    };
+
+    String(value)
+      .replace(/\r\n?/g, "\n")
+      .replace(/\t/g, "    ")
+      .split("\n")
+      .forEach((rawLine) => {
+        let line = String(rawLine || "").trim();
+        if (!line || /^(?:[-=_]{3,}|[─━═—–]{3,})$/.test(line)) return;
+        line = line.replace(/^[*•●○▪▫►◆·-]+\s*/, "").trim();
+        if (!line) return;
+
+        let match = line.match(/^([^:]{1,72}):\s*(.+)$/);
+        if (!match) {
+          match = line.match(/^([A-Za-z0-9][^:]{0,63}?)\s{2,}(.+)$/);
+        }
+        if (!match) {
+          match = line.match(/^([^–—]{2,64})\s+[–—]\s+(.+)$/);
+        }
+
+        if (match) {
+          startRow(match[1], match[2]);
+          return;
+        }
+
+        if (current) {
+          current.text = `${current.text} ${line}`.replace(/\s+/g, " ").trim();
+        } else {
+          startRow("", line);
+        }
+      });
+
+    return rows;
+  };
+
+  const chronicManagementText = extractSummarySubsection(
+    "CHRONIC\\s+DISEASE\\s+MANAGEMENT\\s+NEEDS"
+  );
+  const medicationSafetyText = extractSummarySubsection(
+    "MEDICATION\\s+SAFETY"
+  );
+  const acuteCareSummaryText = extractSummarySubsection(
+    "ACUTE\\s+CARE\\s+UTILIZATION"
+  );
+  const specialtyCareCoordinationText = extractSummarySubsection(
+    "SPECIALTY\\s+CARE\\s+COORDINATION"
+  );
+  const preventiveSummaryImmunizationsText = extractSummarySubsection(
+    "IMMUNIZATIONS?"
+  );
+  const preventiveSummaryScreeningsDueText = extractSummarySubsection(
+    "SCREENINGS?\\s+DUE"
+  );
+  const preventiveSummaryScreeningsCompletedText = extractSummarySubsection(
+    "SCREENINGS?\\s+COMPLETED"
+  );
+
+  const chronicManagementRows = parseSummaryRows(chronicManagementText);
+  const problemAliasMap = {
+    ptsd: "post traumatic stress disorder",
+    osa: "obstructive sleep apnea",
+    aud: "alcohol use disorder",
+    cud: "cannabis use disorder",
+    mdd: "major depressive disorder",
+    depression: "major depressive disorder",
+    htn: "hypertension",
+    hld: "hyperlipidemia",
+    t2dm: "type 2 diabetes mellitus",
+    dm2: "type 2 diabetes mellitus",
+    ckd: "chronic kidney disease",
+    cad: "coronary artery disease",
+    chf: "heart failure",
+    hf: "heart failure",
+    copd: "chronic obstructive pulmonary disease",
+    gerd: "gastroesophageal reflux disease",
+  };
+
+  const normalizeManagementProblemKey = (value) => {
+    const key = normalizeProblemLookupKey(value);
+    return problemAliasMap[key] || key;
+  };
+
+  const findChronicManagementNeed = (problemName, chartBlock = null) => {
+    const targets = [
+      problemName,
+      chartBlock?.name,
+      chartBlock?.rawHeader,
+    ]
+      .map(normalizeManagementProblemKey)
+      .filter(Boolean);
+    if (targets.length === 0 || chronicManagementRows.length === 0) return null;
+
+    let best = null;
+    let bestScore = 0;
+
+    chronicManagementRows.forEach((row) => {
+      const candidate = normalizeManagementProblemKey(row.label || row.text);
+      if (!candidate) return;
+      const candidateTokens = new Set(candidate.split(" ").filter((token) => token.length > 2));
+
+      targets.forEach((target) => {
+        let score = 0;
+        if (candidate === target) score = 100;
+        else if (candidate.includes(target) || target.includes(candidate)) score = 86;
+        else {
+          const targetTokens = new Set(target.split(" ").filter((token) => token.length > 2));
+          const smaller = candidateTokens.size <= targetTokens.size ? candidateTokens : targetTokens;
+          const larger = smaller === candidateTokens ? targetTokens : candidateTokens;
+          let shared = 0;
+          smaller.forEach((token) => {
+            if (larger.has(token)) shared += 1;
+          });
+          score = smaller.size ? (shared / smaller.size) * 72 : 0;
+        }
+        if (score > bestScore) {
+          bestScore = score;
+          best = row;
+        }
+      });
+    });
+
+    return bestScore >= 50 ? best : null;
+  };
 
   const updatesTextWithEmbeddedLabs = cleanStandaloneNarrative(
     trimNarrativeAtHeading(
@@ -13517,7 +13737,6 @@ const buildInRoomHtml = (doc, session) => {
   const glanceRows = [
     ["Chief concern", doc.chiefConcern],
     ["Primary working diagnosis", doc.workingDx],
-    ["Complexity", doc.complexity === "complex" ? "Complex presentation" : "Common presentation"],
   ].filter(([, value]) => String(value || "").trim());
 
   if (s.caseAtGlance?.enabled !== false && (glanceRows.length > 0 || selectedProblemLabels.length > 0)) {
@@ -13561,7 +13780,7 @@ const buildInRoomHtml = (doc, session) => {
     "(?:\\d{1,2}\\/\\d{1,2}\\/(?:\\d{2}|\\d{4})|\\d{1,2}\\/\\d{4}|(?:19|20)\\d{2}-\\d{1,2}-\\d{1,2})";
 
   const renderNarrativeText = (value) => {
-    const escaped = esc(value);
+    const escaped = formatClinicalUnitsHtml(value);
 
     return escaped.replace(
       new RegExp(`\\b(${narrativeDateSource})\\b`, "g"),
@@ -13786,10 +14005,7 @@ const buildInRoomHtml = (doc, session) => {
     ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-clock-rotate-left"></i> Updates &amp; Recent Visits</div><div class="narrative-body">${renderNarrativeBody(updatesText, "updates")}</div></div>`
     : "";
 
-  const topNarrativeHtml =
-    aboutPatientHtml || updatesRecentVisitsHtml
-      ? `<div class="narrative-stack">${aboutPatientHtml}${updatesRecentVisitsHtml}</div>`
-      : "";
+  let topNarrativeHtml = "";
 
   // ──────────────────────────────────────────────────────────────
   // PMH LIST + CLINICAL REFERENCE (two-column)
@@ -14086,6 +14302,45 @@ const buildInRoomHtml = (doc, session) => {
       })
       .join("");
   };
+
+  // Compact summary rows are used for information that belongs inside an
+  // existing clinical section rather than in another full-width callout.
+  const renderCompactSummaryRows = (value) => {
+    const rows = parseSummaryRows(value);
+    if (rows.length === 0) return "";
+
+    return `<div class="summary-row-list">${rows.map((row) => {
+      const label = String(row.label || "").trim();
+      const detail = String(row.text || "").trim();
+      if (!label) {
+        return `<div class="summary-row summary-row-prose"><div class="summary-row-value">${formatClinicalUnitsHtml(detail)}</div></div>`;
+      }
+      return `<div class="summary-row"><div class="summary-row-label">${esc(label)}</div><div class="summary-row-value">${formatClinicalUnitsHtml(detail)}</div></div>`;
+    }).join("")}</div>`;
+  };
+
+  // Put acute-care utilization beside the recent-visit timeline near the top.
+  // Prefer the concise assessment summary when present; the dedicated
+  // hospital/ER section remains a deterministic fallback.
+  const acuteCareBodyHtml = acuteCareSummaryText
+    ? renderCompactSummaryRows(acuteCareSummaryText)
+    : hospitalizationsText
+      ? (
+          renderHierarchicalEncounterList(hospitalizationsText) ||
+          renderCompactSummaryRows(hospitalizationsText)
+        )
+      : "";
+  const acuteCareHtml = acuteCareBodyHtml
+    ? `<div class="narrative-box"><div class="narrative-head"><i class="fa-solid fa-hospital-user"></i> Acute Care Utilization</div><div class="narrative-body">${acuteCareBodyHtml}</div></div>`
+    : "";
+  const activityPairHtml = updatesRecentVisitsHtml || acuteCareHtml
+    ? `<div class="top-activity-grid${updatesRecentVisitsHtml && acuteCareHtml ? "" : " top-activity-grid-single"}">${updatesRecentVisitsHtml}${acuteCareHtml}</div>`
+    : "";
+
+  topNarrativeHtml = aboutPatientHtml || activityPairHtml
+    ? `<div class="narrative-stack">${aboutPatientHtml}${activityPairHtml}</div>`
+    : "";
+
   const isFormattingArtifactLine = (value) =>
     /^(?:(?:[-=_]{2,}|[─━═—–]{2,})(?:\s*#{1,6})?|#{1,6})$/.test(
       String(value || "").trim()
@@ -14233,23 +14488,28 @@ const buildInRoomHtml = (doc, session) => {
 
   refGridHtml += `</div></div></div>`;
 
-  // NEW BOX: Specialty Care & Consults + Hospitalizations / ER Visits
-  // These get their own full-width box below the ref grid because they're
-  // often lengthy and warrant separate visual space.
-  if (specialtyCareText || hospitalizationsText || assessmentPlanText) {
-    refGridHtml += `<div class="specialty-hosp-grid" style="display:grid;grid-template-columns:${(specialtyCareText && hospitalizationsText) ? "1fr 1fr" : "1fr"};gap:10px;margin-bottom:10px;">`;
-
-    if (specialtyCareText) {
-      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-stethoscope"></i> Specialty Care &amp; Consults</div><div class="ref-body">${renderHierarchicalEncounterList(specialtyCareText)}</div></div>`;
+  // Specialty coordination belongs with the patient's reference context.
+  // Acute-care utilization is intentionally rendered near Recent Visits above,
+  // and PRIMARY CARE GAPS is not rendered as a standalone student-facing box.
+  const specialtyCoordinationSource = joinUniqueSections([
+    specialtyCareCoordinationText,
+    specialtyCareText,
+  ]);
+  if (specialtyCoordinationSource) {
+    const coordinationSummaryHtml = renderCompactSummaryRows(
+      specialtyCareCoordinationText
+    );
+    const specialtyEncounterHtml = specialtyCareText
+      ? renderHierarchicalEncounterList(specialtyCareText)
+      : "";
+    const specialtyBodyHtml = [
+      coordinationSummaryHtml,
+      specialtyEncounterHtml,
+    ].filter(Boolean).join('<div class="specialty-care-separator"></div>') ||
+      renderCompactSummaryRows(specialtyCoordinationSource);
+    if (specialtyBodyHtml) {
+      refGridHtml += `<div class="ref-box specialty-care-integrated"><div class="ref-head"><i class="fa-solid fa-stethoscope"></i> Specialty Care Coordination</div><div class="ref-body">${specialtyBodyHtml}</div></div>`;
     }
-
-    if (hospitalizationsText) {
-      refGridHtml += `<div class="ref-box"><div class="ref-head"><i class="fa-solid fa-hospital"></i> Hospitalizations &amp; ER Visits</div><div class="ref-body">${renderHierarchicalEncounterList(hospitalizationsText)}</div></div>`;
-    }
-
-    refGridHtml += `</div>`;
-
-    
   }
 
 
@@ -14413,7 +14673,7 @@ const buildInRoomHtml = (doc, session) => {
 
   let medsSectionHtml = "";
   const hasAnyMedContent = medRows.length > 0 || currentMedNames.length > 0 || currentMedsText.trim() ||
-    discontinuedMedsText.trim() || historicalMedsText.trim();
+    discontinuedMedsText.trim() || historicalMedsText.trim() || medicationSafetyText.trim();
 
   // Helper: render a medication sub-block with its own heading, styling,
   // and content-type-aware rendering (table, bullet list, or verbatim).
@@ -14551,6 +14811,17 @@ const buildInRoomHtml = (doc, session) => {
           }
         }
       }
+    }
+
+    // Medication-safety context sits directly beneath the active medication
+    // list so students see monitoring/adherence/interactions in the place
+    // where they are most clinically meaningful. Keep it visually flat rather
+    // than nesting another heavy card inside the medication section.
+    if (medicationSafetyText.trim()) {
+      const medicationSafetyBody =
+        renderCompactSummaryRows(medicationSafetyText) ||
+        `<div>${formatClinicalUnitsHtml(medicationSafetyText)}</div>`;
+      medsSectionHtml += `<div class="med-safety-inline"><div class="med-safety-title"><i class="fa-solid fa-shield-halved"></i> Medication Safety</div>${medicationSafetyBody}</div>`;
     }
 
     // ─── RECENTLY DISCONTINUED ───
@@ -14693,7 +14964,7 @@ const renderBackgroundFactValue = (value, label) => {
     .filter(Boolean);
 
   const emphasizeLabels = (part) =>
-    esc(part).replace(
+    formatClinicalUnitsHtml(part).replace(
       /\b(Status|Provider|Valid Dates?|Indication|VA Authorization|Authorization|Last visit|Scheduled)\s*:/gi,
       "<b>$1:</b>"
     );
@@ -14742,7 +15013,12 @@ const buildBackgroundProblemCard = ({
   const visibleSummary = currentState || recentControl;
 
   if (visibleSummary) {
-    html += `<div class="background-current-state"><div class="background-current-state-label">Current chart summary</div><p>${esc(visibleSummary)}</p></div>`;
+    html += `<div class="background-current-state"><div class="background-current-state-label">Current chart summary</div><p>${formatClinicalUnitsHtml(visibleSummary)}</p></div>`;
+  }
+
+  const managementNeed = findChronicManagementNeed(problemName, chartBlock);
+  if (managementNeed?.text) {
+    html += `<div class="problem-management-note"><div class="problem-management-note-label"><i class="fa-solid fa-arrows-rotate"></i> Management context</div><div class="problem-management-note-text">${formatClinicalUnitsHtml(managementNeed.text)}</div></div>`;
   }
 
   if (orientation?.clinicalOrientation) {
@@ -14847,7 +15123,7 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   // subsections (Meds table, Labs bullets, Diagnostics list, Care team).
   const narrative = buildProblemNarrativeParagraph(chartBlock);
   if (narrative && narrative.length > 15) {
-    html += `<p class="problem-chart-summary" data-source="prenote-pmh" style="margin-bottom:10px;font-size:9pt;line-height:1.55;color:var(--fg);">${esc(narrative)}</p>`;
+    html += `<p class="problem-chart-summary" data-source="prenote-pmh" style="margin-bottom:10px;font-size:9pt;line-height:1.55;color:var(--fg);">${formatClinicalUnitsHtml(narrative)}</p>`;
   } else {
     // Do not silently substitute the AI's generic diagnosis definition here.
     // This location is reserved for a source-faithful summary of the PMH block.
@@ -14858,6 +15134,11 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
         (block) => block.rawHeader
       ),
     });
+  }
+
+  const managementNeed = findChronicManagementNeed(problemName, chartBlock);
+  if (managementNeed?.text) {
+    html += `<div class="problem-management-note"><div class="problem-management-note-label"><i class="fa-solid fa-arrows-rotate"></i> Management context</div><div class="problem-management-note-text">${formatClinicalUnitsHtml(managementNeed.text)}</div></div>`;
   }
 
   // ── Problem-specific Medications (structured table) ──
@@ -14908,10 +15189,10 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
     if (labLines.length > 0) {
       html += `<div class="prob-subsec"><div class="prob-subsec-label"><i class="fa-solid fa-vial"></i> Relevant Laboratory Trends</div>`;
       if (labLines.length === 1) {
-        html += `<p>${esc(labLines[0])}</p>`;
+        html += `<p>${formatClinicalUnitsHtml(labLines[0])}</p>`;
       } else {
         html += `<ul style="margin:0;padding-left:16px;">`;
-        labLines.forEach(l => html += `<li style="margin-bottom:3px;font-size:9pt;line-height:1.45;">${esc(l)}</li>`);
+        labLines.forEach(l => html += `<li style="margin-bottom:3px;font-size:9pt;line-height:1.45;">${formatClinicalUnitsHtml(l)}</li>`);
         html += `</ul>`;
       }
       html += `</div>`;
@@ -14933,9 +15214,9 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
 
     patientResults.forEach((item) => {
       const dateLabel = item.date ? ` (${esc(item.date)})` : "";
-      html += `<li class="result-item"><div class="result-main"><span class="result-study">${esc(item.study)}${dateLabel}</span> — ${esc(item.result)}</div>`;
+      html += `<li class="result-item"><div class="result-main"><span class="result-study">${esc(item.study)}${dateLabel}</span> — ${formatClinicalUnitsHtml(item.result)}</div>`;
       if (item.explanation) {
-        html += `<div class="result-detail">${esc(item.explanation)}</div>`;
+        html += `<div class="result-detail">${formatClinicalUnitsHtml(item.explanation)}</div>`;
       }
       html += `</li>`;
     });
@@ -16384,14 +16665,6 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
     }
   }
 
-  const diagnosticValueGuideHtml = renderStudentValueGuide("diagnostic");
-  if (diagnosticValueGuideHtml) {
-    if (!diagnosticsHtml) {
-      diagnosticsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Imaging / Diagnostics</div><div class="sec-div-line"></div></div>`;
-    }
-    diagnosticsHtml += diagnosticValueGuideHtml;
-  }
-
   let labsHtml = "";
 
   // Combine AI-extracted and deterministic tables. A nonempty but unusable
@@ -17722,7 +17995,7 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
         else if (cell.isCritical) cls = "lab-hi";
         // Strip the H/L suffix from display since it's implied by color
         const display = cell.display.replace(/\s*(?:H|L|HIGH|LOW|CRITICAL)\s*$/i, "").trim();
-        row += `<td class="${cls}">${esc(display || cell.display)}${cell.isHigh ? " H" : cell.isLow ? " L" : ""}</td>`;
+        row += `<td class="${cls}">${formatClinicalUnitsHtml(display || cell.display)}${cell.isHigh ? " H" : cell.isLow ? " L" : ""}</td>`;
       }
     });
     row += `</tr>`;
@@ -17732,7 +18005,7 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   // ── Build master table + per-panel tables ──
   const hasAnyLabs = observations.length > 0;
 
-  if (hasAnyLabs || na.labTrendsSummary) {
+  if (hasAnyLabs) {
     labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
   }
 
@@ -17764,11 +18037,6 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
     // Note if we truncated dates
     if (droppedDates.length > 0) {
       labsHtml += `<div class="lab-note" style="font-style:italic;font-size:7.5pt;">Showing ${MAX_DATE_COLS} most recent dates. Older dates in chart: ${droppedDates.join(", ")}.</div>`;
-    }
-
-    // AI-generated interpretive summary
-    if (na.labTrendsSummary) {
-      labsHtml += `<div class="lab-note">${esc(na.labTrendsSummary)}</div>`;
     }
 
     // ── Per-panel breakdown tables ──
@@ -17804,9 +18072,6 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
       });
       labsHtml += `</div>`;
     }
-  } else if (na.labTrendsSummary) {
-    // No structured data but AI has a summary — still show it
-    labsHtml += `<div class="lab-note">${esc(na.labTrendsSummary)}</div>`;
   }
 
   // Fallback: when table parsing is unavailable, format the raw lab text
@@ -17814,11 +18079,7 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   // Splits on blank lines to get logical groups, then on newlines within
   // each group to get analyte lines.
   if (!hasAnyLabs && labSourceText) {
-    // A summary should not hide the source results. The heading already exists
-    // when labTrendsSummary is present, so add it only when needed.
-    if (!na.labTrendsSummary) {
-      labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
-    }
+    labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
     labsHtml += `<div class="lab-note" style="font-style:italic;margin-bottom:8px;">Structured table parsing was not available for these results. The text is shown below as reported in the source.</div>`;
 
     const groups = labSourceText.split(/\n\s*\n/).map(g => g.trim()).filter(Boolean);
@@ -17849,21 +18110,13 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
         // If the line looks like "Label: value" (typical lab), bold the label.
         const kvMatch = cleaned.match(/^([^:]{1,60}):\s*(.+)$/);
         if (kvMatch) {
-          labsHtml += `<li style="margin-bottom:3px;"><strong style="color:var(--fg);">${esc(kvMatch[1])}:</strong> ${esc(kvMatch[2])}</li>`;
+          labsHtml += `<li style="margin-bottom:3px;"><strong style="color:var(--fg);">${esc(kvMatch[1])}:</strong> ${formatClinicalUnitsHtml(kvMatch[2])}</li>`;
         } else {
-          labsHtml += `<li style="margin-bottom:3px;">${esc(cleaned)}</li>`;
+          labsHtml += `<li style="margin-bottom:3px;">${formatClinicalUnitsHtml(cleaned)}</li>`;
         }
       });
       labsHtml += `</ul>`;
     });
-  }
-
-  const labValueGuideHtml = renderStudentValueGuide("lab");
-  if (labValueGuideHtml) {
-    if (!labsHtml) {
-      labsHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Laboratory Results</div><div class="sec-div-line"></div></div>`;
-    }
-    labsHtml += labValueGuideHtml;
   }
 
   // ──────────────────────────────────────────────────────────────
@@ -17934,21 +18187,98 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   }
 
   // ──────────────────────────────────────────────────────────────
-  // PREVENTIVE CARE
+  // PREVENTIVE CARE — two compact columns: immunizations + screenings
   // ──────────────────────────────────────────────────────────────
-  const preventiveItems = (structured.preventiveItems?.length > 0)
-    ? structured.preventiveItems
-    : parsePreventive(preventiveText);
-  let preventiveHtml = "";
-  if (preventiveItems.length > 0) {
-    preventiveHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Preventive Care</div><div class="sec-div-line"></div></div>`;
-    preventiveHtml += `<ul class="prev-list">`;
-    preventiveItems.forEach(item => {
-      const statusCls = item.isDue ? "prev-due" : "prev-done";
-      preventiveHtml += `<li><span>${esc(item.name)}</span><span class="prev-st ${statusCls}">${esc(item.status)}</span></li>`;
+  // Merge the dedicated preventive section with any compact assessment
+  // subsections. The latter are routed here instead of appearing as separate
+  // stacked boxes, which keeps preventive work visible without consuming a
+  // full page of vertical space.
+  const sourcePreventiveItems = [
+    ...parsePreventive(preventiveText),
+    ...(Array.isArray(structured.preventiveItems) ? structured.preventiveItems : []),
+  ];
+
+  const toSummaryPreventiveItems = (text, group, forceDue = null) =>
+    parseSummaryRows(text).map((row) => {
+      const name = String(row.label || row.text || "").trim();
+      const status = String(row.label ? row.text : "").trim();
+      const statusProbe = `${name} ${status}`;
+      const inferredDue = /\b(?:due|overdue|ordered|pending|unclear|recommended)\b/i.test(statusProbe) &&
+        !/\b(?:not due|completed|negative|up to date|current)\b/i.test(statusProbe);
+      return {
+        name,
+        status: status || (forceDue === true ? "Due" : forceDue === false ? "Completed" : ""),
+        isDue: forceDue === null ? inferredDue : forceDue,
+        group,
+      };
     });
-    preventiveHtml += `</ul>`;
-    // HTML-only reference link — CDC adult immunization schedule
+
+  const preventiveItems = [
+    ...sourcePreventiveItems,
+    ...toSummaryPreventiveItems(preventiveSummaryImmunizationsText, "Immunizations", null),
+    ...toSummaryPreventiveItems(preventiveSummaryScreeningsDueText, "Screenings Due", true),
+    ...toSummaryPreventiveItems(preventiveSummaryScreeningsCompletedText, "Screenings Completed", false),
+  ];
+
+  const excludedPreventiveHeading = /^(?:assessment(?:\s*&|\s+and)?\s+plan(?:\s+considerations?)?|primary care gaps?|chronic disease management needs?|medication safety|acute care utilization)$/i;
+  const seenPreventiveItems = new Set();
+  const cleanPreventiveItems = preventiveItems.filter((item) => {
+    const name = String(item?.name || "").replace(/\s+/g, " ").trim();
+    const status = String(item?.status || "").replace(/\s+/g, " ").trim();
+    if (!name || excludedPreventiveHeading.test(name) || excludedPreventiveHeading.test(status)) return false;
+    const key = `${name}|${status}`.toLowerCase();
+    if (seenPreventiveItems.has(key)) return false;
+    seenPreventiveItems.add(key);
+    return true;
+  });
+
+  const immunizationNameRegex = /\b(?:influenza|flu|covid|hepatitis\s*[ab]|pneumococcal|prevnar|pneumovax|tdap|tetanus|zoster|shingrix|hpv|papillomavirus|rsv|mmr|varicella)\b/i;
+  const immunizationItems = [];
+  const screeningItems = [];
+
+  cleanPreventiveItems.forEach((item) => {
+    const group = String(item.group || "");
+    if (/immun|vaccin/i.test(group) || immunizationNameRegex.test(String(item.name || ""))) {
+      immunizationItems.push(item);
+    } else {
+      screeningItems.push(item);
+    }
+  });
+
+  const screeningDueItems = screeningItems.filter((item) =>
+    Boolean(item.isDue) || /\bdue|overdue|pending|ordered|unclear\b/i.test(`${item.group || ""} ${item.status || ""}`)
+  );
+  const screeningCompletedItems = screeningItems.filter((item) => !screeningDueItems.includes(item));
+
+  const renderPreventiveRows = (items) =>
+    `<div class="preventive-row-list">${items.map((item) => {
+      const status = String(item.status || (item.isDue ? "Due" : "Completed")).trim();
+      const statusCls = item.isDue ? "preventive-status-due" : "preventive-status-done";
+      return `<div class="preventive-row"><div class="preventive-name">${esc(item.name)}</div><div class="preventive-status ${statusCls}">${esc(status)}</div></div>`;
+    }).join("")}</div>`;
+
+  let preventiveHtml = "";
+  const hasPreventiveContent = immunizationItems.length > 0 || screeningItems.length > 0;
+  if (hasPreventiveContent) {
+    preventiveHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Preventive Care</div><div class="sec-div-line"></div></div>`;
+    preventiveHtml += `<div class="preventive-grid${immunizationItems.length > 0 && screeningItems.length > 0 ? "" : " preventive-grid-single"}>`;
+
+    if (immunizationItems.length > 0) {
+      preventiveHtml += `<section class="preventive-card"><div class="preventive-card-head"><i class="fa-solid fa-syringe"></i> Immunizations</div><div class="preventive-card-body">${renderPreventiveRows(immunizationItems)}</div></section>`;
+    }
+
+    if (screeningItems.length > 0) {
+      preventiveHtml += `<section class="preventive-card"><div class="preventive-card-head"><i class="fa-solid fa-list-check"></i> Screenings</div><div class="preventive-card-body">`;
+      if (screeningDueItems.length > 0) {
+        preventiveHtml += `<div class="preventive-subhead">Due / follow-up</div>${renderPreventiveRows(screeningDueItems)}`;
+      }
+      if (screeningCompletedItems.length > 0) {
+        preventiveHtml += `<div class="preventive-subhead preventive-subhead-completed">Completed / up to date</div>${renderPreventiveRows(screeningCompletedItems)}`;
+      }
+      preventiveHtml += `</div></section>`;
+    }
+
+    preventiveHtml += `</div>`;
     preventiveHtml += htmlOnlyLink(
       "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-age.html",
       "CDC Adult Immunization Schedule",
@@ -18036,17 +18366,42 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   const trendTeachingItems = Array.isArray(s.labTrends?.content)
     ? s.labTrends.content.filter(Boolean)
     : [];
-  if (s.labTrends?.enabled && trendTeachingItems.length > 0) {
-    trendTeachingHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Lab &amp; Vital Trends for Interpretation</div><div class="sec-div-line"></div></div>`;
-    trendTeachingHtml += `<div class="section-card"><table class="trend-teaching-table"><thead><tr><th>Parameter</th><th>Trend</th><th>Teaching point</th></tr></thead><tbody>`;
-    trendTeachingItems.forEach((item) => {
-      const parameter = String(item?.parameter || item?.name || "").trim();
-      const trend = String(item?.trend || item?.value || "").trim();
-      const teachingPoint = String(item?.teachingPoint || item?.interpretation || "").trim();
-      if (!parameter && !trend && !teachingPoint) return;
-      trendTeachingHtml += `<tr><td><b>${esc(parameter || "Trend")}</b></td><td>${esc(trend || "—")}</td><td>${esc(teachingPoint || "—")}</td></tr>`;
-    });
-    trendTeachingHtml += `</tbody></table></div>`;
+  const labGuideEntries = doc.teachingDetailOptions?.explainLabValues !== false
+    ? teachingResultGuides.filter((item) => item.resultType === "lab" && item.valueExplanation)
+    : [];
+  const showTrendTeaching = s.labTrends?.enabled && trendTeachingItems.length > 0;
+  const overallLabInterpretation = String(na.labTrendsSummary || "").trim();
+
+  if (showTrendTeaching || labGuideEntries.length > 0 || overallLabInterpretation) {
+    trendTeachingHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Clinical Trends &amp; Lab Interpretation</div><div class="sec-div-line"></div></div>`;
+    trendTeachingHtml += `<div class="lab-interpretation-card">`;
+    if (overallLabInterpretation) {
+      trendTeachingHtml += `<div class="lab-overall-interpretation"><div class="lab-overall-label">Overall pattern</div><div>${formatClinicalUnitsHtml(overallLabInterpretation)}</div></div>`;
+    }
+    trendTeachingHtml += `<div class="lab-interpretation-grid${showTrendTeaching && labGuideEntries.length > 0 ? "" : " lab-interpretation-grid-single"}>`;
+
+    if (showTrendTeaching) {
+      trendTeachingHtml += `<div class="lab-interpretation-pane"><div class="lab-interpretation-title"><i class="fa-solid fa-chart-line"></i> Key trends &amp; significance</div>`;
+      trendTeachingHtml += `<table class="trend-teaching-table"><thead><tr><th>Parameter</th><th>Chart trend</th><th>Why it matters</th></tr></thead><tbody>`;
+      trendTeachingItems.forEach((item) => {
+        const parameter = String(item?.parameter || item?.name || "").trim();
+        const trend = String(item?.trend || item?.value || "").trim();
+        const teachingPoint = String(item?.teachingPoint || item?.interpretation || "").trim();
+        if (!parameter && !trend && !teachingPoint) return;
+        trendTeachingHtml += `<tr><td><b>${formatClinicalUnitsHtml(parameter || "Trend")}</b></td><td>${formatClinicalUnitsHtml(trend || "—")}</td><td>${formatClinicalUnitsHtml(teachingPoint || "—")}</td></tr>`;
+      });
+      trendTeachingHtml += `</tbody></table></div>`;
+    }
+
+    if (labGuideEntries.length > 0) {
+      trendTeachingHtml += `<div class="lab-interpretation-pane"><div class="lab-interpretation-title"><i class="fa-solid fa-book-medical"></i> Value definitions</div><ul class="lab-definition-list">`;
+      labGuideEntries.forEach((item) => {
+        trendTeachingHtml += `<li><div class="lab-definition-name">${esc(item.study)}${item.result ? ` — ${formatClinicalUnitsHtml(item.result)}` : ""}</div><div class="lab-definition-text">${formatClinicalUnitsHtml(item.valueExplanation)}</div></li>`;
+      });
+      trendTeachingHtml += `</ul></div>`;
+    }
+
+    trendTeachingHtml += `</div></div>`;
   }
 
   let crossCuttingHtml = "";
@@ -18357,6 +18712,12 @@ body {
   print-color-adjust: exact;
   transition: background .2s, color .2s;
 }
+.page sup {
+  font-size: .72em;
+  line-height: 0;
+  vertical-align: super;
+}
+
 .page {
   max-width: 10in;
   margin: 0 auto;
@@ -18578,6 +18939,39 @@ body.dark .allergy.allergy-warn { background: var(--danger-soft); color: var(--d
   gap: 10px;
   margin-bottom: 10px;
 }
+
+.top-activity-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+.top-activity-grid-single { grid-template-columns: minmax(0, 1fr); }
+.summary-row-list { display: grid; gap: 0; }
+.summary-row {
+  display: grid;
+  grid-template-columns: minmax(108px, .34fr) minmax(0, 1fr);
+  gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-vl);
+}
+.summary-row:last-child { border-bottom: none; }
+.summary-row-prose { grid-template-columns: minmax(0, 1fr); }
+.summary-row-label {
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: .05em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.summary-row-value {
+  min-width: 0;
+  color: var(--fg-m);
+  font-size: 8.75pt;
+  line-height: 1.42;
+  overflow-wrap: anywhere;
+}
 .narrative-box {
   width: 100%;
   min-width: 0;
@@ -18691,6 +19085,8 @@ body.dark .narrative-inline-date {
 /* Reference grid */
 .ref-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }
 .ref-box { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--bg); }
+.specialty-care-integrated { width: 100%; margin: 0 0 10px; }
+.specialty-care-separator { height: 1px; margin: 8px 0; background: var(--border-vl); }
 .ref-head {
   background: var(--panel-h);
   font-size: 7.5pt;
@@ -18931,6 +19327,28 @@ body.dark .encounter-group-title-overview {
   line-height: 1.4;
 }
 .med-tbl tr:last-child td { border-bottom: none; }
+
+.med-safety-inline {
+  margin: 10px 0 2px;
+  padding: 8px 10px;
+  border-top: 1px solid rgba(55,108,139,.18);
+  border-bottom: 1px solid rgba(55,108,139,.18);
+  background: rgba(242,217,187,.22);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.med-safety-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--accent);
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+body.dark .med-safety-inline { background: rgba(242,217,187,.08); }
 .drug-n { color: var(--accent); font-weight: 700; white-space: nowrap; }
 body.dark .drug-n { color: var(--accent); }
 .med-ind { color: var(--fg-d); font-size: 9pt; }
@@ -19131,6 +19549,39 @@ body.dark .pill-reg { background: var(--warm-soft); color: var(--palette-sand); 
   font-size: 8.75pt !important;
   line-height: 1.5 !important;
 }
+.problem-management-note {
+  display: grid;
+  grid-template-columns: minmax(118px, .28fr) minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  margin: 8px 0 10px;
+  padding: 7px 9px;
+  border-radius: 4px;
+  background: rgba(99,143,168,.075);
+  border: 1px solid rgba(55,108,139,.12);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.problem-management-note-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--accent);
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: .06em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+.problem-management-note-text {
+  min-width: 0;
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+body.dark .problem-management-note { background: rgba(99,143,168,.11); }
+
 .background-orientation {
   margin: 8px 0;
   padding: 8px 10px;
@@ -19984,30 +20435,133 @@ body.dark .diag-teaching {
   min-width: 72px;
 }
 
-/* Preventive */
-.prev-list { list-style: none; }
-.prev-list li {
+/* Preventive — compact immunization + screening columns */
+.preventive-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 6px;
+}
+.preventive-grid-single { grid-template-columns: minmax(0, 1fr); }
+.preventive-card {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--bg);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.preventive-card-head {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel-h);
+  color: var(--accent);
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.preventive-card-body { padding: 4px 9px 6px; }
+.preventive-subhead {
+  margin: 3px 0 1px;
+  padding: 3px 0;
+  color: var(--danger-text);
+  font-size: 6.75pt;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+.preventive-subhead-completed {
+  margin-top: 7px;
+  border-top: 1px solid var(--border-vl);
+  padding-top: 6px;
+  color: var(--accent);
+}
+.preventive-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(118px, .46fr);
+  gap: 9px;
+  align-items: start;
   padding: 4px 0;
   border-bottom: 1px solid var(--border-vl);
-  font-size: 9pt;
+}
+.preventive-row:last-child { border-bottom: none; }
+.preventive-name {
+  min-width: 0;
   color: var(--fg-m);
+  font-size: 8.6pt;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.preventive-status {
+  min-width: 0;
+  color: var(--fg-d);
+  font-size: 7.4pt;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.preventive-status-due { color: var(--danger-text); }
+.preventive-status-done { color: var(--accent); }
+
+/* Integrated lab interpretation: trends and value definitions share one home. */
+.lab-interpretation-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.lab-overall-interpretation {
+  display: grid;
+  grid-template-columns: minmax(96px, .18fr) minmax(0, 1fr);
   gap: 10px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(99,143,168,.055);
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.45;
 }
-.prev-list li:last-child { border-bottom: none; }
-.prev-st {
+.lab-overall-label {
+  color: var(--accent);
   font-size: 7pt;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: 8px;
-  white-space: nowrap;
+  font-weight: 800;
+  letter-spacing: .06em;
+  text-transform: uppercase;
 }
-.prev-due { background: var(--danger-soft); color: var(--danger); }
-.prev-done { background: rgba(99,143,168,.14); color: var(--accent); }
-body.dark .prev-due { background: var(--danger-soft); color: var(--danger); }
-body.dark .prev-done { background: rgba(99,143,168,.18); color: var(--accent); }
+.lab-interpretation-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(260px, .75fr);
+}
+.lab-interpretation-grid-single { grid-template-columns: minmax(0, 1fr); }
+.lab-interpretation-pane { min-width: 0; padding: 9px 10px; }
+.lab-interpretation-pane + .lab-interpretation-pane { border-left: 1px solid var(--border); }
+.lab-interpretation-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 7px;
+  color: var(--accent);
+  font-size: 7.25pt;
+  font-weight: 800;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+.lab-definition-list { margin: 0; padding: 0; list-style: none; }
+.lab-definition-list li {
+  padding: 5px 0;
+  border-bottom: 1px solid var(--border-vl);
+}
+.lab-definition-list li:last-child { border-bottom: none; }
+.lab-definition-name { color: var(--fg); font-size: 8pt; font-weight: 700; line-height: 1.4; }
+.lab-definition-text { margin-top: 2px; color: var(--fg-m); font-size: 8pt; line-height: 1.42; }
 
 /* Restored document-level teaching sections */
 .section-card,
@@ -20241,6 +20795,20 @@ body.dark .figures-box {
   .pq-sep-label { position: static; display: block; transform: none; text-align: center; margin-top: -9px; }
 }
 
+@media (max-width: 700px) {
+  .top-activity-grid,
+  .preventive-grid,
+  .lab-interpretation-grid { grid-template-columns: 1fr; }
+  .lab-interpretation-pane + .lab-interpretation-pane {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
+  .summary-row,
+  .problem-management-note,
+  .preventive-row,
+  .lab-overall-interpretation { grid-template-columns: 1fr; gap: 2px; }
+}
+
 /* Footer */
 .doc-footer {
   margin-top: 20px;
@@ -20455,7 +21023,7 @@ function printDoc(){
     [problemIndexEntries.length > 0, problemIndexHtml.includes("Problem Index"), "Problem Index"],
     [selectedProblemEntries.length > 0, selectedProblemsHtml.includes("Teaching Focus"), "Expanded teaching problems"],
     [backgroundProblemEntries.length > 0, backgroundProblemsHtml.includes("Chart Reference"), "Additional chart-reference problems"],
-    [s.labTrends?.enabled && trendTeachingItems.length > 0, trendTeachingHtml.includes("Lab &amp; Vital Trends"), "Lab & Vital Trends"],
+    [showTrendTeaching || labGuideEntries.length > 0 || overallLabInterpretation, trendTeachingHtml.includes("Clinical Trends &amp; Lab Interpretation"), "Clinical trends & lab interpretation"],
     [s.crossCuttingThemes?.enabled && crossCuttingThemes.length > 0, crossCuttingHtml.includes("Cross-Cutting Themes"), "Cross-Cutting Themes"],
     [s.synthesizedEvidence?.enabled && Boolean(evidenceContent), Boolean(evidenceHtml), "Step 4 Evidence Summary"],
     [longTermGoalItems.length > 0, learningCloseHtml.includes("Ongoing Learning Goals"), "Ongoing Learning Goals"],
@@ -20495,11 +21063,11 @@ ${headerHtml}
 ${oneLinerHtml}
 ${allergyBarHtml}
 ${overviewHtml}
+${topNarrativeHtml}
+${priorityFocusHtml}
+${refGridHtml}
 ${problemIndexHtml}
 ${complexTeachingHtml}
-${priorityFocusHtml}
-${topNarrativeHtml}
-${refGridHtml}
 ${vitalsHtml}
 ${medsSectionHtml}
 ${socialHtml}
@@ -22244,10 +22812,6 @@ function DocumentContent({ doc, phase, session }) {
                     <td>{doc.workingDx}</td>
                   </tr>
                 )}
-                <tr>
-                  <td className="row-label">Complexity</td>
-                  <td>{doc.complexity === "common" ? "Common presentation" : "Complex presentation"}</td>
-                </tr>
                 {doc.selectedProblems?.length > 0 && (
                   <tr>
                     <td className="row-label">Problems in focus</td>
