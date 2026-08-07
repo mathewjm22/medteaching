@@ -14057,7 +14057,7 @@ const buildInRoomHtml = (doc, session) => {
   //      - Additional detail
   // Hard-wrapped continuation lines are rejoined to the item or detail they
   // belong to rather than becoming independent bullets.
-  const renderHierarchicalEncounterList = (text) => {
+  const renderHierarchicalEncounterList = (text, options = {}) => {
     if (!text) return "";
 
     const sourceLines = String(text)
@@ -14261,10 +14261,15 @@ const buildInRoomHtml = (doc, session) => {
     commitGroup();
     if (groups.length === 0) return "";
 
+    const renderInline = (value) =>
+      typeof options.inlineFormatter === "function"
+        ? options.inlineFormatter(value)
+        : esc(value);
+
     const renderDetail = (detail) => {
       const match = String(detail || "").match(/^([^:]{1,32}:)\s*(.*)$/);
-      if (!match) return esc(detail);
-      return `<span class="encounter-detail-label">${esc(match[1])}</span>${match[2] ? ` ${esc(match[2])}` : ""}`;
+      if (!match) return renderInline(detail);
+      return `<span class="encounter-detail-label">${esc(match[1])}</span>${match[2] ? ` ${renderInline(match[2])}` : ""}`;
     };
 
     return groups
@@ -14294,7 +14299,7 @@ const buildInRoomHtml = (doc, session) => {
                   .join("")}</ul>`
               : "";
 
-            return `<li${valueAttribute}><div class="encounter-item-title">${esc(item.title)}</div>${detailsHtml}</li>`;
+            return `<li${valueAttribute}><div class="encounter-item-title">${renderInline(item.title)}</div>${detailsHtml}</li>`;
           })
           .join("");
 
@@ -14317,6 +14322,83 @@ const buildInRoomHtml = (doc, session) => {
       }
       return `<div class="summary-row"><div class="summary-row-label">${esc(label)}</div><div class="summary-row-value">${formatClinicalUnitsHtml(detail)}</div></div>`;
     }).join("")}</div>`;
+  };
+
+  // Specialty coordination is often generated as a compact summary with one
+  // care-status statement per source line followed by social-context and
+  // recommendation subsections. Preserve that outline instead of collapsing
+  // every line into one prose row. A small fallback also restores boundaries
+  // when an upstream source flattened the summary into a single line.
+  const normalizeSpecialtyCoordinationOutline = (value) => {
+    let normalized = String(value || "")
+      .replace(/\r\n?/g, "\n")
+      .replace(/\u00a0/g, " ")
+      .replace(/[ \t]+/g, " ")
+      .trim();
+
+    if (!normalized) return "";
+
+    normalized = normalized
+      .replace(
+        /(?:^|[ \t]+)(Social\s+Determinants?|Recommendations?(?:\s+for\s+[^:\n]{1,48})?)\s*:\s*/gi,
+        "\n$1:\n"
+      )
+      .replace(/[ \t]+(?=\d{1,2}[.)]\s+)/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+    const expanded = [];
+    normalized.split("\n").forEach((rawLine) => {
+      const line = String(rawLine || "").replace(/\s+/g, " ").trim();
+      if (!line) return;
+
+      if (
+        line.length < 170 ||
+        /:\s*$/.test(line) ||
+        /^\d{1,2}[.)]\s+/.test(line)
+      ) {
+        expanded.push(line);
+        return;
+      }
+
+      const pieces = line.split(
+        /\s+(?=(?:Active\b|Completed\b|Pending\b|Scheduled\b|On\s+hold\b|No\s+(?:VA|current|active)\b|[A-Z][A-Za-z/& -]{1,28}\s+(?:clinic|referral|consult)\b|Unemployed\b|Employed\b|Married\b|Single\b|Divorced\b|Widowed\b|Lives?\b|Housing\b|\d{1,3}%\s+service[- ]connected\b|Service[- ]connected\b|History\s+of\b|Burn\s+pit\b))/g
+      );
+
+      pieces.map((piece) => piece.trim()).filter(Boolean).forEach((piece) => {
+        expanded.push(piece);
+      });
+    });
+
+    return expanded.join("\n");
+  };
+
+  const formatSpecialtyCoordinationInline = (value) => {
+    let html = formatClinicalUnitsHtml(value);
+
+    // Status language is useful metadata rather than the clinical subject of
+    // the sentence, so de-emphasize it with italics instead of another badge.
+    html = html.replace(
+      /\b(status unclear|active|completed|pending|scheduled|on hold|closed)\b/gi,
+      '<em class="coord-status">$1</em>'
+    );
+    html = html.replace(
+      /\b(No\s+(?:VA|current|active)\s+[A-Za-z][A-Za-z /-]{0,40}?(?:involvement|follow-up|care))\b/gi,
+      '<em class="coord-status">$1</em>'
+    );
+
+    return html;
+  };
+
+  const renderSpecialtyCoordination = (value) => {
+    const outlined = normalizeSpecialtyCoordinationOutline(value);
+    if (!outlined) return "";
+
+    return (
+      renderHierarchicalEncounterList(outlined, {
+        inlineFormatter: formatSpecialtyCoordinationInline,
+      }) || renderCompactSummaryRows(outlined)
+    );
   };
 
   // Put acute-care utilization beside the recent-visit timeline near the top.
@@ -14496,7 +14578,7 @@ const buildInRoomHtml = (doc, session) => {
     specialtyCareText,
   ]);
   if (specialtyCoordinationSource) {
-    const coordinationSummaryHtml = renderCompactSummaryRows(
+    const coordinationSummaryHtml = renderSpecialtyCoordination(
       specialtyCareCoordinationText
     );
     const specialtyEncounterHtml = specialtyCareText
@@ -18245,40 +18327,70 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
     }
   });
 
-  const screeningDueItems = screeningItems.filter((item) =>
-    Boolean(item.isDue) || /\bdue|overdue|pending|ordered|unclear\b/i.test(`${item.group || ""} ${item.status || ""}`)
-  );
-  const screeningCompletedItems = screeningItems.filter((item) => !screeningDueItems.includes(item));
+  const preventiveItemIsDue = (item) => {
+    const probe = `${item?.group || ""} ${item?.status || ""}`;
+    if (Boolean(item?.isDue)) return true;
+    return (
+      /\b(?:due|overdue|pending|ordered|unclear|recommended)\b/i.test(probe) &&
+      !/\b(?:not due|completed|negative|up to date|current|done)\b/i.test(probe)
+    );
+  };
 
-  const renderPreventiveRows = (items) =>
-    `<div class="preventive-row-list">${items.map((item) => {
-      const status = String(item.status || (item.isDue ? "Due" : "Completed")).trim();
-      const statusCls = item.isDue ? "preventive-status-due" : "preventive-status-done";
-      return `<div class="preventive-row"><div class="preventive-name">${esc(item.name)}</div><div class="preventive-status ${statusCls}">${esc(status)}</div></div>`;
+  const addPreventiveKind = (items, preventiveKind) =>
+    items.map((item) => ({ ...item, preventiveKind }));
+
+  const preventiveDueItems = [
+    ...addPreventiveKind(
+      immunizationItems.filter(preventiveItemIsDue),
+      "Immunization"
+    ),
+    ...addPreventiveKind(
+      screeningItems.filter(preventiveItemIsDue),
+      "Screening"
+    ),
+  ];
+
+  const preventiveCompletedItems = [
+    ...addPreventiveKind(
+      immunizationItems.filter((item) => !preventiveItemIsDue(item)),
+      "Immunization"
+    ),
+    ...addPreventiveKind(
+      screeningItems.filter((item) => !preventiveItemIsDue(item)),
+      "Screening"
+    ),
+  ];
+
+  const compactPreventiveStatus = (item) => {
+    const fallback = preventiveItemIsDue(item) ? "Due" : "Completed";
+    const rawStatus = String(item?.status || fallback).replace(/\s+/g, " ").trim();
+    return rawStatus
+      .replace(
+        /^(?:due|completed|up\s+to\s+date|current|done)\b\s*[:\u2013\u2014-]?\s*/i,
+        ""
+      )
+      .trim();
+  };
+
+  const renderPreventiveCompactRows = (items, dueColumn) =>
+    `<div class="preventive-compact-list">${items.map((item) => {
+      const status = compactPreventiveStatus(item);
+      return `<div class="preventive-compact-row"><div class="preventive-compact-main"><span class="preventive-kind">${esc(item.preventiveKind)}</span><span class="preventive-name">${esc(item.name)}</span></div>${status ? `<div class="preventive-status ${dueColumn ? "preventive-status-due" : "preventive-status-done"}">${formatClinicalUnitsHtml(status)}</div>` : ""}</div>`;
     }).join("")}</div>`;
 
+  const renderPreventiveColumn = (title, items, dueColumn) => {
+    if (items.length === 0) return "";
+    const icon = dueColumn ? "fa-circle-exclamation" : "fa-circle-check";
+    const tone = dueColumn ? "preventive-column-head-due" : "preventive-column-head-completed";
+    return `<div class="preventive-compact-col"><div class="preventive-column-head ${tone}"><i class="fa-solid ${icon}"></i> ${esc(title)} <span class="preventive-count">${items.length}</span></div>${renderPreventiveCompactRows(items, dueColumn)}</div>`;
+  };
+
   let preventiveHtml = "";
-  const hasPreventiveContent = immunizationItems.length > 0 || screeningItems.length > 0;
+  const hasPreventiveContent = preventiveDueItems.length > 0 || preventiveCompletedItems.length > 0;
   if (hasPreventiveContent) {
+    const singleColumn = preventiveDueItems.length === 0 || preventiveCompletedItems.length === 0;
     preventiveHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Preventive Care</div><div class="sec-div-line"></div></div>`;
-    preventiveHtml += `<div class="preventive-grid${immunizationItems.length > 0 && screeningItems.length > 0 ? "" : " preventive-grid-single"}>`;
-
-    if (immunizationItems.length > 0) {
-      preventiveHtml += `<section class="preventive-card"><div class="preventive-card-head"><i class="fa-solid fa-syringe"></i> Immunizations</div><div class="preventive-card-body">${renderPreventiveRows(immunizationItems)}</div></section>`;
-    }
-
-    if (screeningItems.length > 0) {
-      preventiveHtml += `<section class="preventive-card"><div class="preventive-card-head"><i class="fa-solid fa-list-check"></i> Screenings</div><div class="preventive-card-body">`;
-      if (screeningDueItems.length > 0) {
-        preventiveHtml += `<div class="preventive-subhead">Due / follow-up</div>${renderPreventiveRows(screeningDueItems)}`;
-      }
-      if (screeningCompletedItems.length > 0) {
-        preventiveHtml += `<div class="preventive-subhead preventive-subhead-completed">Completed / up to date</div>${renderPreventiveRows(screeningCompletedItems)}`;
-      }
-      preventiveHtml += `</div></section>`;
-    }
-
-    preventiveHtml += `</div>`;
+    preventiveHtml += `<section class="preventive-compact-card"><div class="preventive-compact-grid${singleColumn ? " preventive-compact-grid-single" : ""}">${renderPreventiveColumn("Due / follow-up", preventiveDueItems, true)}${renderPreventiveColumn("Completed / up to date", preventiveCompletedItems, false)}</div></section>`;
     preventiveHtml += htmlOnlyLink(
       "https://www.cdc.gov/vaccines/hcp/imz-schedules/adult-age.html",
       "CDC Adult Immunization Schedule",
@@ -19087,6 +19199,15 @@ body.dark .narrative-inline-date {
 .ref-box { border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--bg); }
 .specialty-care-integrated { width: 100%; margin: 0 0 10px; }
 .specialty-care-separator { height: 1px; margin: 8px 0; background: var(--border-vl); }
+.specialty-care-integrated .encounter-item-title { font-weight: 500; }
+.specialty-care-integrated .coord-status {
+  color: var(--accent);
+  font-style: italic;
+  font-weight: 600;
+}
+.specialty-care-integrated .encounter-group-title {
+  margin-bottom: 6px;
+}
 .ref-head {
   background: var(--panel-h);
   font-size: 7.5pt;
@@ -20435,16 +20556,10 @@ body.dark .diag-teaching {
   min-width: 72px;
 }
 
-/* Preventive — compact immunization + screening columns */
-.preventive-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  margin-bottom: 6px;
-}
-.preventive-grid-single { grid-template-columns: minmax(0, 1fr); }
-.preventive-card {
+/* Preventive care — one compact box, split by action status */
+.preventive-compact-card {
   min-width: 0;
+  margin-bottom: 6px;
   border: 1px solid var(--border);
   border-radius: 4px;
   overflow: hidden;
@@ -20452,58 +20567,81 @@ body.dark .diag-teaching {
   break-inside: avoid;
   page-break-inside: avoid;
 }
-.preventive-card-head {
+.preventive-compact-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.preventive-compact-grid-single { grid-template-columns: minmax(0, 1fr); }
+.preventive-compact-col { min-width: 0; }
+.preventive-compact-col + .preventive-compact-col { border-left: 1px solid var(--border); }
+.preventive-column-head {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
+  gap: 5px;
+  padding: 5px 8px;
   border-bottom: 1px solid var(--border);
-  background: var(--panel-h);
-  color: var(--accent);
-  font-size: 7pt;
+  font-size: 6.9pt;
   font-weight: 800;
-  letter-spacing: .07em;
+  letter-spacing: .065em;
   text-transform: uppercase;
 }
-.preventive-card-body { padding: 4px 9px 6px; }
-.preventive-subhead {
-  margin: 3px 0 1px;
-  padding: 3px 0;
+.preventive-column-head-due {
+  background: rgba(255,87,87,.055);
   color: var(--danger-text);
-  font-size: 6.75pt;
-  font-weight: 800;
-  letter-spacing: .06em;
-  text-transform: uppercase;
 }
-.preventive-subhead-completed {
-  margin-top: 7px;
-  border-top: 1px solid var(--border-vl);
-  padding-top: 6px;
+.preventive-column-head-completed {
+  background: rgba(99,143,168,.075);
   color: var(--accent);
 }
-.preventive-row {
+.preventive-count {
+  margin-left: auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: 6.2pt;
+  line-height: 1.45;
+  text-align: center;
+  opacity: .72;
+}
+.preventive-compact-list { padding: 2px 8px 4px; }
+.preventive-compact-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(118px, .46fr);
-  gap: 9px;
-  align-items: start;
-  padding: 4px 0;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+  gap: 7px;
+  align-items: baseline;
+  padding: 3px 0;
   border-bottom: 1px solid var(--border-vl);
 }
-.preventive-row:last-child { border-bottom: none; }
+.preventive-compact-row:last-child { border-bottom: none; }
+.preventive-compact-main {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+  min-width: 0;
+}
+.preventive-kind {
+  flex: 0 0 auto;
+  color: var(--fg-d);
+  font-size: 6.15pt;
+  font-style: italic;
+  font-weight: 500;
+  white-space: nowrap;
+}
 .preventive-name {
   min-width: 0;
   color: var(--fg-m);
-  font-size: 8.6pt;
-  line-height: 1.4;
+  font-size: 8.15pt;
+  line-height: 1.32;
   overflow-wrap: anywhere;
 }
 .preventive-status {
   min-width: 0;
-  color: var(--fg-d);
-  font-size: 7.4pt;
+  max-width: 170px;
+  font-size: 7.05pt;
   font-weight: 600;
-  line-height: 1.35;
-  text-align: left;
+  line-height: 1.3;
+  text-align: right;
   overflow-wrap: anywhere;
 }
 .preventive-status-due { color: var(--danger-text); }
@@ -20797,16 +20935,21 @@ body.dark .figures-box {
 
 @media (max-width: 700px) {
   .top-activity-grid,
-  .preventive-grid,
+  .preventive-compact-grid,
   .lab-interpretation-grid { grid-template-columns: 1fr; }
+  .preventive-compact-col + .preventive-compact-col {
+    border-left: none;
+    border-top: 1px solid var(--border);
+  }
   .lab-interpretation-pane + .lab-interpretation-pane {
     border-left: none;
     border-top: 1px solid var(--border);
   }
   .summary-row,
   .problem-management-note,
-  .preventive-row,
+  .preventive-compact-row,
   .lab-overall-interpretation { grid-template-columns: 1fr; gap: 2px; }
+  .preventive-status { max-width: none; text-align: left; }
 }
 
 /* Footer */
