@@ -11941,13 +11941,10 @@ const buildInRoomHtml = (doc, session) => {
     return `<span class="figure-ref-links"><i class="fa-regular fa-image"></i> ${esc(lead)} ${links.join(indexes.length > 1 ? ", " : "")}</span>`;
   };
 
-  // Pull the AI's value definitions into the main pre-visit laboratory and
-  // diagnostic sections. This keeps the raw chart data easy to scan while
-  // still giving the student a nearby glossary for unfamiliar values.
+  // Collect structured teaching-result metadata for per-result teaching panels.
+  // Standalone lab glossary output is intentionally omitted from the document.
   const teachingResultItems = [];
-  const teachingResultGuides = [];
   const seenTeachingItems = new Set();
-  const seenTeachingGuides = new Set();
   enabledCases.forEach((teachingCase) => {
     const caseData = teachingCase?.data || teachingCase || {};
     normalizeTeachingResults(
@@ -11959,12 +11956,6 @@ const buildInRoomHtml = (doc, session) => {
         seenTeachingItems.add(itemKey);
         teachingResultItems.push(item);
       }
-
-      if (!item.valueExplanation) return;
-      const guideKey = `${item.resultType}|${item.study}|${item.valueExplanation}`.toLowerCase();
-      if (seenTeachingGuides.has(guideKey)) return;
-      seenTeachingGuides.add(guideKey);
-      teachingResultGuides.push(item);
     });
   });
 
@@ -12011,33 +12002,9 @@ const buildInRoomHtml = (doc, session) => {
         teachingResultItems.push(item);
         seenTeachingItems.add(itemKey);
       }
-
-      if (item.valueExplanation) {
-        const guideKey = `${item.resultType}|${item.study}|${item.valueExplanation}`.toLowerCase();
-        if (!seenTeachingGuides.has(guideKey)) {
-          seenTeachingGuides.add(guideKey);
-          teachingResultGuides.push(item);
-        }
-      }
     }
   );
 
-  const renderStudentValueGuide = (resultType) => {
-    const optionEnabled = resultType === "lab"
-      ? doc.teachingDetailOptions?.explainLabValues !== false
-      : doc.teachingDetailOptions?.explainDiagnosticValues !== false;
-    if (!optionEnabled) return "";
-
-    const entries = teachingResultGuides.filter(
-      (item) => item.resultType === resultType
-    );
-    if (entries.length === 0) return "";
-
-    const title = resultType === "lab"
-      ? "Lab value guide"
-      : "Diagnostic value guide";
-    return `<div class="lab-value-guide"><div class="lab-value-guide-title">${title}</div><ul class="lab-value-guide-list">${entries.map((item) => `<li><div class="lab-value-guide-name">${esc(item.study)}${item.result ? ` — ${esc(item.result)}` : ""}</div><div class="lab-value-guide-def">${esc(item.valueExplanation)}</div></li>`).join("")}</ul></div>`;
-  };
 
   // Deterministic prenote parsing
  const parsedPrenote = parsePrenote(
@@ -18478,21 +18445,18 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   const trendTeachingItems = Array.isArray(s.labTrends?.content)
     ? s.labTrends.content.filter(Boolean)
     : [];
-  const labGuideEntries = doc.teachingDetailOptions?.explainLabValues !== false
-    ? teachingResultGuides.filter((item) => item.resultType === "lab" && item.valueExplanation)
-    : [];
   const showTrendTeaching = s.labTrends?.enabled && trendTeachingItems.length > 0;
   const overallLabInterpretation = String(na.labTrendsSummary || "").trim();
 
-  if (showTrendTeaching || labGuideEntries.length > 0 || overallLabInterpretation) {
+  if (showTrendTeaching || overallLabInterpretation) {
     trendTeachingHtml += `<div class="sec-div"><div class="sec-div-line"></div><div class="sec-div-label">Clinical Trends &amp; Lab Interpretation</div><div class="sec-div-line"></div></div>`;
     trendTeachingHtml += `<div class="lab-interpretation-card">`;
     if (overallLabInterpretation) {
       trendTeachingHtml += `<div class="lab-overall-interpretation"><div class="lab-overall-label">Overall pattern</div><div>${formatClinicalUnitsHtml(overallLabInterpretation)}</div></div>`;
     }
-    trendTeachingHtml += `<div class="lab-interpretation-grid${showTrendTeaching && labGuideEntries.length > 0 ? "" : " lab-interpretation-grid-single"}>`;
 
     if (showTrendTeaching) {
+      trendTeachingHtml += `<div class="lab-interpretation-grid lab-interpretation-grid-single">`;
       trendTeachingHtml += `<div class="lab-interpretation-pane"><div class="lab-interpretation-title"><i class="fa-solid fa-chart-line"></i> Key trends &amp; significance</div>`;
       trendTeachingHtml += `<table class="trend-teaching-table"><thead><tr><th>Parameter</th><th>Chart trend</th><th>Why it matters</th></tr></thead><tbody>`;
       trendTeachingItems.forEach((item) => {
@@ -18502,18 +18466,10 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
         if (!parameter && !trend && !teachingPoint) return;
         trendTeachingHtml += `<tr><td><b>${formatClinicalUnitsHtml(parameter || "Trend")}</b></td><td>${formatClinicalUnitsHtml(trend || "—")}</td><td>${formatClinicalUnitsHtml(teachingPoint || "—")}</td></tr>`;
       });
-      trendTeachingHtml += `</tbody></table></div>`;
+      trendTeachingHtml += `</tbody></table></div></div>`;
     }
 
-    if (labGuideEntries.length > 0) {
-      trendTeachingHtml += `<div class="lab-interpretation-pane"><div class="lab-interpretation-title"><i class="fa-solid fa-book-medical"></i> Value definitions</div><ul class="lab-definition-list">`;
-      labGuideEntries.forEach((item) => {
-        trendTeachingHtml += `<li><div class="lab-definition-name">${esc(item.study)}${item.result ? ` — ${formatClinicalUnitsHtml(item.result)}` : ""}</div><div class="lab-definition-text">${formatClinicalUnitsHtml(item.valueExplanation)}</div></li>`;
-      });
-      trendTeachingHtml += `</ul></div>`;
-    }
-
-    trendTeachingHtml += `</div></div>`;
+    trendTeachingHtml += `</div>`;
   }
 
   let crossCuttingHtml = "";
@@ -20099,50 +20055,6 @@ body.dark .lab-ok { color: var(--fg-m) !important; }
 }
 
 
-/* Lab / diagnostic value guide — clear typographic hierarchy so the
-   analyte name pops and the definition sits quietly below it.               */
-.lab-value-guide {
-  margin-top: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--border-l);
-  border-left: 3px solid var(--accent);
-  border-radius: 0 4px 4px 0;
-  background: var(--panel);
-}
-.lab-value-guide-title {
-  font-size: 7pt;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: .12em;
-  color: var(--accent);
-  margin-bottom: 8px;
-}
-.lab-value-guide-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-.lab-value-guide-list li {
-  padding: 6px 0;
-  border-top: 1px solid var(--border-vl);
-}
-.lab-value-guide-list li:first-child {
-  padding-top: 0;
-  border-top: none;
-}
-.lab-value-guide-name {
-  font-size: 9pt;
-  font-weight: 700;
-  color: var(--fg);
-  margin-bottom: 2px;
-  line-height: 1.35;
-}
-.lab-value-guide-def {
-  font-size: 8.5pt;
-  color: var(--fg-m);
-  line-height: 1.5;
-}
-
 /* Imaging / diagnostics cards */
 .diag-stack {
   display: grid;
@@ -20647,7 +20559,7 @@ body.dark .diag-teaching {
 .preventive-status-due { color: var(--danger-text); }
 .preventive-status-done { color: var(--accent); }
 
-/* Integrated lab interpretation: trends and value definitions share one home. */
+/* Integrated lab interpretation: overall pattern and key trends share one home. */
 .lab-interpretation-card {
   border: 1px solid var(--border);
   border-radius: 6px;
@@ -20692,15 +20604,6 @@ body.dark .diag-teaching {
   letter-spacing: .07em;
   text-transform: uppercase;
 }
-.lab-definition-list { margin: 0; padding: 0; list-style: none; }
-.lab-definition-list li {
-  padding: 5px 0;
-  border-bottom: 1px solid var(--border-vl);
-}
-.lab-definition-list li:last-child { border-bottom: none; }
-.lab-definition-name { color: var(--fg); font-size: 8pt; font-weight: 700; line-height: 1.4; }
-.lab-definition-text { margin-top: 2px; color: var(--fg-m); font-size: 8pt; line-height: 1.42; }
-
 /* Restored document-level teaching sections */
 .section-card,
 .evidence-box,
@@ -21166,7 +21069,7 @@ function printDoc(){
     [problemIndexEntries.length > 0, problemIndexHtml.includes("Problem Index"), "Problem Index"],
     [selectedProblemEntries.length > 0, selectedProblemsHtml.includes("Teaching Focus"), "Expanded teaching problems"],
     [backgroundProblemEntries.length > 0, backgroundProblemsHtml.includes("Chart Reference"), "Additional chart-reference problems"],
-    [showTrendTeaching || labGuideEntries.length > 0 || overallLabInterpretation, trendTeachingHtml.includes("Clinical Trends &amp; Lab Interpretation"), "Clinical trends & lab interpretation"],
+    [showTrendTeaching || overallLabInterpretation, trendTeachingHtml.includes("Clinical Trends &amp; Lab Interpretation"), "Clinical trends & lab interpretation"],
     [s.crossCuttingThemes?.enabled && crossCuttingThemes.length > 0, crossCuttingHtml.includes("Cross-Cutting Themes"), "Cross-Cutting Themes"],
     [s.synthesizedEvidence?.enabled && Boolean(evidenceContent), Boolean(evidenceHtml), "Step 4 Evidence Summary"],
     [longTermGoalItems.length > 0, learningCloseHtml.includes("Ongoing Learning Goals"), "Ongoing Learning Goals"],
