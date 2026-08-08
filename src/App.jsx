@@ -21894,17 +21894,6 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
   font-style: normal !important;
 }
 
-.post-visit-document .post-case-summary {
-  padding: 9px 11px;
-  border: 1px solid rgba(55,108,139,.16);
-  border-radius: 4px;
-  background: rgba(242,217,187,.24);
-}
-body.post-visit-export.dark .post-visit-document .post-case-summary {
-  border-color: rgba(242,217,187,.14);
-  background: rgba(242,217,187,.065);
-}
-
 /* Tables and structured clinical data. */
 .post-visit-document .doc-table-scroll { width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .post-visit-document .doc-table {
@@ -21940,6 +21929,8 @@ body.post-visit-export.dark .post-visit-document .post-case-summary {
 .post-visit-document .doc-table td[style*="font-weight: 500"] {
   color: var(--fg) !important;
   font-weight: 700 !important;
+  padding-right: 0.5rem !important;
+  white-space: nowrap;
 }
 .post-visit-document [style*="#0F2A44"],
 .post-visit-document [style*="var(--doc-navy)"] { color: var(--fg) !important; }
@@ -23218,7 +23209,7 @@ function DocumentContent({ doc, phase, session }) {
             <section className="keep-together" style={{ marginBottom: "2rem" }}>
               <h2 className="doc-h2">What This Document Focuses On</h2>
               <p style={{ margin: "0 0 0.85rem", fontSize: "0.9rem", color: "var(--doc-warm-gray)" }}>
-                Your attending selected the following teaching areas for this case. Each section below is built around these focuses.
+                I generated this document with the following teaching areas in mind — each section below is built around these focuses.
               </p>
               <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
                 {focusItems.map((item, i) => (
@@ -23272,18 +23263,20 @@ function DocumentContent({ doc, phase, session }) {
                 })()}
               </div>
 {c.caseSummary && (
-                <div className="keep-together post-case-summary" style={{
+                <div className="keep-together" style={{
                   marginBottom: "1.5rem",
+                  padding: "0.25rem 0",
                 }}>
-                  <div style={{
+                  <p style={{
+                    margin: 0,
                     fontFamily: "'Source Serif 4', Georgia, serif",
                     fontStyle: "italic",
                     fontSize: "1rem",
-                    lineHeight: 1.55,
+                    lineHeight: 1.6,
                     color: "var(--doc-navy)",
                   }}>
                     {softenTeachingVoice(c.caseSummary)}
-                  </div>
+                  </p>
                 </div>
               )}
 
@@ -23304,41 +23297,41 @@ function DocumentContent({ doc, phase, session }) {
                     The classic pattern for this diagnosis — anchored to how our patient fits or diverges. Build this into your library for faster pattern recognition next time.
                   </p>
                   <div className="doc-table-scroll">
-                  <table className="doc-table" style={{ fontSize: "0.85rem" }}>
+                  <table className="doc-table" style={{ fontSize: "0.85rem", tableLayout: "auto" }}>
                     <tbody>
                       {c.illnessScript.epidemiology && (
                         <tr>
-                          <td className="row-label" style={{ width: "22%" }}>Epidemiology</td>
+                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Epidemiology</td>
                           <td>{c.illnessScript.epidemiology}</td>
                         </tr>
                       )}
                       {c.illnessScript.timeCourse && (
                         <tr>
-                          <td className="row-label">Time course</td>
+                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Time course</td>
                           <td>{c.illnessScript.timeCourse}</td>
                         </tr>
                       )}
                       {c.illnessScript.keySymptoms && (
                         <tr>
-                          <td className="row-label">Key symptoms</td>
+                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Key symptoms</td>
                           <td>{c.illnessScript.keySymptoms}</td>
                         </tr>
                       )}
                       {c.illnessScript.keySigns && (
                         <tr>
-                          <td className="row-label">Key signs</td>
+                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Key signs</td>
                           <td>{c.illnessScript.keySigns}</td>
                         </tr>
                       )}
                       {c.illnessScript.keyLabsImaging && (
                         <tr>
-                          <td className="row-label">Key labs / imaging</td>
+                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Key labs / imaging</td>
                           <td>{c.illnessScript.keyLabsImaging}</td>
                         </tr>
                       )}
                       {c.illnessScript.naturalHistory && (
                         <tr>
-                          <td className="row-label">Natural history</td>
+                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Natural history</td>
                           <td>{c.illnessScript.naturalHistory}</td>
                         </tr>
                       )}
@@ -23970,17 +23963,19 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
   }, [content.allFigures]);
 
   if (!content.synthesized && content.singleSource) {
-    // Fallback path: only one source, no AI synthesis ran. Instead of dumping
-    // raw HTML/text as one giant paragraph, parse it into structured blocks
-    // (headings + paragraphs + lists) so the student gets a readable section.
+    // Fallback path: only one source, no AI synthesis ran. Parse into
+    // structured blocks (headings, paragraphs, lists, and — critically —
+    // detect PROBLEM N / SECTION headers embedded in plain text so the
+    // student gets navigable, well-formatted evidence instead of one giant
+    // wall of text.
     const parseUnsynthesizedContent = (rawHtml) => {
       if (!rawHtml) return [];
-      // Convert HTML to text-with-structure. We look at <h*>, <p>, <li>, <br>
-      // tags to preserve structure; everything else gets flattened.
       const tempDiv = document.createElement("div");
       tempDiv.innerHTML = rawHtml;
       const blocks = [];
-      const walk = (node) => {
+
+      // First pass: try to extract semantic HTML structure
+      const walkHtml = (node) => {
         if (node.nodeType === Node.TEXT_NODE) return;
         const tag = node.tagName?.toLowerCase();
         if (["h1","h2","h3","h4","h5","h6"].includes(tag)) {
@@ -24000,34 +23995,100 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
           if (items.length) blocks.push({ type: "list", ordered: tag === "ol", items });
           return;
         }
-        if (tag === "img") return; // images handled by Figure Gallery
-        // Recurse into containers
-        Array.from(node.childNodes).forEach(walk);
+        if (tag === "img") return;
+        Array.from(node.childNodes).forEach(walkHtml);
       };
-      Array.from(tempDiv.childNodes).forEach(walk);
-      // If no structural blocks were found, fall back to splitting on double
-      // newlines / sentence-run heuristics from the plain text.
-      if (blocks.length === 0) {
+      Array.from(tempDiv.childNodes).forEach(walkHtml);
+
+      // If HTML gave us structure, use it. Otherwise parse plain text.
+      // A common failure mode: OpenEvidence content comes as one giant <p>
+      // with "PROBLEM 1" / "PROBLEM 2" / bold labels embedded inline.
+      // Detect that case: if we only got 1-2 blocks but the text is very long,
+      // re-parse as plain text.
+      const textLength = tempDiv.textContent.length;
+      const needsPlainTextReparse = blocks.length <= 2 && textLength > 800;
+
+      if (needsPlainTextReparse) {
+        blocks.length = 0; // reset
+
         const plainText = stripRefMarkers(tempDiv.textContent);
-        // Split on "Problem N" / "Discordance #N" / numbered pattern headers,
-        // or on two-or-more newlines, or on obvious topic sentence starters.
+
+        // Split on strong structural markers. These are the boundaries that
+        // reliably indicate a new section: ALL-CAPS labels followed by colon,
+        // "PROBLEM N", "SECTION N", numbered problem headers, etc.
+        // Use lookahead so the marker stays with its section.
+        const majorSplitRegex = /(?=\b(?:PROBLEM\s+\d+|SECTION\s+\d+|CASE\s+\d+|DISCORDANCE\s*#?\s*\d+|TOPIC\s+\d+|SHELF\s+EXAM\s+PEARLS?|DIAGNOSTIC\s+REASONING|WORKUP|MANAGEMENT|CROSS[- ]PROBLEM\s+INTERACTIONS?|HIGH[- ]YIELD\s+CITATIONS?|PRACTICE[- ]CHANGING\s+EVIDENCE|ALTERNATIVES\s+TABLE|GUIDELINE\s+COMPARISON)\b)/gi;
+
+        // Also detect inline bold-style labels that OpenEvidence often uses:
+        // "Shelf Exam Pearls" / "Diagnostic Reasoning:" / "Key classifications to know:"
+        // These are Title Case phrases ending with colon.
+        const inlineLabelRegex = /(?<=[.!?]\s)(?=[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,5}\s*:)/g;
+
         const chunks = plainText
-          .split(/(?=\b(?:Problem \d+|Discordance #?\d+|Case \d+|Section \d+)\s*[:—–-])/g)
+          .split(majorSplitRegex)
           .flatMap(c => c.split(/\n{2,}/))
+          .flatMap(c => c.split(inlineLabelRegex))
           .map(c => c.trim())
           .filter(Boolean);
+
         chunks.forEach(chunk => {
-          // Detect a leading heading-like phrase (up to 80 chars, ends with colon or em-dash)
-          const headingMatch = chunk.match(/^([^:—\n]{4,80})[:—](.+)$/s);
-          if (headingMatch) {
-            blocks.push({ type: "heading", level: 4, text: headingMatch[1].trim() });
-            const body = headingMatch[2].trim();
-            if (body) blocks.push({ type: "paragraph", text: body });
-          } else {
-            blocks.push({ type: "paragraph", text: chunk });
+          // Detect PROBLEM N / SECTION N as a top-level heading
+          const majorHeadingMatch = chunk.match(/^(PROBLEM\s+\d+|SECTION\s+\d+|CASE\s+\d+|DISCORDANCE\s*#?\s*\d+|TOPIC\s+\d+)\s*[:—–-]?\s*(.*)$/is);
+          if (majorHeadingMatch) {
+            blocks.push({ type: "heading", level: 3, text: majorHeadingMatch[1].trim() });
+            const rest = majorHeadingMatch[2].trim();
+            if (rest) {
+              // Recursively parse the remainder for sub-headings
+              const subMatch = rest.match(/^([A-Z][a-zA-Z\s]{3,60})\s*[:—](.+)$/s);
+              if (subMatch) {
+                blocks.push({ type: "heading", level: 4, text: subMatch[1].trim() });
+                if (subMatch[2].trim()) blocks.push({ type: "paragraph", text: subMatch[2].trim() });
+              } else {
+                blocks.push({ type: "paragraph", text: rest });
+              }
+            }
+            return;
           }
+
+          // Detect ALL-CAPS section labels
+          const allCapsMatch = chunk.match(/^([A-Z][A-Z\s&/,-]{4,60})\s*[:—](.+)$/s);
+          if (allCapsMatch) {
+            blocks.push({ type: "heading", level: 4, text: allCapsMatch[1].trim() });
+            const body = allCapsMatch[2].trim();
+            if (body) blocks.push({ type: "paragraph", text: body });
+            return;
+          }
+
+          // Detect Title Case label followed by content
+          const titleCaseMatch = chunk.match(/^([A-Z][a-zA-Z]+(?:\s+[A-Z]?[a-zA-Z]+){0,6})\s*[:—](.+)$/s);
+          if (titleCaseMatch && titleCaseMatch[1].length < 60) {
+            blocks.push({ type: "heading", level: 5, text: titleCaseMatch[1].trim() });
+            const body = titleCaseMatch[2].trim();
+            if (body) {
+              // Check if body is a semicolon-separated list (common in evidence text)
+              const items = body.split(/;\s+(?=[A-Z(])/);
+              if (items.length >= 3) {
+                blocks.push({ type: "list", ordered: false, items: items.map(i => i.trim().replace(/[.;]$/, "")) });
+              } else {
+                blocks.push({ type: "paragraph", text: body });
+              }
+            }
+            return;
+          }
+
+          // Detect enumerated lists inline: "1) ... 2) ... 3) ..."
+          const numberedListMatch = chunk.match(/(\d+\)\s*[^0-9]+?)(?=\d+\)|$)/g);
+          if (numberedListMatch && numberedListMatch.length >= 2) {
+            const items = numberedListMatch.map(item => item.replace(/^\d+\)\s*/, "").trim().replace(/[.;]$/, ""));
+            blocks.push({ type: "list", ordered: true, items });
+            return;
+          }
+
+          // Default: plain paragraph
+          blocks.push({ type: "paragraph", text: chunk });
         });
       }
+
       return blocks;
     };
     const structuredBlocks = parseUnsynthesizedContent(content.singleSource.contentHtml || "");
@@ -24035,38 +24096,56 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
       <section>
         <h2 className="doc-h2">Additional Evidence</h2>
         <p style={{ marginTop: "-0.5rem", marginBottom: "1rem", fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
-          From <strong style={{ color: "var(--doc-navy)", fontStyle: "normal" }}>{content.singleSource.source}</strong>. Content the AI wasn't able to weave into a specific case appears here for reference.
+          From <strong style={{ color: "var(--doc-navy)", fontStyle: "normal" }}>{content.singleSource.source}</strong>. Supplementary content organized by topic — refer here for detail beyond what appears in the case discussion above.
         </p>
-        {structuredBlocks.map((block, i) => {
-          if (block.type === "heading") {
-            const Tag = block.level <= 3 ? "h3" : "h4";
+        <div style={{
+          padding: "1rem 1.25rem",
+          background: "var(--doc-paper)",
+          borderLeft: "3px solid var(--doc-navy-mid)",
+          borderRadius: "0 4px 4px 0",
+        }}>
+          {structuredBlocks.map((block, i) => {
+            if (block.type === "heading") {
+              // Level 3 = major heading (PROBLEM N), level 4 = section, level 5 = subsection
+              const isMajor = block.level <= 3;
+              const isSection = block.level === 4;
+              return (
+                <div key={i} style={{
+                  fontFamily: "'Inter', sans-serif",
+                  fontSize: isMajor ? "0.95rem" : isSection ? "0.85rem" : "0.8rem",
+                  fontWeight: isMajor ? 700 : 600,
+                  color: "var(--doc-navy)",
+                  margin: isMajor ? "1.5rem 0 0.6rem" : isSection ? "1rem 0 0.4rem" : "0.75rem 0 0.3rem",
+                  lineHeight: 1.3,
+                  letterSpacing: isMajor ? "0.05em" : "0.02em",
+                  textTransform: isMajor ? "uppercase" : "none",
+                  paddingBottom: isMajor ? "0.3rem" : 0,
+                  borderBottom: isMajor ? "1px solid var(--doc-hairline)" : "none",
+                }}>
+                  {block.text}
+                </div>
+              );
+            }
+            if (block.type === "list") {
+              const ListTag = block.ordered ? "ol" : "ul";
+              return (
+                <ListTag key={i} style={{ margin: "0.4rem 0 0.75rem", paddingLeft: "1.35rem" }}>
+                  {block.items.map((item, ii) => (
+                    <li key={ii} style={{ fontSize: "0.87rem", marginBottom: "0.35rem", lineHeight: 1.55 }}>{item}</li>
+                  ))}
+                </ListTag>
+              );
+            }
             return (
-              <Tag key={i} style={{
-                fontFamily: "'Inter', sans-serif",
-                fontSize: block.level <= 3 ? "0.95rem" : "0.88rem",
-                fontWeight: 600,
-                color: "var(--doc-navy)",
-                margin: "1.25rem 0 0.5rem",
-                lineHeight: 1.3,
-              }}>
-                {block.text}
-              </Tag>
+              <p key={i} style={{ fontSize: "0.88rem", margin: "0 0 0.75rem", lineHeight: 1.6 }}>{block.text}</p>
             );
-          }
-          if (block.type === "list") {
-            const ListTag = block.ordered ? "ol" : "ul";
-            return (
-              <ListTag key={i} style={{ margin: "0.5rem 0 0.75rem", paddingLeft: "1.35rem" }}>
-                {block.items.map((item, ii) => (
-                  <li key={ii} style={{ fontSize: "0.87rem", marginBottom: "0.3rem", lineHeight: 1.5 }}>{item}</li>
-                ))}
-              </ListTag>
-            );
-          }
-          return (
-            <p key={i} style={{ fontSize: "0.88rem", margin: "0 0 0.75rem", lineHeight: 1.55 }}>{block.text}</p>
-          );
-        })}
+          })}
+          {structuredBlocks.length === 0 && (
+            <p style={{ fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic", margin: 0 }}>
+              No structured evidence content was extractable from this source.
+            </p>
+          )}
+        </div>
       </section>
     );
   }
