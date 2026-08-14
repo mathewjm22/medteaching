@@ -4808,7 +4808,36 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
       ).join("\n");
       availableFigureIds = (synthesizedEvidenceParam.allFigures || []).map(f => f.id);
 
-      evidenceContext = `\n\nSTRUCTURED EVIDENCE (already synthesized across sources — cite claims by their source names, use figure IDs when relevant):\n${claimSummary}${figureInventory ? `\n\nFIGURES AVAILABLE (reference by [FIGURE:id] in your teaching text where clinically relevant):\n${figureInventory}` : ""}`;
+      evidenceContext = `\n\n═══════════════════════════════════════════════════════════════
+STRUCTURED EVIDENCE FROM STEP 4 SOURCES — INTEGRATE, DO NOT SUMMARIZE
+═══════════════════════════════════════════════════════════════
+
+The following evidence was already synthesized across the attending's chosen research sources (OpenEvidence, UpToDate, DynaMed, DoxGPT, PubMed AI, and any attached PDFs). This is your PRIMARY EVIDENCE BASE for this case.
+
+CRITICAL INTEGRATION MANDATE:
+The student will NOT see this evidence separately. Any specific fact, trial name, guideline threshold, dosing rationale, or cross-problem interaction from below that is relevant to this case MUST be woven directly into the case's own sections:
+
+- Specific numeric thresholds (e.g., "TR4 FNA at ≥1.5 cm", "LDL <70 in ASCVD", "AHI ≥15 for moderate OSA") → put them in keyLearningPoints or the relevant field where they change management
+- Landmark trial names with 1-line implications (SPRINT, PARADIGM-HF, MESA, NOTIFY-1, ADAM, etc.) → work them into keyLearningPoints or treatmentApproach.firstLine[].evidence
+- Guideline-specific recommendations with year (ATA 2014, ACC/AHA 2023, USPSTF Grade B) → attach to the specific point they support as inline citation
+- Contraindications and cautions that apply to THIS patient given their comorbidities → put in dontMiss or in the relevant treatment's adverseEffectsToWatch
+- Cross-problem interactions (e.g., "avoid levothyroxine suppression in CAD patients", "statin choice affected by CKD", "OSA drives resistant hypertension") → these are the highest-value integrations; put them explicitly in keyLearningPoints with the clinical action stated
+- Practice-changing recent evidence (last 2-3 years) → populate practiceChangingUpdate ONLY if the evidence below explicitly names a recent update
+- Figures relevant to a specific teaching point → reference in figureRef of that learning point or in keyLabsAndImaging entries
+
+WHAT NOT TO DO:
+- Do NOT ignore this evidence and produce generic textbook teaching. The attending curated these sources specifically for this case.
+- Do NOT list evidence as a separate "here's what the sources said" block anywhere in your JSON.
+- Do NOT paraphrase evidence generically ("guidelines recommend statin therapy"). Cite the specific guideline year and threshold ("ACC/AHA 2019: any detectable CAC in adults 40-75 with LDL <130 mg/dL warrants moderate-intensity statin").
+- Do NOT invent trials or thresholds not in the evidence below or your medical training. If the evidence below doesn't have a specific number, don't fabricate one.
+
+EVIDENCE (organized by topic):
+
+${claimSummary}${figureInventory ? `\n\nFIGURES AVAILABLE (reference by figureRef of the specific learning point they illustrate — do NOT reference generically):\n${figureInventory}` : ""}
+
+═══════════════════════════════════════════════════════════════
+END OF STRUCTURED EVIDENCE
+═══════════════════════════════════════════════════════════════`;
     } else {
       // Fallback: raw text from each source, if synthesis unavailable
       const htmlToAiText = (html) => {
@@ -5093,8 +5122,9 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
     "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
   "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
   "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away ${isPreVisit ? "thinking about as they go into the visit" : "remembering from OUR encounter today"}",
-  "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}"
-}
+ "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}",
+  "absorbedEvidenceTopics": ["list of exact topic strings from the STRUCTURED EVIDENCE block above whose content you fully integrated into this case's teaching. This lets the app avoid duplicating those topics in a separate evidence section. Only list topics whose key facts you actually used in this case. Empty array if no evidence was provided or nothing was relevant."]
+}`;
 
 ALWAYS include these core sections regardless of focus selection: caseSummary (one sentence), primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (array of 2-3 items, may be empty array), landmarkTrial (object with name and oneLineSummary; both may be empty strings if no clearly practice-defining trial), practiceChangingUpdate (object with summary and yearRange; summary may be empty string if no recent practice-changing evidence — DO NOT populate to be helpful).
 
@@ -5108,9 +5138,11 @@ Before returning your JSON, verify these NEW fields are present in your response
 
 ✓ dontMiss — REQUIRED array (may be empty [] if no specific warning applies, but the KEY must exist in your JSON output). Contains 2-3 don't-miss items, iatrogenic risks, or prescribing pitfalls for THIS problem in THIS patient. Each item is one sentence.
 
+✓ EVIDENCE INTEGRATION CHECK: If the STRUCTURED EVIDENCE block contained specific facts relevant to this problem (trial names, guideline thresholds, cross-problem interactions, dosing nuance, contraindications), verify that those specifics appear inside your keyLearningPoints, treatmentApproach, differentialDiagnosis, or dontMiss fields — NOT paraphrased away into generic teaching. A case with rich curated evidence should read specifically, not generically. If you find yourself writing "guidelines recommend..." without a year or society, go back and add the specific citation from the evidence block.
+
 If these fields are absent from your JSON output, the response is invalid.
 
-The illnessScript section is the anchor for the student's growing library of pattern recognition — this is the CU Trek curriculum's explicit expectation (MEPO Patient Care #8: "organize knowledge of clinical and basic medical science using illness scripts"). Even if this is a case with an obvious diagnosis, the illness script section formalizes the pattern so the student can retrieve it faster next time. Do NOT skip this section. Do NOT make it generic textbook material — always anchor each element to what our specific patient does or does not show.
+The illnessScript section is the anchor for the student's growing library of pattern recognition
 
 Additionally include ONLY these focus-driven optional subsections based on what the attending selected: ${includedSections || "(none — core sections only)"}. Map focus keys to subsections as follows: history → focusedHistoryQuestions, physicalExam → physicalExam, management → treatmentApproach, patientContext → patientContextConsiderations, communication → communicationTeaching. keyLabsAndImaging is always returned because it is the patient's factual results list; when workup is selected, make its whyOrdered and clinicalMeaning explanations more detailed. If another optional focus key isn't selected, omit its subsection entirely (return null or empty).
 
@@ -18661,8 +18693,29 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   let evidenceHtml = "";
   const evidenceContent = s.synthesizedEvidence?.content;
   if (s.synthesizedEvidence?.enabled && evidenceContent) {
+    // Filter out topics that teaching cases reported absorbing, so evidence
+    // section shows only genuinely supplementary material.
+    const absorbedTopicStrings = new Set();
+    enabledCases.forEach((tc) => {
+      const absorbed = tc?.data?.absorbedEvidenceTopics;
+      if (Array.isArray(absorbed)) {
+        absorbed.forEach((t) => {
+          const norm = String(t || "").trim().toLowerCase();
+          if (norm) absorbedTopicStrings.add(norm);
+        });
+      }
+    });
+    const topicIsAbsorbed = (topic) => {
+      const topicLower = String(topic?.topic || "").toLowerCase().trim();
+      if (!topicLower) return false;
+      if (absorbedTopicStrings.has(topicLower)) return true;
+      for (const absorbed of absorbedTopicStrings) {
+        if (absorbed.includes(topicLower) || topicLower.includes(absorbed)) return true;
+      }
+      return false;
+    };
     const evidenceTopics = Array.isArray(evidenceContent.topics)
-      ? evidenceContent.topics.filter(Boolean)
+      ? evidenceContent.topics.filter(Boolean).filter((t) => !topicIsAbsorbed(t))
       : [];
     const evidenceTakeaways = Array.isArray(evidenceContent.keyTakeaways)
       ? evidenceContent.keyTakeaways.filter(Boolean)
@@ -23699,23 +23752,51 @@ function DocumentContent({ doc, phase, session }) {
           </section>
         )}
 
-        {/* Evidence Deep-Dive — only renders topics NOT already surfaced
-            under a specific case, so the section is genuinely supplementary. */}
+        {/* Evidence Deep-Dive — only renders topics NOT already integrated into
+            a specific case. Uses two signals:
+              1. absorbedEvidenceTopics: exact topic strings the AI reports as
+                 having fully integrated into that case's teaching sections
+              2. case-token fallback: fuzzy match on case name for legacy content
+                 or when the AI didn't populate absorbedEvidenceTopics
+            The section renders only genuinely unmatched, supplementary topics. */}
         {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (() => {
+          // Signal 1: exact topics reported as absorbed by any teaching case
+          const absorbedTopicStrings = new Set();
+          enabledCases.forEach(tc => {
+            const absorbed = tc.data?.absorbedEvidenceTopics;
+            if (Array.isArray(absorbed)) {
+              absorbed.forEach(t => {
+                const norm = String(t || "").trim().toLowerCase();
+                if (norm) absorbedTopicStrings.add(norm);
+              });
+            }
+          });
+
+          // Signal 2: fuzzy token match against case names (fallback)
           const caseTokens = enabledCases.flatMap(tc => {
             const c = tc.data;
             const problemLower = String(c.problem || "").toLowerCase();
             const diagnosisLower = String(c.primaryDiagnosis?.name || "").toLowerCase();
             return [problemLower, diagnosisLower].join(" ").split(/\s+/).filter(w => w.length > 3);
           });
-          const topicIsCaseMatched = (t) => {
-            const topicLower = String(t.topic || "").toLowerCase();
+
+          const topicIsAbsorbedOrMatched = (t) => {
+            const topicLower = String(t.topic || "").toLowerCase().trim();
+            if (!topicLower) return false;
+            // Exact absorbed match
+            if (absorbedTopicStrings.has(topicLower)) return true;
+            // Fuzzy: any absorbed topic string contains this one or vice versa
+            for (const absorbed of absorbedTopicStrings) {
+              if (absorbed.includes(topicLower) || topicLower.includes(absorbed)) return true;
+            }
+            // Fallback: case-name token overlap
             const topicTokens = topicLower.split(/\s+/).filter(w => w.length > 3);
             return topicTokens.some(tt => caseTokens.some(ct => tt.includes(ct) || ct.includes(tt)));
           };
+
           const leftoverContent = {
             ...s.synthesizedEvidence.content,
-            topics: (s.synthesizedEvidence.content.topics || []).filter(t => !topicIsCaseMatched(t)),
+            topics: (s.synthesizedEvidence.content.topics || []).filter(t => !topicIsAbsorbedOrMatched(t)),
           };
           if (!leftoverContent.topics.length && !leftoverContent.singleSource) return null;
           return (
