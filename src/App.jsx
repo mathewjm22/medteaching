@@ -5117,7 +5117,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 "suggestedQuestions": ["3-5 concrete questions the student should ask the patient about THIS specific problem during the visit — actionable, specific, and grounded in what the chart shows. Example: 'How are your bowel habits these days? Still alternating?' or 'Does shoulder pain wake you at night?' Written as questions a resident would actually ask, not screening tools."],
 "dontMiss": ["array of 2-3 short don't-miss items specific to THIS problem in THIS patient — each is one sentence naming a diagnosis to rule out, an iatrogenic risk, a prescribing pitfall, or a red-flag pattern that would change management. Example items: 'Confirm no red-flag features (weight loss, night pain, neurologic deficit) before assuming benign cause.', 'Check for QTc prolongation before starting azithromycin in a patient on citalopram.', 'Do not prescribe topical medications for undiagnosed family members — offer separate evaluation.' Return empty array if no specific warnings apply. Prefer 2-3 items over one when multiple are relevant.",
 "patientContextConsiderations": "2-3 sentences about THIS patient's specific SDoH, values, goals, and life situation ${isPreVisit ? "from the chart — reference what to be aware of going in and what to gently probe on" : "— reference her actual story (job, family, MST, name issue, whatever's relevant)"}",
-"landmarkTrial": {"name": "the single most practice-defining trial for this problem (e.g., 'SPRINT', 'PARADIGM-HF', 'CAPRIE'). Leave empty string if no single trial is clearly practice-defining.", "oneLineSummary": "one sentence: what the trial showed and why it changed practice. Example: 'In high-risk patients, targeting SBP <120 vs <140 reduced cardiovascular events by 25% at the cost of more AKI and syncope.' Leave empty string if no clear trial."},
+"landmarkTrial": {"name": "the single most practice-defining trial for this problem. If the STRUCTURED EVIDENCE above explicitly names a specific trial (e.g., 'MESA', 'SPRINT', 'PARADIGM-HF', 'NOTIFY-1', 'ADAM', 'PIVOTAL'), PREFER that trial over an unrelated famous trial you know from general training — the attending curated those sources deliberately. If the evidence doesn't name a specific trial, then fall back to the most practice-defining trial you know for this diagnosis. Leave empty string only if no single trial is clearly practice-defining.", "oneLineSummary": "one sentence: what the trial showed and why it changed practice. Example: 'In high-risk patients, targeting SBP <120 vs <140 reduced cardiovascular events by 25% at the cost of more AKI and syncope.' If the trial came from the structured evidence, use the evidence's phrasing of the finding rather than inventing your own. Leave empty string if no clear trial."},
   "practiceChangingUpdate": {"summary": "ONLY populate this field if the last 2-3 years (roughly 2023-2026) have produced evidence that MATERIALLY CHANGED how this problem is managed — a new drug approval that shifted first-line therapy, a major trial that flipped practice, an updated guideline with a substantive change. One sentence naming the update and citing the source (e.g., '2024 ADA guidelines added tirzepatide as first-line for T2DM with obesity, based on SURPASS-1 through SURPASS-5.'). If no recent practice-changing evidence exists — or if all the important evidence is >3 years old — leave this as an empty string. Do NOT populate this to be helpful when nothing has really changed; the value of this field depends on it firing only when there is a real recent update.", "yearRange": "e.g., '2024' or '2023-2025' — the year(s) when the update landed"},
     "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
   "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
@@ -5260,6 +5260,37 @@ ${isTangential
     if (patientDxCases.length > 1) {
       await wait(3000);
       setAiStatus(prev => ({ ...prev, progress: "Generating cross-cutting themes" }));
+
+      // Build the same structured-evidence context the teaching cases received, so
+      // themes can draw on specific cross-problem material from OpenEvidence /
+      // UpToDate / PDFs rather than making up interactions from general knowledge.
+      let themesEvidenceContext = "";
+      if (synthesizedEvidenceParam?.synthesized && synthesizedEvidenceParam.topics?.length > 0) {
+        const themesClaimSummary = synthesizedEvidenceParam.topics.map(topic => {
+          const claims = (topic.claims || []).map(c => {
+            const realCites = (c.citations || []).join(", ") || "no citation";
+            return `  • [${c.strength}] ${c.statement} — citations: ${realCites}`;
+          }).join("\n");
+          return `TOPIC: ${topic.topic}\n${claims}`;
+        }).join("\n\n");
+        themesEvidenceContext = `\n\n═══════════════════════════════════════════════════════════════
+STRUCTURED EVIDENCE FROM STEP 4 SOURCES
+═══════════════════════════════════════════════════════════════
+
+This evidence was already synthesized across the attending's chosen sources. Cross-problem interactions and shared clinical reasoning threads in this evidence are the HIGHEST-VALUE integrations for the themes call. Look specifically for:
+
+- Statements that explicitly link two or more of this patient's problems (e.g., "levothyroxine suppression should be avoided in CAD patients", "NSAIDs raise CV event risk in patients with atherosclerosis", "OSA drives resistant hypertension", "cannabis worsens sleep in patients using it for insomnia")
+- Shared risk multipliers (e.g., CKD amplifies statin benefit; smoking history compounds both lung cancer and CV risk)
+- Competing risk framing (e.g., "cardiovascular death rivals lung cancer death in LCS populations")
+- Management interactions where treating one problem changes how another should be managed
+
+Do NOT paraphrase these into generic themes. Cite the specific guideline / trial / mechanism when it's in the evidence below.
+
+${themesClaimSummary}
+
+═══════════════════════════════════════════════════════════════`;
+      }
+
       try {
         const themesSys = `You are the attending debriefing a case with your medical student. This patient has multiple active problems, and your job is to reveal how they connect — both conceptually (cross-cutting themes) and mechanistically (cross-problem interactions).
 
@@ -5276,6 +5307,9 @@ Bad interaction examples (too vague):
 - "Multiple comorbidities affect care" — not specific
 - "His problems are all cardiovascular in nature" — categorical, not mechanistic
 
+EVIDENCE INTEGRATION MANDATE:
+If the STRUCTURED EVIDENCE block below contains cross-problem material (contraindications spanning two conditions, shared risk multipliers, competing risk framing, management interactions), those are your PRIMARY source for interactions — do not ignore them and invent generic ones. When the evidence gives a specific citation (society + year, trial name), include it inline in the interaction description so the student sees where the recommendation comes from.
+
 IMPORTANT: Only weave in the problems the patient ACTUALLY has. Do NOT include any tangential topics that were added separately for teaching purposes — those aren't threads in this patient's story.
 
 Return ONLY valid JSON (no markdown fences):
@@ -5284,7 +5318,7 @@ Return ONLY valid JSON (no markdown fences):
   "crossProblemInteractions": [
     {
       "problems": ["Problem A", "Problem B"],
-      "interaction": "One paragraph explaining the mechanistic clinical interaction between these problems in THIS patient, ending with what to do about it. Reference specific chart facts (labs, medications, trajectories) where relevant."
+      "interaction": "One paragraph explaining the mechanistic clinical interaction between these problems in THIS patient, ending with what to do about it. Reference specific chart facts (labs, medications, trajectories) and specific guidelines/trials from the structured evidence where relevant."
     }
   ],
   "questionsForReflection": ["2-3 thought-provoking open-ended questions for the student to sit with after this encounter"]
@@ -5295,9 +5329,9 @@ Provide 2-4 crossProblemInteractions when the patient has 3+ selected problems; 
         const problemSummaries = patientDxCases.map(tc =>
           `- ${tc.problem}: ${tc.primaryDiagnosis?.name || ""} — ${tc.clinicalPearl || tc.primaryDiagnosis?.briefDefinition || ""}`
         ).join("\n");
-        const themesUser = `Patient chief concern: ${chiefConcern || "internal medicine encounter"}\n\nTeaching cases generated for this patient (patient-diagnosis cases only — tangential topics excluded):\n${problemSummaries}\n\nWhat are the deeper clinical reasoning threads that connect these problems in THIS patient?`;
+        const themesUser = `Patient chief concern: ${chiefConcern || "internal medicine encounter"}\n\nTeaching cases generated for this patient (patient-diagnosis cases only — tangential topics excluded):\n${problemSummaries}${themesEvidenceContext}\n\nWhat are the deeper clinical reasoning threads that connect these problems in THIS patient? Prioritize interactions and threads that are specifically supported by the structured evidence above.`;
         // Themes prompt is larger and now returns an additional structured field
-        const themesResp = await callAi(themesSys, themesUser, 3000);
+        const themesResp = await callAi(themesSys, themesUser, 3500);
         const themesParsed = extractJson(themesResp);
         crossCuttingThemes = themesParsed.crossCuttingThemes || [];
         crossProblemInteractions = themesParsed.crossProblemInteractions || [];
@@ -5465,12 +5499,35 @@ Return one object for each distinct diagnostic card in the chart section.`;
   // description ("what it treats / mechanism of action"). Used to annotate
   // the medication list in the in-room document so the student sees why the
   // patient is on each drug at a glance. One batch call to keep it cheap.
-  const generateMedDescriptions = async (medNames) => {
+  //
+  // When synthesized evidence is available, the AI is instructed to use the
+  // patient's specific clinical context (e.g., statin intensity logic if CAC
+  // was found, target INR from AF-specific guidelines) rather than generic
+  // pharmacology.
+  const generateMedDescriptions = async (medNames, synthesizedEvidenceParam = null) => {
     if (!aiEnabled || !medNames?.length) return {};
+
+    // Build a compact evidence block if available. Only include statements
+    // that could plausibly be relevant to a medication's use in this patient.
+    let medEvidenceContext = "";
+    if (synthesizedEvidenceParam?.synthesized && synthesizedEvidenceParam.topics?.length > 0) {
+      const relevantStatements = synthesizedEvidenceParam.topics.flatMap(topic =>
+        (topic.claims || []).map(c => {
+          const cite = (c.citations || []).join(", ");
+          return `- ${c.statement}${cite ? ` (${cite})` : ""}`;
+        })
+      ).slice(0, 40); // cap to keep prompt small
+      if (relevantStatements.length > 0) {
+        medEvidenceContext = `\n\nPATIENT-SPECIFIC EVIDENCE CONTEXT (from the attending's curated Step 4 sources):
+${relevantStatements.join("\n")}
+
+If any medication above is directly addressed by this evidence (e.g., the statin's target intensity given the patient's CAC findings, the levothyroxine dosing considerations given TSH targets, the SSRI's role given a specific psychiatric diagnosis), let the "treats" or "mechanism" description subtly reflect that patient-specific context in one added phrase. Do NOT bloat the descriptions — they must stay short. If the evidence doesn't specifically address a medication, fall back to standard generic descriptions.`;
+      }
+    }
 
     const sys = `You are a clinical pharmacist writing brief medication summaries for a medical student. For each medication provided, return ONE object with two very short strings:
 
-- "treats": common clinical indications for this drug, 3-8 words. E.g., "hypertension, heart failure" or "hypothyroidism, thyroid cancer suppression".
+- "treats": common clinical indications for this drug, 3-8 words. E.g., "hypertension, heart failure" or "hypothyroidism, thyroid cancer suppression". When the patient-specific evidence context below directly addresses this drug's use in this patient, you may add ONE short qualifier phrase (e.g., "hyperlipidemia — moderate-intensity per ACC/AHA 2019 for CAC-positive"), still staying under 12 words total.
 - "mechanism": mechanism of action in plain language, 6-15 words. E.g., "ARB — blocks angiotensin II at the AT1 receptor to lower BP" or "synthetic T4 that gets converted to T3 in tissue".
 
 Keep descriptions FACTUAL and BRIEF. No filler, no caveats, no dosing info.
@@ -5485,7 +5542,7 @@ Return ONLY valid JSON (no markdown fences):
 
 The keys in "medications" must EXACTLY match the medication names I provide (case-insensitive OK, but preserve spelling). If a name is a brand name, use it; if it's a generic, use it.`;
 
-    const user = `Provide brief descriptions for these medications:\n${medNames.map((m, i) => `${i + 1}. ${m}`).join("\n")}`;
+    const user = `Provide brief descriptions for these medications:\n${medNames.map((m, i) => `${i + 1}. ${m}`).join("\n")}${medEvidenceContext}`;
 
     try {
       const response = await callAi(sys, user, 4000);
@@ -6796,7 +6853,7 @@ Formatting rules:
             if (medNames.length > 0) {
               setAiStatus(prev => ({ ...prev, progress: `Getting descriptions for ${medNames.length} medications` }));
               try {
-                const descriptions = await generateMedDescriptions(medNames);
+                const descriptions = await generateMedDescriptions(medNames, synthesized);
                 aiContent.medDescriptions = descriptions;
               } catch (e) {
                 console.warn("Med descriptions failed:", e);
@@ -18693,30 +18750,17 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   let evidenceHtml = "";
   const evidenceContent = s.synthesizedEvidence?.content;
   if (s.synthesizedEvidence?.enabled && evidenceContent) {
-    // Filter out topics that teaching cases reported absorbing, so evidence
-    // section shows only genuinely supplementary material.
-    const absorbedTopicStrings = new Set();
-    enabledCases.forEach((tc) => {
-      const absorbed = tc?.data?.absorbedEvidenceTopics;
-      if (Array.isArray(absorbed)) {
-        absorbed.forEach((t) => {
-          const norm = String(t || "").trim().toLowerCase();
-          if (norm) absorbedTopicStrings.add(norm);
-        });
-      }
-    });
+    // Filter out topics that teaching cases successfully absorbed, using the
+    // verified-absorption check so we don't trust lazy AI claims.
+    const allEvidenceTopics = Array.isArray(evidenceContent.topics)
+      ? evidenceContent.topics.filter(Boolean)
+      : [];
+    const verifiedAbsorbed = verifyAbsorbedEvidenceTopics(enabledCases, allEvidenceTopics);
     const topicIsAbsorbed = (topic) => {
       const topicLower = String(topic?.topic || "").toLowerCase().trim();
-      if (!topicLower) return false;
-      if (absorbedTopicStrings.has(topicLower)) return true;
-      for (const absorbed of absorbedTopicStrings) {
-        if (absorbed.includes(topicLower) || topicLower.includes(absorbed)) return true;
-      }
-      return false;
+      return topicLower ? verifiedAbsorbed.has(topicLower) : false;
     };
-    const evidenceTopics = Array.isArray(evidenceContent.topics)
-      ? evidenceContent.topics.filter(Boolean).filter((t) => !topicIsAbsorbed(t))
-      : [];
+    const evidenceTopics = allEvidenceTopics.filter((t) => !topicIsAbsorbed(t));
     const evidenceTakeaways = Array.isArray(evidenceContent.keyTakeaways)
       ? evidenceContent.keyTakeaways.filter(Boolean)
       : [];
@@ -23161,6 +23205,108 @@ function DeidentificationReviewer({ rawText, initialResult, onConfirm, onCancel 
   );
 }
 
+// ============ EVIDENCE ABSORPTION VERIFICATION ============
+// The AI reports which evidence topics it absorbed into each case, but that
+// claim is trust-based. This helper cross-checks the claim: for each topic
+// the AI says it absorbed, we look at the topic's evidence text (statements +
+// citations) and compare tokens against the case's teaching text (learning
+// points, treatment approach, differential, dontMiss). If overlap is below
+// a threshold, we don't trust the absorption claim and keep the topic in the
+// deep-dive so the student still sees it.
+const verifyAbsorbedEvidenceTopics = (enabledCases, evidenceTopics) => {
+  const verifiedAbsorbed = new Set();
+  if (!Array.isArray(enabledCases) || !Array.isArray(evidenceTopics)) return verifiedAbsorbed;
+
+  const STOP_WORDS = new Set([
+    "the", "a", "an", "and", "or", "of", "in", "on", "with", "for", "to", "from",
+    "by", "at", "as", "is", "was", "are", "were", "be", "been", "being", "this",
+    "that", "these", "those", "it", "its", "his", "her", "their", "our", "your",
+    "may", "can", "should", "would", "could", "will", "have", "has", "had",
+    "not", "but", "if", "than", "then", "when", "where", "which", "who", "what",
+    "how", "any", "all", "some", "more", "most", "also", "into", "over", "per",
+    "via", "such", "no", "yes", "one", "two", "three", "patient", "patients",
+  ]);
+
+  const tokenize = (text) =>
+    String(text || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, " ")
+      .split(/\s+/)
+      .filter(t => t.length > 3 && !STOP_WORDS.has(t));
+
+  // Build a per-case token set from all teaching-content fields
+  const caseTokenSets = enabledCases.map(tc => {
+    const c = tc?.data || tc || {};
+    const parts = [];
+
+    (c.keyLearningPoints || []).forEach(lp => {
+      parts.push(lp?.point || "", lp?.explanation || "", lp?.citation || "");
+    });
+    (c.differentialDiagnosis || []).forEach(dd => {
+      parts.push(dd?.diagnosis || "", dd?.reasoning || "");
+    });
+    (c.treatmentApproach?.firstLine || []).forEach(t => {
+      parts.push(
+        t?.treatment || "", t?.dosing || "", t?.teachingRationale || "",
+        t?.monitoring || "", t?.adverseEffectsToWatch || "", t?.evidence || ""
+      );
+    });
+    (c.treatmentApproach?.additional || []).forEach(a => parts.push(String(a || "")));
+    if (Array.isArray(c.dontMiss)) c.dontMiss.forEach(d => parts.push(String(d || "")));
+    parts.push(c.clinicalPearl || "");
+    parts.push(c.landmarkTrial?.name || "", c.landmarkTrial?.oneLineSummary || "");
+    parts.push(c.practiceChangingUpdate?.summary || "");
+
+    const absorbed = Array.isArray(c.absorbedEvidenceTopics)
+      ? c.absorbedEvidenceTopics.map(t => String(t || "").trim().toLowerCase()).filter(Boolean)
+      : [];
+
+    return {
+      caseTokens: new Set(tokenize(parts.join(" "))),
+      absorbedTopics: absorbed,
+    };
+  });
+
+  // For each claimed absorbed topic, verify against the case that claimed it
+  evidenceTopics.forEach(topic => {
+    const topicName = String(topic?.topic || "").trim().toLowerCase();
+    if (!topicName) return;
+
+    // Build topic evidence tokens from its claims (statements + citations, not tool provenance)
+    const evidenceText = (topic.claims || []).map(c => {
+      const citations = (c.citations || []).join(" ");
+      return `${c.statement || ""} ${citations}`;
+    }).join(" ");
+    const topicTokens = new Set(tokenize(`${topicName} ${evidenceText}`));
+    if (topicTokens.size === 0) return;
+
+    // Find any case that claimed to absorb this topic
+    for (const { caseTokens, absorbedTopics } of caseTokenSets) {
+      const claimed = absorbedTopics.some(a =>
+        a === topicName || a.includes(topicName) || topicName.includes(a)
+      );
+      if (!claimed) continue;
+
+      // Compute overlap: what fraction of topic tokens appear in the case's teaching text?
+      let shared = 0;
+      topicTokens.forEach(t => { if (caseTokens.has(t)) shared += 1; });
+      const overlap = shared / topicTokens.size;
+
+      // Threshold: 25% of topic's meaningful tokens must appear in the case.
+      // Empirically this catches clear integration (specific trial names,
+      // guideline years, thresholds usually push overlap above 30%) while
+      // rejecting bare "yes I absorbed it" claims where the case text is
+      // generic.
+      if (overlap >= 0.25) {
+        verifiedAbsorbed.add(topicName);
+        break;
+      }
+    }
+  });
+
+  return verifiedAbsorbed;
+};
+
 // ============ DOCUMENT CONTENT (extracted for cleanliness) ============
 function DocumentContent({ doc, phase, session }) {
   const s = doc.sections || {};
@@ -23752,27 +23898,22 @@ function DocumentContent({ doc, phase, session }) {
           </section>
         )}
 
-        {/* Evidence Deep-Dive — only renders topics NOT already integrated into
-            a specific case. Uses two signals:
-              1. absorbedEvidenceTopics: exact topic strings the AI reports as
-                 having fully integrated into that case's teaching sections
-              2. case-token fallback: fuzzy match on case name for legacy content
-                 or when the AI didn't populate absorbedEvidenceTopics
+       {/* Evidence Deep-Dive — only renders topics NOT already integrated into
+            a specific case. Uses three signals:
+              1. VERIFIED absorbedEvidenceTopics: the AI's claim confirmed by
+                 token-overlap between the topic's evidence and the case's
+                 teaching text. Prevents the AI from lazily hiding topics.
+              2. Case-token fuzzy match: safety net for legacy content where
+                 the AI didn't populate absorbedEvidenceTopics at all.
             The section renders only genuinely unmatched, supplementary topics. */}
         {s.synthesizedEvidence?.enabled && s.synthesizedEvidence.content && (() => {
-          // Signal 1: exact topics reported as absorbed by any teaching case
-          const absorbedTopicStrings = new Set();
-          enabledCases.forEach(tc => {
-            const absorbed = tc.data?.absorbedEvidenceTopics;
-            if (Array.isArray(absorbed)) {
-              absorbed.forEach(t => {
-                const norm = String(t || "").trim().toLowerCase();
-                if (norm) absorbedTopicStrings.add(norm);
-              });
-            }
-          });
+          const allTopics = s.synthesizedEvidence.content.topics || [];
 
-          // Signal 2: fuzzy token match against case names (fallback)
+          // Signal 1: verified absorption (AI claim + token-overlap check)
+          const verifiedAbsorbed = verifyAbsorbedEvidenceTopics(enabledCases, allTopics);
+
+          // Signal 2: fuzzy token match against case names (fallback for cases
+          // that predate absorbedEvidenceTopics or produced empty arrays)
           const caseTokens = enabledCases.flatMap(tc => {
             const c = tc.data;
             const problemLower = String(c.problem || "").toLowerCase();
@@ -23783,12 +23924,7 @@ function DocumentContent({ doc, phase, session }) {
           const topicIsAbsorbedOrMatched = (t) => {
             const topicLower = String(t.topic || "").toLowerCase().trim();
             if (!topicLower) return false;
-            // Exact absorbed match
-            if (absorbedTopicStrings.has(topicLower)) return true;
-            // Fuzzy: any absorbed topic string contains this one or vice versa
-            for (const absorbed of absorbedTopicStrings) {
-              if (absorbed.includes(topicLower) || topicLower.includes(absorbed)) return true;
-            }
+            if (verifiedAbsorbed.has(topicLower)) return true;
             // Fallback: case-name token overlap
             const topicTokens = topicLower.split(/\s+/).filter(w => w.length > 3);
             return topicTokens.some(tt => caseTokens.some(ct => tt.includes(ct) || ct.includes(tt)));
@@ -23796,7 +23932,7 @@ function DocumentContent({ doc, phase, session }) {
 
           const leftoverContent = {
             ...s.synthesizedEvidence.content,
-            topics: (s.synthesizedEvidence.content.topics || []).filter(t => !topicIsAbsorbedOrMatched(t)),
+            topics: allTopics.filter(t => !topicIsAbsorbedOrMatched(t)),
           };
           if (!leftoverContent.topics.length && !leftoverContent.singleSource) return null;
           return (
