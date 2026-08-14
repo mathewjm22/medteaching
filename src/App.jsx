@@ -5124,7 +5124,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
   "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away ${isPreVisit ? "thinking about as they go into the visit" : "remembering from OUR encounter today"}",
  "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}",
   "absorbedEvidenceTopics": ["list of exact topic strings from the STRUCTURED EVIDENCE block above whose content you fully integrated into this case's teaching. This lets the app avoid duplicating those topics in a separate evidence section. Only list topics whose key facts you actually used in this case. Empty array if no evidence was provided or nothing was relevant."]
-}`;
+}
 
 ALWAYS include these core sections regardless of focus selection: caseSummary (one sentence), primaryDiagnosis, illnessScript, differentialDiagnosis, keyLearningPoints, shelfQuestions (exactly 3), keyLabsAndImaging (completed chart-documented results only; may be an empty array), recommendedReading, clinicalPearl, quoteToDiscuss, suggestedQuestions (3-5 questions), dontMiss (array of 2-3 items, may be empty array), landmarkTrial (object with name and oneLineSummary; both may be empty strings if no clearly practice-defining trial), practiceChangingUpdate (object with summary and yearRange; summary may be empty string if no recent practice-changing evidence — DO NOT populate to be helpful).
 
