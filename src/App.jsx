@@ -19817,21 +19817,29 @@ body.dark .oneliner strong { color: var(--accent); }
   letter-spacing: 0.11em;
   text-transform: uppercase;
 }
+.aggregated-dont-miss .dm-group {
+  margin-bottom: 7px;
+}
+.aggregated-dont-miss .dm-group:last-child {
+  margin-bottom: 0;
+}
+.aggregated-dont-miss .dm-group-header {
+  font-family: 'Inter', sans-serif;
+  font-size: 7.5pt;
+  font-weight: 700;
+  color: var(--danger-text);
+  margin-bottom: 2px;
+}
 .aggregated-dont-miss ul {
   margin: 0;
   padding-left: 18px;
   list-style: disc;
 }
 .aggregated-dont-miss li {
-  margin-bottom: 3px;
+  margin-bottom: 2px;
   color: var(--danger-text);
   font-size: 8.5pt;
   line-height: 1.45;
-}
-.aggregated-dont-miss .dm-problem {
-  color: var(--danger-text);
-  font-weight: 700;
-  margin-right: 3px;
 }
 
 /* Allergy bar */
@@ -20545,9 +20553,9 @@ body.dark .prob-title { color: var(--accent); }
 }
 .problem-key-takeaway-text {
   color: var(--fg);
-  font-size: 9.5pt;
+  font-size: 9pt;
   font-weight: 600;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 body.dark .problem-key-takeaway {
   background: linear-gradient(90deg, rgba(255, 87, 87, 0.13) 0%, rgba(255, 87, 87, 0.04) 100%);
@@ -21004,13 +21012,15 @@ body.dark .shelf-badge { background: rgba(202, 138, 4, 0.18); color: #fde68a; }
   line-height: 1.42;
 }
 
-/* Pause-and-think prompt with reveal */
+/* Pause-and-think prompt with reveal. Updated to use the terracotta/sand
+   system for palette consistency (previously amber/brown, which fell outside
+   the Phase 1 three-accent palette). */
 .pause-think {
   margin: 10px 0;
   padding: 10px 12px;
-  border-left: 3px solid #ca8a04;
+  border-left: 3px solid var(--accent);
   border-radius: 0 4px 4px 0;
-  background: linear-gradient(90deg, rgba(202, 138, 4, 0.09) 0%, rgba(202, 138, 4, 0.02) 100%);
+  background: linear-gradient(90deg, var(--sand-strong, rgba(242, 217, 187, 0.45)) 0%, var(--sand-subtle, rgba(242, 217, 187, 0.15)) 100%);
   break-inside: avoid;
 }
 .pause-think-label {
@@ -21019,7 +21029,7 @@ body.dark .shelf-badge { background: rgba(202, 138, 4, 0.18); color: #fde68a; }
   font-weight: 800;
   letter-spacing: 0.13em;
   text-transform: uppercase;
-  color: #78350f;
+  color: var(--accent);
   margin-bottom: 5px;
 }
 .pause-think-prompt {
@@ -21033,7 +21043,7 @@ body.dark .shelf-badge { background: rgba(202, 138, 4, 0.18); color: #fde68a; }
   cursor: pointer;
   font-family: 'Inter', sans-serif;
   font-size: 7pt;
-  color: #78350f;
+  color: var(--accent);
   font-weight: 700;
   letter-spacing: 0.07em;
   text-transform: uppercase;
@@ -21044,13 +21054,13 @@ body.dark .shelf-badge { background: rgba(202, 138, 4, 0.18); color: #fde68a; }
   margin-top: 5px;
   padding: 5px 8px;
   background: white;
-  border: 1px solid rgba(202, 138, 4, 0.24);
+  border: 1px solid rgba(55, 108, 139, 0.16);
   border-radius: 3px;
   font-size: 8.5pt;
   line-height: 1.5;
   color: var(--fg-m);
 }
-body.dark .pause-think-body { background: rgba(202, 138, 4, 0.06); color: var(--fg); }
+body.dark .pause-think-body { background: rgba(242, 217, 187, 0.06); color: var(--fg); }
 @media print {
   .pause-think-reveal[open] .pause-think-body,
   .pause-think-reveal .pause-think-body { display: block !important; }
@@ -22584,19 +22594,27 @@ ${allergyBarHtml}
 </div>
 ${overviewHtml}
 ${(() => {
-  // Aggregated don't-miss strip. Pulls from every enabled patient-diagnosis
-  // teaching case and renders as a single pre-flight checklist near the top.
-  const aggregatedDontMiss = enabledCases.flatMap(tc => {
-    const problem = tc.data?.problem || tc.problem || "";
-    const items = Array.isArray(tc.data?.dontMiss)
-      ? tc.data.dontMiss.filter(item => item && String(item).trim())
-      : (typeof tc.data?.dontMiss === "string" && tc.data.dontMiss.trim()
-          ? [tc.data.dontMiss.trim()]
-          : []);
-    return items.map(item => ({ problem, item }));
-  });
-  if (aggregatedDontMiss.length === 0) return "";
-  return `<div class="aggregated-dont-miss"><div class="aggregated-dont-miss-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss — All Problems</div><ul>${aggregatedDontMiss.map(entry => `<li>${entry.problem ? `<span class="dm-problem">[${esc(entry.problem)}]</span> ` : ""}${esc(entry.item)}</li>`).join("")}</ul></div>`;
+  // Aggregated don't-miss strip. Grouped by problem so the same diagnosis
+  // isn't repeated for each of its items — one problem header, indented
+  // bullets for its items.
+  const groupedDontMiss = enabledCases
+    .map(tc => {
+      const problem = tc.data?.problem || tc.problem || "";
+      const items = Array.isArray(tc.data?.dontMiss)
+        ? tc.data.dontMiss.filter(item => item && String(item).trim())
+        : (typeof tc.data?.dontMiss === "string" && tc.data.dontMiss.trim()
+            ? [tc.data.dontMiss.trim()]
+            : []);
+      return { problem, items };
+    })
+    .filter(group => group.items.length > 0);
+  if (groupedDontMiss.length === 0) return "";
+  const groupHtml = groupedDontMiss.map(group => {
+    const header = group.problem ? `<div class="dm-group-header">${esc(group.problem)}</div>` : "";
+    const items = group.items.map(item => `<li>${esc(item)}</li>`).join("");
+    return `<div class="dm-group">${header}<ul>${items}</ul></div>`;
+  }).join("");
+  return `<div class="aggregated-dont-miss"><div class="aggregated-dont-miss-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss — All Problems</div>${groupHtml}</div>`;
 })()}
 ${topNarrativeHtml}
 ${priorityFocusHtml}
@@ -23363,8 +23381,16 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
   .post-visit-document .doc-table { min-width: 500px; }
 }
 
+/* Pause-and-think: interactive reveal is visible on screen only;
+   the always-visible print version is hidden on screen. */
+.post-visit-document .pause-think-print { display: none; }
+@media screen {
+  .post-visit-document .pause-think-interactive { display: block; }
+}
 @page { size: letter; margin: 0.5in 0.55in 0.6in; }
 @media print {
+  .post-visit-document .pause-think-interactive { display: none !important; }
+  .post-visit-document .pause-think-print { display: block !important; }
   .post-visit-document,
   .post-visit-document p,
   .post-visit-document li,
@@ -24749,21 +24775,24 @@ function DocumentContent({ doc, phase, session }) {
           </section>
         )}
 
-        {/* Don't Miss — aggregated across all cases. Pre-flight checklist
-            the student can scan before entering a room or during a shelf-style
-            review. Individual per-case dontMiss boxes remain in each case
-            section since they read better with local context. */}
+        {/* Don't Miss — aggregated across all cases and grouped by problem so
+            the same diagnosis isn't repeated for each of its items. Each problem
+            appears once as a header with its don't-miss items as indented bullets.
+            Individual per-case dontMiss boxes remain in each case section since
+            they read better with local context. */}
         {(() => {
-          const aggregatedDontMiss = enabledCases.flatMap(tc => {
-            const problem = tc.data?.problem || "";
-            const items = Array.isArray(tc.data?.dontMiss)
-              ? tc.data.dontMiss.filter(item => item && String(item).trim())
-              : (typeof tc.data?.dontMiss === "string" && tc.data.dontMiss.trim()
-                  ? [tc.data.dontMiss.trim()]
-                  : []);
-            return items.map(item => ({ problem, item }));
-          });
-          if (aggregatedDontMiss.length === 0) return null;
+          const groupedDontMiss = enabledCases
+            .map(tc => {
+              const problem = tc.data?.problem || "";
+              const items = Array.isArray(tc.data?.dontMiss)
+                ? tc.data.dontMiss.filter(item => item && String(item).trim())
+                : (typeof tc.data?.dontMiss === "string" && tc.data.dontMiss.trim()
+                    ? [tc.data.dontMiss.trim()]
+                    : []);
+              return { problem, items };
+            })
+            .filter(group => group.items.length > 0);
+          if (groupedDontMiss.length === 0) return null;
           return (
             <section className="keep-together" style={{ marginBottom: "2rem" }}>
               <div style={{
@@ -24780,27 +24809,37 @@ function DocumentContent({ doc, phase, session }) {
                   letterSpacing: "0.12em",
                   textTransform: "uppercase",
                   color: "var(--doc-conflict)",
-                  marginBottom: "0.5rem",
+                  marginBottom: "0.6rem",
                 }}>
                   Don't Miss — All Problems
                 </div>
-                <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
-                  {aggregatedDontMiss.map((entry, i) => (
-                    <li key={i} style={{
-                      marginBottom: "0.35rem",
-                      fontSize: "0.87rem",
-                      lineHeight: 1.5,
-                      color: "#7a1f2b",
-                    }}>
-                      {entry.problem && (
-                        <span style={{ fontWeight: 700, marginRight: "0.35rem" }}>
-                          [{entry.problem}]
-                        </span>
-                      )}
-                      {entry.item}
-                    </li>
-                  ))}
-                </ul>
+                {groupedDontMiss.map((group, gi) => (
+                  <div key={gi} style={{ marginBottom: gi < groupedDontMiss.length - 1 ? "0.6rem" : 0 }}>
+                    {group.problem && (
+                      <div style={{
+                        fontFamily: "'Inter', sans-serif",
+                        fontSize: "0.72rem",
+                        fontWeight: 700,
+                        color: "#7a1f2b",
+                        marginBottom: "0.2rem",
+                      }}>
+                        {group.problem}
+                      </div>
+                    )}
+                    <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                      {group.items.map((item, i) => (
+                        <li key={i} style={{
+                          marginBottom: "0.2rem",
+                          fontSize: "0.87rem",
+                          lineHeight: 1.5,
+                          color: "#7a1f2b",
+                        }}>
+                          {item}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
               </div>
             </section>
           );
@@ -24908,7 +24947,7 @@ function DocumentContent({ doc, phase, session }) {
                     If you remember only one thing
                   </div>
                   <div style={{
-                    fontSize: "0.95rem",
+                    fontSize: "0.88rem",
                     fontWeight: 600,
                     lineHeight: 1.5,
                     color: "var(--doc-navy)",
@@ -24970,33 +25009,24 @@ function DocumentContent({ doc, phase, session }) {
               )}
 
               {c.pauseAndThink?.prompt && c.pauseAndThink?.reveal && (
-                <div className="keep-together no-print" style={{ marginBottom: "1.5rem", padding: "0.9rem 1rem", background: "linear-gradient(90deg, rgba(202, 138, 4, 0.09) 0%, rgba(202, 138, 4, 0.02) 100%)", borderLeft: "3px solid #ca8a04", borderRadius: "0 4px 4px 0" }}>
-                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "#78350f", marginBottom: "0.4rem" }}>
+                <div className="keep-together pause-think-container" style={{ marginBottom: "1.5rem", padding: "0.9rem 1rem", background: "linear-gradient(90deg, rgba(242, 217, 187, 0.45) 0%, rgba(242, 217, 187, 0.15) 100%)", borderLeft: "3px solid var(--doc-terracotta)", borderRadius: "0 4px 4px 0" }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "var(--doc-terracotta)", marginBottom: "0.4rem" }}>
                     Pause and Think
                   </div>
                   <div style={{ fontSize: "0.92rem", fontStyle: "italic", color: "var(--doc-navy)", marginBottom: "0.5rem", lineHeight: 1.55 }}>
                     {c.pauseAndThink.prompt}
                   </div>
-                  <details>
-                    <summary style={{ cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: "0.7rem", color: "#78350f", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", listStyle: "none" }}>
+                  {/* Interactive reveal — hidden in print via CSS */}
+                  <details className="pause-think-interactive">
+                    <summary style={{ cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: "0.7rem", color: "var(--doc-terracotta)", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", listStyle: "none" }}>
                       <span style={{ marginRight: "0.35rem" }}>▸</span>Reveal answer
                     </summary>
-                    <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "white", border: "1px solid rgba(202, 138, 4, 0.24)", borderRadius: "3px", fontSize: "0.9rem", lineHeight: 1.55 }}>
+                    <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "white", border: "1px solid rgba(55, 108, 139, 0.16)", borderRadius: "3px", fontSize: "0.9rem", lineHeight: 1.55 }}>
                       {c.pauseAndThink.reveal}
                     </div>
                   </details>
-                </div>
-              )}
-              {/* Print-only version — always visible in PDF */}
-              {c.pauseAndThink?.prompt && c.pauseAndThink?.reveal && (
-                <div className="print-only keep-together" style={{ marginBottom: "1.5rem", padding: "0.9rem 1rem", background: "rgba(202, 138, 4, 0.06)", borderLeft: "3px solid #ca8a04" }}>
-                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "#78350f", marginBottom: "0.4rem" }}>
-                    Pause and Think
-                  </div>
-                  <div style={{ fontSize: "0.92rem", fontStyle: "italic", color: "var(--doc-navy)", marginBottom: "0.4rem" }}>
-                    {c.pauseAndThink.prompt}
-                  </div>
-                  <div style={{ fontSize: "0.9rem", paddingTop: "0.4rem", borderTop: "1px dashed rgba(202, 138, 4, 0.32)" }}>
+                  {/* Print-only answer — always visible in PDF */}
+                  <div className="pause-think-print" style={{ marginTop: "0.5rem", paddingTop: "0.4rem", borderTop: "1px dashed rgba(55, 108, 139, 0.24)", fontSize: "0.9rem", lineHeight: 1.55 }}>
                     <strong>Answer:</strong> {c.pauseAndThink.reveal}
                   </div>
                 </div>
