@@ -20501,14 +20501,14 @@ body.dark .problem-index-head { background: rgba(99,143,168,.13); }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 14px;
+  padding: 14px 16px;
   background: var(--problem-head-bg);
   border-bottom: 1px solid var(--problem-border);
   gap: 10px;
   page-break-after: avoid;
 }
-.prob-title { font-size: 12pt; font-weight: 700; color: var(--accent); line-height: 1.25; letter-spacing: -0.005em; }
-.prob-sub { font-size: 8.5pt; color: var(--fg-d); font-weight: 400; margin-top: 3px; }
+.prob-title { font-size: 14pt; font-weight: 700; color: var(--accent); line-height: 1.2; letter-spacing: -0.01em; }
+.prob-sub { font-size: 8.5pt; color: var(--fg-d); font-weight: 400; margin-top: 4px; }
 body.dark .prob.prob-tone-blue {
   --problem-bg: rgba(99, 143, 168, 0.075);
   --problem-head-bg: rgba(99, 143, 168, 0.14);
@@ -20788,8 +20788,9 @@ body.dark .background-orientation { background: rgba(242,217,187,.055); }
 .prob-focus-line {
   margin-top: 5px;
   color: var(--fg-d);
-  font-size: 7pt;
+  font-size: 7.5pt;
   font-style: italic;
+  letter-spacing: 0.02em;
   line-height: 1.35;
 }
 .teaching-detail { page-break-inside: avoid; }
@@ -20909,16 +20910,55 @@ body.dark .history-question-list li { background: rgba(255,255,255,.02); }
 .reading-list li { margin-bottom: 6px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.4; }
 .reading-reference { color: var(--fg); font-weight: 600; }
 .reading-relevance { margin-top: 2px; color: var(--fg-d); font-size: 8pt; font-style: italic; }
+/* Patient's Voice — typographic distinction from teaching callouts.
+   Large decorative opening quote mark (Source Serif 4), no border rail,
+   no colored background. Reads as "something the patient said" rather
+   than another attending pearl. */
 .patient-voice-box {
-  margin-top: 10px;
-  padding: 10px 12px;
-  border: 1px solid rgba(55,108,139,.22);
-  border-radius: 5px;
-  background: rgba(99,143,168,.08);
+  position: relative;
+  margin-top: 12px;
+  margin-bottom: 4px;
+  padding: 6px 12px 8px 44px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   page-break-inside: avoid;
+  break-inside: avoid;
 }
-.patient-voice-label { color: var(--accent); font-size: 7pt; font-weight: 800; text-transform: uppercase; letter-spacing: .09em; margin-bottom: 5px; }
-.patient-voice-text { color: var(--fg); font-size: 9pt; font-style: italic; line-height: 1.5; }
+.patient-voice-box::before {
+  content: "\\201C";
+  display: block;
+  position: absolute;
+  left: 6px;
+  top: -2px;
+  font-family: 'Source Serif 4', Georgia, serif;
+  font-size: 38pt;
+  font-weight: 400;
+  line-height: 1;
+  color: var(--accent);
+  opacity: 0.35;
+  pointer-events: none;
+}
+.patient-voice-label {
+  color: var(--doc-warm-gray, var(--fg-d));
+  font-family: 'Inter', sans-serif;
+  font-size: 6.5pt;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  margin-bottom: 4px;
+}
+.patient-voice-text {
+  color: var(--fg);
+  font-family: 'Source Serif 4', Georgia, serif;
+  font-size: 10pt;
+  font-style: italic;
+  line-height: 1.55;
+}
+body.dark .patient-voice-box::before {
+  color: var(--palette-sand);
+  opacity: 0.45;
+}
 .figure-ref-links { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--accent); font-size: 7.5pt; font-style: normal; white-space: normal; }
 .figure-ref-links a { color: var(--accent); font-weight: 700; text-decoration: underline; text-decoration-style: dotted; }
 
@@ -20965,27 +21005,34 @@ body.dark .history-question-list li { background: rgba(255,255,255,.02); }
 .teaching-point-list li { list-style: none; margin-bottom: 8px; padding-left: 0; }
 .teaching-point-list li[data-hidden="true"] { display: none; }
 .teaching-point-header { display: inline; }
+/* Priority chips and shelf badge — reduced visual weight so they read as
+   metadata annotations rather than heading elements. Border replaced with
+   a subtle bottom-only rule; chip sits slightly below baseline. Shelf
+   badge palette shifted from amber to sand + navy to match the Phase 1
+   three-accent system. */
 .priority-chip, .shelf-badge {
   display: inline-block;
   font-family: 'Inter', -apple-system, sans-serif;
-  font-size: 6pt;
+  font-size: 5.5pt;
   font-weight: 700;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.09em;
   text-transform: uppercase;
-  padding: 1px 5px;
+  padding: 0 5px;
   border-radius: 2px;
-  margin-right: 5px;
-  vertical-align: middle;
-  border: 1px solid;
+  margin-right: 4px;
+  vertical-align: 1px;
+  border: 0;
+  border-bottom: 1px solid;
+  line-height: 1.7;
 }
-.priority-core { background: rgba(255, 87, 87, 0.12); color: #7a1f2b; border-color: rgba(255, 87, 87, 0.32); }
-.priority-context { background: rgba(107, 114, 128, 0.10); color: #4b5563; border-color: rgba(107, 114, 128, 0.28); }
-.priority-deep { background: rgba(55, 108, 139, 0.10); color: var(--accent); border-color: rgba(55, 108, 139, 0.32); }
-.shelf-badge { background: rgba(202, 138, 4, 0.14); color: #78350f; border-color: rgba(202, 138, 4, 0.32); }
+.priority-core { background: rgba(255, 87, 87, 0.12); color: #7a1f2b; border-bottom-color: rgba(255, 87, 87, 0.32); }
+.priority-context { background: rgba(107, 114, 128, 0.10); color: #4b5563; border-bottom-color: rgba(107, 114, 128, 0.28); }
+.priority-deep { background: rgba(55, 108, 139, 0.10); color: var(--accent); border-bottom-color: rgba(55, 108, 139, 0.32); }
+.shelf-badge { background: var(--sand-medium, rgba(242, 217, 187, 0.30)); color: var(--accent); border-bottom-color: rgba(55, 108, 139, 0.24); }
 body.dark .priority-core { background: rgba(255, 87, 87, 0.16); color: #f4b4bb; }
-body.dark .priority-context { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; border-color: rgba(148, 163, 184, 0.28); }
+body.dark .priority-context { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; border-bottom-color: rgba(148, 163, 184, 0.28); }
 body.dark .priority-deep { background: rgba(99, 143, 168, 0.16); color: #a5cbe2; }
-body.dark .shelf-badge { background: rgba(202, 138, 4, 0.18); color: #fde68a; }
+body.dark .shelf-badge { background: rgba(242, 217, 187, 0.10); color: var(--palette-sand); border-bottom-color: rgba(242, 217, 187, 0.28); }
 
 /* Active-recall prompt (collapsible) */
 .recall-prompt { margin-top: 3px; }
@@ -23122,8 +23169,8 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
   --case-border: rgba(242,217,187,.16);
 }
 .post-visit-document .doc-case-banner {
-  margin: 0 -12px 10px !important;
-  padding: 8px 12px !important;
+  margin: 0 -12px 12px !important;
+  padding: 12px 14px !important;
   border: 0 !important;
   border-bottom: 1px solid var(--case-border) !important;
   border-radius: 0 !important;
@@ -23132,24 +23179,27 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
   color: var(--fg) !important;
 }
 .post-visit-document .doc-case-banner .doc-case-numeral {
-  margin-bottom: 2px !important;
+  margin-bottom: 3px !important;
   color: var(--fg-d) !important;
-  font-size: 7pt !important;
+  font-size: 6pt !important;
   font-weight: 700 !important;
-  letter-spacing: 0.08em !important;
+  letter-spacing: 0.16em !important;
+  text-transform: uppercase !important;
 }
 .post-visit-document .doc-case-banner .doc-case-title {
   margin: 0 !important;
   color: var(--fg) !important;
-  font-size: 11pt !important;
+  font-size: 14pt !important;
   font-weight: 700 !important;
-  line-height: 1.3 !important;
+  line-height: 1.2 !important;
+  letter-spacing: -0.01em !important;
 }
 .post-visit-document .doc-case-banner .case-focus-line {
-  margin-top: 3px !important;
+  margin-top: 5px !important;
   color: var(--fg-d) !important;
-  font-size: 8pt !important;
-  font-style: normal !important;
+  font-size: 7.5pt !important;
+  font-style: italic !important;
+  letter-spacing: 0.02em !important;
 }
 
 /* Tables and structured clinical data. */
@@ -23309,25 +23359,48 @@ body.post-visit-export.dark .post-visit-document .attending-notes-header {
   font-weight: 800 !important;
   letter-spacing: .1em !important;
 }
+/* Patient's Voice — typographic distinction from attending callouts.
+   Large decorative opening quote mark (Source Serif 4), no border rail,
+   no colored background. Reads as "something the patient said" rather
+   than another attending pearl or teaching note. */
 .post-visit-document .doc-callout-quote {
-  margin: 8px 12px 10px !important;
-  padding: 8px 10px !important;
+  position: relative !important;
+  margin: 12px 12px 14px !important;
+  padding: 10px 12px 10px 44px !important;
   border: 0 !important;
-  border-left: 2.5px solid var(--accent) !important;
-  border-radius: 0 4px 4px 0 !important;
-  background: var(--accent-soft) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
   color: var(--fg-m) !important;
 }
-.post-visit-document .doc-callout-quote::before { display: none; }
-.post-visit-document .doc-callout-quote .label {
+.post-visit-document .doc-callout-quote::before {
+  content: '\\201C' !important;
+  display: block !important;
+  position: absolute !important;
+  left: 6px !important;
+  top: 0 !important;
+  font-family: 'Source Serif 4', Georgia, serif !important;
+  font-size: 42pt !important;
+  font-weight: 400 !important;
+  line-height: 1 !important;
   color: var(--accent) !important;
-  font-size: 7pt !important;
-  font-weight: 800 !important;
-  letter-spacing: .1em !important;
+  opacity: 0.35 !important;
+  pointer-events: none !important;
+}
+.post-visit-document .doc-callout-quote .label {
+  color: var(--doc-warm-gray) !important;
+  font-family: 'Inter', sans-serif !important;
+  font-size: 6.5pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.16em !important;
+  text-transform: uppercase !important;
+  margin-bottom: 4px !important;
 }
 .post-visit-document .doc-callout-quote .quote-text {
-  color: var(--fg-m) !important;
-  font-size: 9pt !important;
+  color: var(--fg) !important;
+  font-family: 'Source Serif 4', Georgia, serif !important;
+  font-style: italic !important;
+  font-size: 10.5pt !important;
+  line-height: 1.55 !important;
 }
 body.post-visit-export.dark .post-visit-document .doc-callout-goal {
   background: var(--teach-bg) !important;
@@ -24614,17 +24687,19 @@ const PriorityChip = ({ priority }) => {
       style={{
         display: "inline-block",
         fontFamily: "'Inter', sans-serif",
-        fontSize: "0.6rem",
+        fontSize: "0.55rem",
         fontWeight: 700,
-        letterSpacing: "0.08em",
+        letterSpacing: "0.09em",
         textTransform: "uppercase",
-        padding: "1px 6px",
-        borderRadius: "3px",
+        padding: "0 5px",
+        borderRadius: "2px",
         background: meta.bg,
         color: meta.fg,
-        border: `1px solid ${meta.border}`,
-        marginRight: "0.35rem",
-        verticalAlign: "middle",
+        border: "0",
+        borderBottom: `1px solid ${meta.border}`,
+        marginRight: "0.3rem",
+        verticalAlign: "0.15em",
+        lineHeight: 1.6,
       }}
     >
       {meta.label}
@@ -24638,16 +24713,18 @@ const ShelfBadge = () => (
     style={{
       display: "inline-block",
       fontFamily: "'Inter', sans-serif",
-      fontSize: "0.6rem",
+      fontSize: "0.55rem",
       fontWeight: 700,
-      letterSpacing: "0.06em",
-      padding: "1px 5px",
-      borderRadius: "3px",
-      background: "rgba(202, 138, 4, 0.14)",
-      color: "#78350f",
-      border: "1px solid rgba(202, 138, 4, 0.32)",
-      marginRight: "0.35rem",
-      verticalAlign: "middle",
+      letterSpacing: "0.08em",
+      padding: "0 5px",
+      borderRadius: "2px",
+      background: "var(--sand-medium, rgba(242, 217, 187, 0.30))",
+      color: "var(--doc-navy)",
+      border: "0",
+      borderBottom: "1px solid rgba(55, 108, 139, 0.24)",
+      marginRight: "0.3rem",
+      verticalAlign: "0.15em",
+      lineHeight: 1.6,
     }}
   >
     SHELF
