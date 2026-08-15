@@ -25804,7 +25804,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
       const walkHtml = (node) => {
         if (node.nodeType === Node.TEXT_NODE) return;
         const tag = node.tagName?.toLowerCase();
-        if (["h1","h2","h3","h4","h5","h6"].includes(tag)) {
+        if (["h1", "h2", "h3", "h4", "h5", "h6"].includes(tag)) {
           const text = stripRefMarkers(node.textContent);
           if (text) blocks.push({ type: "heading", level: parseInt(tag[1], 10), text });
           return;
@@ -25831,17 +25831,15 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
       // likely one giant paragraph with inline structure — reparse from scratch.
       const textLength = tempDiv.textContent.length;
       const needsPlainTextReparse =
-        blocks.length <= 2 ||                                         // barely any structure
-        blocks.every(b => b.type !== "heading") && textLength > 1500; // no headings in long text
+        blocks.length <= 2 ||
+        (blocks.every(b => b.type !== "heading") && textLength > 1500);
 
       if (!needsPlainTextReparse) return blocks;
 
       // ============ PLAIN-TEXT STRUCTURED REPARSE ============
-      blocks.length = 0; // reset
+      blocks.length = 0;
       const plainText = stripRefMarkers(tempDiv.textContent);
 
-      // Known section header labels that mark structural boundaries. Case-
-      // insensitive match. These become "level 4" headings.
       const SECTION_LABELS = [
         "Shelf Exam Pearls",
         "Shelf Pearls",
@@ -25878,11 +25876,6 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
         "Red Flags",
       ];
 
-      // Build a regex that matches these labels when they appear either:
-      //  (a) at the start of the text
-      //  (b) after a period/period-space
-      //  (c) preceded by a space when directly followed by "-" or ":"
-      //      (the "Shelf Exam Pearls-" inline pattern from OpenEvidence)
       const labelPattern = SECTION_LABELS
         .map(l => l.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"))
         .join("|");
@@ -25891,28 +25884,23 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
         "gi"
       );
 
-      // Split into major section chunks
       let chunks = plainText.split(sectionSplitRegex).map(c => c.trim()).filter(Boolean);
 
-      // Also split any chunk on PROBLEM N / SECTION N / TOPIC N / DISCORDANCE N
-      // enumeration boundaries — these appear across multi-problem content
       chunks = chunks.flatMap(chunk => {
         const majorEnumRegex = /(?=\b(?:PROBLEM|SECTION|CASE|TOPIC)\s+\d+\b|(?=\bDISCORDANCE\s*#?\s*\d+\b))/gi;
         return chunk.split(majorEnumRegex).map(c => c.trim()).filter(Boolean);
       });
 
-      // Helper: parse a single chunk into a heading + body, then further
-      // decompose body into paragraphs, sub-bullets, and inline lists.
       const parseChunk = (chunk) => {
-        // Try major enumeration heading first (PROBLEM N, TOPIC N, etc.)
-        const majorMatch = chunk.match(/^(PROBLEM\s+\d+|SECTION\s+\d+|CASE\s+\d+|TOPIC\s+\d+|DISCORDANCE\s*#?\s*\d+)\s*[:—–-]?\s*(.*)$/is);
+        const majorMatch = chunk.match(
+          /^(PROBLEM\s+\d+|SECTION\s+\d+|CASE\s+\d+|TOPIC\s+\d+|DISCORDANCE\s*#?\s*\d+)\s*[:—–-]?\s*(.*)$/is
+        );
         if (majorMatch) {
           blocks.push({ type: "heading", level: 3, text: majorMatch[1].trim() });
           if (majorMatch[2].trim()) parseBody(majorMatch[2].trim());
           return;
         }
 
-        // Try known section label (Shelf Exam Pearls, Workup, etc.)
         const sectionLabelMatch = chunk.match(
           new RegExp(`^(${labelPattern})(?:\\s*[-:—]\\s*|\\s+)(.+)$`, "is")
         );
@@ -25922,7 +25910,6 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
           return;
         }
 
-        // Try ALL-CAPS section label
         const allCapsMatch = chunk.match(/^([A-Z][A-Z\s&/,-]{4,60})\s*[:—-]\s*(.+)$/s);
         if (allCapsMatch && !/[a-z]/.test(allCapsMatch[1])) {
           blocks.push({ type: "heading", level: 4, text: allCapsMatch[1].trim() });
@@ -25930,55 +25917,35 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
           return;
         }
 
-        // No structural heading found — just parse the whole chunk as body
         parseBody(chunk);
       };
 
-      // Parse body text into paragraphs, sub-bullets, and inline lists.
-      // Handles the common OpenEvidence patterns: "- Sub-item text.- Next item"
-      // and inline numbered lists "1) foo 2) bar 3) baz".
       const parseBody = (bodyText) => {
         if (!bodyText || bodyText.length < 3) return;
 
-        // First, detect dash-prefixed sub-bullets. Real OpenEvidence output
-        // uses "- " as a marker for sub-items inside a paragraph, often glued
-        // without a space after a period: ".- Trapezius innervation..."
-        // Split on dash-space when preceded by end-of-sentence OR at start.
         const dashBulletRegex = /(?:^|\s)-\s+(?=[A-Z])/g;
         const dashSegments = bodyText.split(dashBulletRegex).map(s => s.trim()).filter(Boolean);
 
-        // If we got multiple dash segments AND the first one isn't itself a
-        // paragraph that runs longer than any of the bullets, treat everything
-        // after the first as sub-bullets attached to the first as intro.
         if (dashSegments.length >= 2) {
           const intro = dashSegments[0];
           const bullets = dashSegments.slice(1);
-
-          // Only treat as list if the bullets look like actual list items
-          // (short-to-medium length, not just one much longer than the others)
           const avgBulletLen = bullets.reduce((sum, b) => sum + b.length, 0) / bullets.length;
           const looksLikeList = bullets.every(b => b.length < avgBulletLen * 3) && bullets.length >= 2;
 
           if (looksLikeList) {
-            // Push intro as paragraph if substantive
             if (intro.length > 20) {
               parseInlineNumberedOrParagraph(intro);
             }
-            // Push bullets as a list — but also check each bullet for inline
-            // sub-structure (e.g., ": " followed by content = a nested label)
             const cleanBullets = bullets.map(b => b.replace(/\s+/g, " ").trim());
             blocks.push({ type: "list", ordered: false, items: cleanBullets });
             return;
           }
         }
 
-        // No dash-bullet structure — check for inline numbered list
         parseInlineNumberedOrParagraph(bodyText);
       };
 
       const parseInlineNumberedOrParagraph = (text) => {
-        // Inline enumerated list: "1) foo 2) bar 3) baz"
-        // Match multiple "N) ..." segments with lookahead to the next number
         const numberedMatches = text.match(/\d+\)\s*[^0-9]+?(?=\s*\d+\)|$)/g);
         if (numberedMatches && numberedMatches.length >= 2) {
           const items = numberedMatches
@@ -25990,8 +25957,6 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
           }
         }
 
-        // Check for semicolon-separated list (3+ semicolon-separated clauses
-        // starting with capital letters or parens = probably a list)
         if (text.length > 100 && (text.match(/;\s+[A-Z(]/g) || []).length >= 3) {
           const items = text.split(/;\s+(?=[A-Z(])/).map(i => i.trim().replace(/[.;]$/, "")).filter(Boolean);
           if (items.length >= 3) {
@@ -26000,8 +25965,6 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
           }
         }
 
-        // No list structure — plain paragraph, but split on double-newline
-        // if the text somehow retained paragraph breaks.
         const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
         paragraphs.forEach(p => {
           blocks.push({ type: "paragraph", text: p });
@@ -26011,6 +25974,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
       chunks.forEach(parseChunk);
       return blocks;
     };
+
     const structuredBlocks = parseUnsynthesizedContent(content.singleSource.contentHtml || "");
     return (
       <section>
@@ -26026,10 +25990,6 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
         }}>
           {structuredBlocks.map((block, i) => {
             if (block.type === "heading") {
-              // Three heading levels with distinct visual weight:
-              //   level 3 = major (PROBLEM N, TOPIC N) — uppercase, hairline underline
-              //   level 4 = section (Shelf Exam Pearls, Workup) — sand-tinted band
-              //   level 5 = subsection — bold label inline with content
               const isMajor = block.level <= 3;
               const isSection = block.level === 4;
               if (isMajor) {
@@ -26124,199 +26084,7 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
         </div>
       </section>
     );
-
-  if (!content.synthesized || !content.topics?.length) return null;
-
-  const toggleClaim = (key) => setExpandedClaims(prev => ({ ...prev, [key]: !prev[key] }));
-
-  const categoryOrder = { diagnosis: 1, workup: 2, treatment: 3, monitoring: 4, special: 5, other: 6 };
-  const orderedTopics = [...content.topics].sort((a, b) =>
-    (categoryOrder[a.orderingCategory] || 99) - (categoryOrder[b.orderingCategory] || 99)
-  );
-
-  return (
-    <section>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "1rem", paddingBottom: "0.5rem", borderBottom: "2px solid var(--doc-navy)" }}>
-        <h2 style={{ fontFamily: "'Inter', sans-serif", fontSize: "1.0625rem", fontWeight: 600, color: "var(--doc-navy)", margin: 0 }}>Additional Evidence & Cross-Cutting Topics</h2>
-        <button
-          onClick={() => setShowProvenance(!showProvenance)}
-          className="no-print"
-          style={{ fontSize: "0.7rem", color: "var(--doc-warm-gray)", textDecoration: "underline", background: "none", border: "none", cursor: "pointer" }}
-        >
-          {showProvenance ? "Hide" : "Show"} AI-tool provenance
-        </button>
-      </div>
-{isPreview && content.sourceContribution?.length > 0 && (
-        <div style={{ marginBottom: "1.25rem", padding: "0.75rem 1rem", background: "var(--doc-paper)", border: "1px solid var(--doc-hairline)", borderRadius: "2px", position: "relative" }}>
-          <div style={{ position: "absolute", top: "-0.6rem", left: "1rem", background: "#f59e0b", color: "white", fontSize: "0.6rem", fontFamily: "'Inter', sans-serif", textTransform: "uppercase", letterSpacing: "0.14em", fontWeight: 700, padding: "0.15rem 0.5rem", borderRadius: "3px" }}>
-            Preview only · won't appear in final document
-          </div>
-          <div className="doc-meta-label" style={{ marginBottom: "0.5rem", marginTop: "0.25rem" }}>Sources Contributing to This Synthesis</div>
-          <div style={{ display: "flex", flexDirection: "column", gap: "0.4rem" }}>
-            {content.sourceContribution.map((sc, i) => {
-              const citingClaims = (content.topics || []).reduce((acc, topic) => {
-                return acc + (topic.claims || []).filter(c =>
-                  (c.provenance || c.sources || []).some(p => p === sc.source)
-                ).length;
-              }, 0);
-              const totalClaims = (content.topics || []).reduce((acc, topic) => acc + (topic.claims?.length || 0), 0);
-              const pct = totalClaims > 0 ? Math.round((citingClaims / totalClaims) * 100) : 0;
-              const isPdf = !!sc.fullCitation || sc.source.startsWith("PDF:");
-              return (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem", fontSize: "0.82rem" }}>
-                  <div style={{ minWidth: "180px", fontWeight: 500, color: isPdf ? "var(--doc-terracotta)" : "var(--doc-navy)" }}>
-                    {isPdf && <span style={{ marginRight: "0.3rem" }}>📄</span>}
-                    {sc.source}
-                    {sc.fullCitation && (
-                      <div style={{ fontSize: "0.7rem", fontWeight: 400, fontStyle: "italic", color: "var(--doc-warm-gray)", marginTop: "0.1rem" }}>
-                        {sc.fullCitation}
-                      </div>
-                    )}
-                  </div>
-                  <div style={{ flex: 1, height: "6px", background: "#e5e0d5", borderRadius: "3px", overflow: "hidden" }}>
-                    <div style={{
-                      height: "100%",
-                      width: `${pct}%`,
-                      background: isPdf ? "var(--doc-terracotta)" : "var(--doc-navy-mid)",
-                      transition: "width 0.3s",
-                    }}></div>
-                  </div>
-                  <div style={{ fontSize: "0.72rem", color: citingClaims === 0 ? "var(--doc-terracotta)" : "var(--doc-warm-gray)", minWidth: "140px", textAlign: "right", fontWeight: citingClaims === 0 ? 600 : 400 }}>
-                    {citingClaims} of {totalClaims} claims · {sc.wordCount.toLocaleString()} words
-                    {citingClaims === 0 && <div style={{ fontSize: "0.65rem", fontWeight: 500, fontStyle: "italic", marginTop: "0.1rem" }}>not cited — content may overlap with other sources</div>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-          {content.sourceContribution.some(sc => sc.source.startsWith("PDF:")) &&
-           content.sourceContribution.filter(sc => sc.source.startsWith("PDF:")).every(sc => {
-             const citing = (content.topics || []).reduce((acc, topic) => acc + (topic.claims || []).filter(c => (c.provenance || c.sources || []).includes(sc.source)).length, 0);
-             return citing === 0;
-           }) && (
-            <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "rgba(184, 92, 46, 0.08)", borderLeft: "2px solid var(--doc-terracotta)", fontSize: "0.75rem", color: "var(--doc-terracotta)" }}>
-              ⚠ PDF content was provided but the AI did not attribute any claims to it. The content may have overlapped with other sources, or the AI may not have found unique claims to draw from it.
-            </div>
-          )}
-        </div>
-      )}
-      <div style={{ display: "flex", flexDirection: "column", gap: "1.5rem" }}>
-        {orderedTopics.map((topic, ti) => (
-          <div key={ti} className="keep-together">
-            <div className="doc-subsection-label" style={{ marginBottom: "0.75rem" }}>{topic.topic}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
-              {topic.claims?.map((claim, ci) => {
-                const claimKey = `${ti}-${ci}`;
-                const hasDetail = claim.perSourceDetail?.length > 0;
-                const refFigures = (claim.figureRefs || []).map(id => figureMap[id]).filter(Boolean);
-                const realCitations = claim.citations || [];
-                const provenanceTools = claim.provenance || claim.sources || [];
-                const strength = claim.strength || "single-source";
-                const strengthLabels = { consensus: "Consensus", majority: "Majority", "single-source": "Single source", conflict: "Conflict" };
-                return (
-                  <div key={ci} className="keep-together" style={{ paddingLeft: "0.85rem", borderLeft: "1px solid var(--doc-hairline)" }}>
-                    <div style={{ fontSize: "0.9rem", lineHeight: 1.6 }}>
-                      {stripRefMarkers(claim.statement)}
-                      {realCitations.length > 0 && (
-                        <span style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", fontSize: "0.85em", color: "var(--doc-warm-gray)", marginLeft: "0.35rem" }}>
-                          ({realCitations.join("; ")})
-                        </span>
-                      )}
-                    </div>
-                    <div style={{ display: "flex", alignItems: "center", gap: "0.85rem", marginTop: "0.4rem", flexWrap: "wrap" }} className="no-print">
-                      <span className={`doc-strength ${strength}`}>
-                        <span className="dot"></span>{strengthLabels[strength]}
-                      </span>
-                      {showProvenance && provenanceTools.length > 0 && (
-                        <span style={{ fontSize: "0.7rem", color: "var(--doc-warm-gray)" }}>
-                          via {provenanceTools.join(", ")}
-                        </span>
-                      )}
-                      {hasDetail && showProvenance && (
-                        <button
-                          onClick={() => toggleClaim(claimKey)}
-                          style={{ fontSize: "0.7rem", color: "var(--doc-navy-mid)", textDecoration: "underline", background: "none", border: "none", cursor: "pointer", padding: 0 }}
-                        >
-                          {expandedClaims[claimKey] ? "Hide" : "Show"} per-tool detail
-                        </button>
-                      )}
-                    </div>
-                    {showProvenance && expandedClaims[claimKey] && hasDetail && (
-                      <div style={{ marginTop: "0.5rem", padding: "0.6rem 0.85rem", background: "var(--doc-paper)", borderLeft: "2px solid var(--doc-navy-mid)" }} className="no-print">
-                        {claim.perSourceDetail.map((psd, pi) => (
-                          <div key={pi} style={{ fontSize: "0.78rem", marginBottom: pi < claim.perSourceDetail.length - 1 ? "0.35rem" : 0 }}>
-                            <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{psd.source}:</span>
-                            <span style={{ color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>{stripRefMarkers(psd.detail)}</span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {refFigures.length > 0 && (
-                      <div style={{ marginTop: "0.6rem", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: "0.6rem" }}>
-                        {refFigures.map((fig, fi) => (
-                          <figure key={fi} style={{ margin: 0, border: "1px solid var(--doc-hairline)", background: "white" }}>
-                            <button
-                              onClick={() => setLightboxImg(fig)}
-                              className="no-print"
-                              style={{ display: "block", width: "100%", padding: 0, border: "none", background: "none", cursor: "zoom-in" }}
-                              title="Click to enlarge"
-                            >
-                              <img src={fig.dataUrl} alt={fig.alt} style={{ width: "100%", height: "auto", maxHeight: "260px", objectFit: "contain", display: "block" }} />
-                            </button>
-                            <img className="print-only" src={fig.dataUrl} alt={fig.alt} style={{ width: "100%", height: "auto", maxHeight: "260px", objectFit: "contain", display: "none" }} />
-                            <figcaption style={{ fontSize: "0.72rem", color: "var(--doc-warm-gray)", padding: "0.35rem 0.5rem", borderTop: "1px solid var(--doc-hairline)", fontStyle: "italic" }}>
-                              {fig.alt}
-                            </figcaption>
-                          </figure>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      {content.keyTakeaways?.length > 0 && (
-        <div style={{ marginTop: "1.5rem", padding: "1rem 1.25rem", background: "var(--doc-paper)", borderLeft: "3px solid var(--doc-navy-mid)" }} className="keep-together">
-          <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Key Takeaways</div>
-          <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
-            {content.keyTakeaways.map((t, i) => <li key={i} style={{ fontSize: "0.9rem", marginBottom: "0.25rem" }}>{stripRefMarkers(t)}</li>)}
-          </ul>
-        </div>
-      )}
-
-      {content.crossReferenceMatrix?.length > 0 && (
-        <div style={{ marginTop: "1.5rem" }} className="keep-together">
-          <div className="doc-meta-label" style={{ marginBottom: "0.5rem" }}>Topic → Primary References</div>
-          <div className="doc-table-scroll">
-          <table className="doc-table" style={{ fontSize: "0.82rem" }}>
-            <thead>
-              <tr>
-                <th>Topic</th>
-                <th>Primary References</th>
-                {showProvenance && <th className="no-print">AI Tools</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {content.crossReferenceMatrix.map((row, i) => (
-                <tr key={i}>
-                  <td style={{ fontWeight: 500, color: "var(--doc-navy)" }}>{row.topic}</td>
-                  <td>{(row.primaryReferences || row.addressedBy || []).join("; ") || "—"}</td>
-                  {showProvenance && <td className="no-print" style={{ fontStyle: "italic", color: "var(--doc-warm-gray)" }}>{(row.provenanceTools || []).join(", ") || "—"}</td>}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          </div>
-        </div>
-      )}
-      {lightboxImg && <ImageLightbox src={lightboxImg.dataUrl} alt={lightboxImg.alt} onClose={() => setLightboxImg(null)} />}
-    </section>
-  );
-}
+  }
 
 
 
