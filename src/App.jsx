@@ -16389,25 +16389,34 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
       html += `</ul></div>`;
     }
 
-    // Landmark trial
-    if (c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim()) {
-      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-flask-vial"></i> Landmark Trial: ${esc(c.landmarkTrial.name)}</div><p style="font-size:8pt;color:#44403c;line-height:1.45;">${esc(c.landmarkTrial.oneLineSummary)}</p></div>`;
-    }
-
-    // Practice-changing recent evidence
-    if (c.practiceChangingUpdate?.summary?.trim()) {
-      const yearLabel = c.practiceChangingUpdate.yearRange?.trim()
-        ? ` · ${esc(c.practiceChangingUpdate.yearRange)}`
-        : "";
-      html += `<div class="tch" style="border-left-color:var(--accent-2);background:var(--teach-bg);">`;
-      html += `<div class="tch-label" style="color:var(--accent);"><i class="fa-solid fa-arrow-trend-up"></i> Recent Update${yearLabel}</div>`;
-      html += `<p style="color:var(--fg-m);">${esc(c.practiceChangingUpdate.summary)}</p>`;
-      html += `</div>`;
-    }
-
-    // Clinical pearl
-    if (c.clinicalPearl) {
-      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-lightbulb"></i> Clinical Pearl</div><p style="font-size:7.5pt;color:#44403c;line-height:1.4;">${esc(c.clinicalPearl)}</p></div>`;
+    // Consolidated Attending Notes panel — Landmark Trial + Recent Update +
+    // Clinical Pearl previously stacked as three separate boxes at the end of
+    // every case. They're all supporting/reflective content from the attending
+    // and now share one grouped panel with lightweight subheads. See post-visit
+    // equivalent for the same rationale.
+    {
+      const hasTrial = Boolean(
+        c.landmarkTrial?.name?.trim() &&
+        c.landmarkTrial?.oneLineSummary?.trim()
+      );
+      const hasUpdate = Boolean(c.practiceChangingUpdate?.summary?.trim());
+      const hasPearl = Boolean(c.clinicalPearl);
+      if (hasTrial || hasUpdate || hasPearl) {
+        html += `<div class="attending-notes"><div class="attending-notes-header">Attending Notes</div>`;
+        if (hasTrial) {
+          html += `<div class="attending-notes-item"><div class="attending-notes-subhead">Landmark Trial · ${esc(c.landmarkTrial.name)}</div><div class="attending-notes-body">${esc(c.landmarkTrial.oneLineSummary)}</div></div>`;
+        }
+        if (hasUpdate) {
+          const yearLabel = c.practiceChangingUpdate.yearRange?.trim()
+            ? ` · ${esc(c.practiceChangingUpdate.yearRange)}`
+            : "";
+          html += `<div class="attending-notes-item"><div class="attending-notes-subhead">Recent Update${yearLabel}</div><div class="attending-notes-body">${esc(c.practiceChangingUpdate.summary)}</div></div>`;
+        }
+        if (hasPearl) {
+          html += `<div class="attending-notes-item"><div class="attending-notes-subhead">Clinical Pearl</div><div class="attending-notes-body attending-notes-body-italic">${esc(c.clinicalPearl)}</div></div>`;
+        }
+        html += `</div>`;
+      }
     }
 
     if (teachingText(c.quoteToDiscuss)) {
@@ -21130,6 +21139,67 @@ body.dark .tch-label, body.dark .ask-label { color: var(--teach); }
 }
 .tch li:last-child, .ask li:last-child, .tch p:last-child, .ask p:last-child { margin-bottom: 0; }
 
+/* Consolidated Attending Notes panel — replaces the previous end-of-case
+   stack of three separate callout boxes (landmark trial + recent update +
+   clinical pearl). One border, one background, three subheads. Uses the
+   sand-medium tint to sit visually adjacent to but distinct from the
+   sand-strong teaching callouts above it. */
+.attending-notes {
+  margin: 10px 0 12px;
+  padding: 10px 12px 6px;
+  border: 1px solid rgba(55, 108, 139, 0.16);
+  border-radius: 4px;
+  background: var(--sand-medium, rgba(242, 217, 187, 0.30));
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.attending-notes-header {
+  font-family: 'Inter', sans-serif;
+  font-size: 6.5pt;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 7px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(55, 108, 139, 0.14);
+}
+.attending-notes-item {
+  margin-bottom: 7px;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+.attending-notes-item:last-child {
+  margin-bottom: 3px;
+}
+.attending-notes-subhead {
+  font-family: 'Inter', sans-serif;
+  font-size: 6.75pt;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--doc-warm-gray, var(--fg-d));
+  margin-bottom: 3px;
+}
+.attending-notes-body {
+  font-size: 8.5pt;
+  line-height: 1.5;
+  color: var(--fg-m);
+}
+.attending-notes-body-italic {
+  font-family: 'Source Serif 4', Georgia, serif;
+  font-style: italic;
+  font-size: 9pt;
+}
+body.dark .attending-notes {
+  background: rgba(242, 217, 187, 0.08);
+  border-color: rgba(242, 217, 187, 0.16);
+}
+body.dark .attending-notes-header {
+  color: var(--palette-sand);
+  border-bottom-color: rgba(242, 217, 187, 0.16);
+}
+
 /* Warning box — coral is intentionally reserved for danger, abnormal
    values, and don't-miss content. */
 .wrn {
@@ -23055,11 +23125,71 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
 .post-visit-document [style*="var(--doc-warm-gray)"] { color: var(--fg-d) !important; }
 
 
-/* Post-visit callouts use the same two treatments as the prenote:
-   sand + deep blue for teaching, soft blue for informational content. */
-.post-visit-document .doc-callout-goal,
-.post-visit-document .doc-callout-pearl,
-.post-visit-document .doc-callout-trial {
+/* Post-visit callout system — consolidated to three semantic treatments:
+   - Attending Notes panel: sand-forward, holds landmark trial + recent update
+     + clinical pearl as three subheads inside one border. Reduces the
+     end-of-case wall of boxes to a single grouped panel.
+   - Session Goal (.doc-callout-goal): sand-tinted, one-off at document top.
+   - Patient's Voice (.doc-callout-quote): typographically distinct — treated
+     separately in Phase 4 with a serif quote mark. */
+.post-visit-document .attending-notes-panel {
+  margin: 12px 12px 14px !important;
+  padding: 10px 12px 4px !important;
+  border: 1px solid rgba(55, 108, 139, 0.16) !important;
+  border-radius: 4px !important;
+  background: var(--sand-medium, rgba(242, 217, 187, 0.30)) !important;
+  color: var(--fg-m) !important;
+}
+.post-visit-document .attending-notes-header {
+  font-family: 'Inter', sans-serif !important;
+  font-size: 6.5pt !important;
+  font-weight: 800 !important;
+  letter-spacing: 0.16em !important;
+  text-transform: uppercase !important;
+  color: var(--accent) !important;
+  margin-bottom: 8px !important;
+  padding-bottom: 4px !important;
+  border-bottom: 1px solid rgba(55, 108, 139, 0.14) !important;
+}
+.post-visit-document .attending-notes-item {
+  margin-bottom: 8px !important;
+  page-break-inside: avoid;
+  break-inside: avoid;
+}
+.post-visit-document .attending-notes-item:last-child {
+  margin-bottom: 4px !important;
+}
+.post-visit-document .attending-notes-subhead {
+  font-family: 'Inter', sans-serif !important;
+  font-size: 7pt !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.09em !important;
+  text-transform: uppercase !important;
+  color: var(--doc-warm-gray, var(--fg-d)) !important;
+  margin-bottom: 3px !important;
+}
+.post-visit-document .attending-notes-body {
+  font-size: 8.5pt !important;
+  line-height: 1.5 !important;
+  color: var(--fg-m) !important;
+}
+.post-visit-document .attending-notes-body-italic {
+  font-family: 'Source Serif 4', Georgia, serif !important;
+  font-style: italic !important;
+  font-size: 9pt !important;
+}
+body.post-visit-export.dark .post-visit-document .attending-notes-panel {
+  background: rgba(242, 217, 187, 0.08) !important;
+  border-color: rgba(242, 217, 187, 0.16) !important;
+}
+body.post-visit-export.dark .post-visit-document .attending-notes-header {
+  color: var(--palette-sand) !important;
+  border-bottom-color: rgba(242, 217, 187, 0.16) !important;
+}
+
+/* Session Goal callout — retained as its own treatment since it appears
+   once at the top of the document, not stacked with other content. */
+.post-visit-document .doc-callout-goal {
   margin: 8px 12px 10px !important;
   padding: 8px 10px !important;
   border: 0 !important;
@@ -23068,9 +23198,7 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
   background: var(--teach-bg) !important;
   color: var(--fg-m) !important;
 }
-.post-visit-document .doc-callout-goal .label,
-.post-visit-document .doc-callout-pearl .label,
-.post-visit-document .doc-callout-trial .label {
+.post-visit-document .doc-callout-goal .label {
   color: var(--teach) !important;
   font-size: 7pt !important;
   font-weight: 800 !important;
@@ -23096,9 +23224,7 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
   color: var(--fg-m) !important;
   font-size: 9pt !important;
 }
-body.post-visit-export.dark .post-visit-document .doc-callout-goal,
-body.post-visit-export.dark .post-visit-document .doc-callout-pearl,
-body.post-visit-export.dark .post-visit-document .doc-callout-trial {
+body.post-visit-export.dark .post-visit-document .doc-callout-goal {
   background: var(--teach-bg) !important;
   color: var(--fg-m) !important;
 }
@@ -23225,9 +23351,7 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
   .post-visit-document .doc-shelf-q,
   .post-visit-document .doc-shelf-answer { break-inside: avoid; page-break-inside: avoid; }
 }
-.post-visit-document .doc-callout-goal .label,
-.post-visit-document .doc-callout-pearl .label,
-.post-visit-document .doc-callout-trial .label {
+.post-visit-document .doc-callout-goal .label {
   color: var(--teach) !important;
   font-size: 7pt !important;
   font-weight: 800 !important;
@@ -23252,16 +23376,6 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
 .post-visit-document .doc-callout-quote .quote-text {
   color: var(--fg-m) !important;
   font-size: 9pt !important;
-}
-body.post-visit-export.dark .post-visit-document .doc-callout-goal,
-body.post-visit-export.dark .post-visit-document .doc-callout-pearl,
-body.post-visit-export.dark .post-visit-document .doc-callout-trial {
-  background: var(--teach-bg) !important;
-  color: var(--fg-m) !important;
-}
-body.post-visit-export.dark .post-visit-document .doc-callout-quote {
-  background: var(--accent-soft) !important;
-  color: var(--fg-m) !important;
 }
 .tb-btn {
   display: inline-flex;
@@ -25165,32 +25279,43 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              {c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim() && (
-                <div className="doc-callout-trial keep-together">
-                  <div className="label" style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: "0.4rem" }}>Landmark Trial · {c.landmarkTrial.name}</div>
-                  <div style={{ fontSize: "0.9rem" }}>{c.landmarkTrial.oneLineSummary}</div>
-                </div>
-              )}
-              {c.practiceChangingUpdate?.summary?.trim() && (
-                <div className="keep-together" style={{
-                  marginBottom: "1.25rem",
-                  padding: "0.85rem 1rem",
-                  background: "#fefce8",
-                  borderLeft: "2.5px solid #ca8a04",
-                  borderRadius: "0 4px 4px 0",
-                }}>
-                  <div className="doc-meta-label" style={{ color: "#a16207", marginBottom: "0.4rem" }}>
-                    Recent Update{c.practiceChangingUpdate.yearRange ? ` · ${c.practiceChangingUpdate.yearRange}` : ""}
+             {/* Consolidated Attending Notes panel — Landmark Trial + Recent Update +
+                  Clinical Pearl were previously three separate colored boxes stacking
+                  vertically. They're all "supporting evidence and reflection" content
+                  from the attending's perspective, so they now share one panel with
+                  lightweight subheads. Reserves the reader's attention for Don't Miss
+                  (coral) and Patient's Voice (typographic distinction). */}
+              {(() => {
+                const hasTrial = c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim();
+                const hasUpdate = Boolean(c.practiceChangingUpdate?.summary?.trim());
+                const hasPearl = Boolean(c.clinicalPearl);
+                if (!hasTrial && !hasUpdate && !hasPearl) return null;
+                return (
+                  <div className="keep-together attending-notes-panel">
+                    <div className="attending-notes-header">Attending Notes</div>
+                    {hasTrial && (
+                      <div className="attending-notes-item">
+                        <div className="attending-notes-subhead">Landmark Trial · {c.landmarkTrial.name}</div>
+                        <div className="attending-notes-body">{c.landmarkTrial.oneLineSummary}</div>
+                      </div>
+                    )}
+                    {hasUpdate && (
+                      <div className="attending-notes-item">
+                        <div className="attending-notes-subhead">
+                          Recent Update{c.practiceChangingUpdate.yearRange ? ` · ${c.practiceChangingUpdate.yearRange}` : ""}
+                        </div>
+                        <div className="attending-notes-body">{c.practiceChangingUpdate.summary}</div>
+                      </div>
+                    )}
+                    {hasPearl && (
+                      <div className="attending-notes-item attending-notes-pearl">
+                        <div className="attending-notes-subhead">Clinical Pearl</div>
+                        <div className="attending-notes-body attending-notes-body-italic">{c.clinicalPearl}</div>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ fontSize: "0.9rem", color: "#713f12" }}>{c.practiceChangingUpdate.summary}</div>
-                </div>
-              )}
-              {c.clinicalPearl && (
-                <div className="doc-callout-pearl">
-                  <div className="label">Clinical Pearl</div>
-                  <div style={{ fontSize: "0.92rem", fontStyle: "italic", fontFamily: "'Source Serif 4', serif" }}>{c.clinicalPearl}</div>
-                </div>
-              )}
+                );
+              })()}
 
               {c.quoteToDiscuss && (
                 <div className="doc-callout-quote">
