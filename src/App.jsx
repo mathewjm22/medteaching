@@ -19552,6 +19552,10 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   // ──────────────────────────────────────────────────────────────
   const cssBlock = `
 :root {
+  /* Consolidated three-accent semantic palette. See post-visit CSS for
+     the same rationale. Amber/brown mid-tones from earlier iterations
+     have been removed; anything that previously used them now uses either
+     sand (supporting content) or coral (warnings only). */
   --palette-alert: #ff5757;
   --palette-blue-deep: #376c8b;
   --palette-sand: #f2d9bb;
@@ -19571,6 +19575,9 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
   --accent-soft: rgba(99, 143, 168, 0.10);
   --warm: var(--palette-sand);
   --warm-soft: rgba(242, 217, 187, 0.34);
+  --sand-strong: rgba(242, 217, 187, 0.55);
+  --sand-medium: rgba(242, 217, 187, 0.30);
+  --sand-subtle: rgba(242, 217, 187, 0.15);
   --danger: var(--palette-alert);
   --danger-soft: rgba(255, 87, 87, 0.09);
   --danger-text: #7a1f2b;
@@ -19964,16 +19971,20 @@ body.dark .allergy.allergy-warn { background: var(--danger-soft); color: var(--d
   background: var(--bg);
 }
 .narrative-head {
-  background: var(--panel-h);
-  font-size: 7.5pt;
+  background: transparent;
+  font-size: 7pt;
   font-weight: 700;
-  letter-spacing: .06em;
-  color: var(--fg-d);
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--border);
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  color: var(--doc-warm-gray, var(--fg-d));
+  padding: 6px 11px 4px;
+  border-bottom: 1px solid var(--border-l);
   display: flex;
   align-items: center;
   gap: 6px;
+}
+.narrative-head i.fa-solid {
+  opacity: 0.7;
 }
 .narrative-body {
   width: 100%;
@@ -20080,14 +20091,18 @@ body.dark .narrative-inline-date {
   margin-bottom: 6px;
 }
 .ref-head {
-  background: var(--panel-h);
-  font-size: 7.5pt;
+  background: transparent;
+  font-size: 7pt;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: .08em;
-  color: var(--fg-d);
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--border);
+  letter-spacing: .14em;
+  color: var(--doc-warm-gray, var(--fg-d));
+  padding: 6px 10px 4px;
+  border-bottom: 1px solid var(--border-l);
+}
+.ref-head i.fa-solid {
+  opacity: 0.7;
+  margin-right: 5px;
 }
 .ref-body { padding: 8px 10px; }
 .pmh-list { list-style: none; }
@@ -20130,15 +20145,18 @@ body.dark .pmh-sc { background: var(--warm-soft); color: var(--palette-sand); bo
   border-bottom: none;
 }
 .ref-subsection-title {
-  font-size: 7.5pt;
+  font-size: 7pt;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: .07em;
+  letter-spacing: .12em;
   color: var(--fg-d);
   margin-bottom: 4px;
   display: inline-flex;
   align-items: center;
   gap: 5px;
+}
+.ref-subsection-title i.fa-solid {
+  opacity: 0.7;
 }
 .ref-subsection-body {
   font-size: 9pt;
@@ -20284,16 +20302,16 @@ body.dark .encounter-group-title-overview {
   display: flex;
   align-items: center;
   gap: 14px;
-  margin: 28px 0 14px;
+  margin: 24px 0 12px;
   page-break-after: avoid;
 }
-.sec-div-line { flex: 1; height: 1px; background: var(--accent); opacity: 0.35; }
+.sec-div-line { flex: 1; height: 1px; background: var(--border); }
 .sec-div-label {
-  font-size: 9pt;
-  font-weight: 800;
+  font-size: 7.5pt;
+  font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.18em;
-  color: var(--accent);
+  color: var(--doc-warm-gray, var(--fg-d));
   white-space: nowrap;
 }
 
@@ -20703,15 +20721,19 @@ body.dark .background-orientation { background: rgba(242,217,187,.055); }
 }
 .prob-subsec:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .prob-subsec-label {
-  font-size: 7.5pt;
+  font-size: 7pt;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: .06em;
+  letter-spacing: .14em;
   color: var(--fg-d);
-  margin-bottom: 4px;
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
+  margin: 0 0 6px;
+  padding: 0 0 3px;
+  border-bottom: 1px solid var(--border-l);
+  display: block;
+}
+.prob-subsec-label i.fa-solid {
+  margin-right: 5px;
+  opacity: 0.7;
 }
 .result-list {
   margin: 4px 0 0;
@@ -22740,6 +22762,12 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
 // standalone exports, and print rules that collapse back to letter size.
 const POST_VISIT_DOCUMENT_STYLES = `
 .post-visit-document {
+  /* Consolidated three-accent semantic palette:
+     - NAVY: structural elements, case banners, primary/informational callouts
+     - SAND: reference/supporting content (pearls, trials, updates, evidence)
+     - CORAL: warnings only (don't miss, allergies, critical alerts)
+     Amber and terracotta are removed as distinct accents — they were mid-tones
+     that competed with sand and coral without adding semantic value. */
   --palette-alert: #ff5757;
   --palette-blue-deep: #376c8b;
   --palette-sand: #f2d9bb;
@@ -22761,13 +22789,19 @@ const POST_VISIT_DOCUMENT_STYLES = `
   --danger-text: #7a1f2b;
   --teach: var(--palette-blue-deep);
   --teach-bg: rgba(242,217,187,.34);
+  --sand-strong: rgba(242,217,187,.55);
+  --sand-medium: rgba(242,217,187,.30);
+  --sand-subtle: rgba(242,217,187,.15);
   --page-bg: #c8cdd5;
   --doc-navy: var(--accent);
   --doc-navy-mid: var(--accent);
   --doc-paper: var(--panel);
   --doc-surface: var(--bg);
   --doc-warm-gray: var(--fg-d);
-  --doc-terracotta: var(--teach);
+  /* --doc-terracotta and --doc-conflict now both alias to sand/coral respectively
+     rather than being independent hues. Any legacy inline styles referencing
+     terracotta will resolve to the sand-forward treatment. */
+  --doc-terracotta: var(--accent);
   --doc-consensus: var(--fg-m);
   --doc-majority: var(--accent);
   --doc-single: var(--fg-d);
@@ -22887,16 +22921,16 @@ body.post-visit-export.dark .post-visit-document {
   text-transform: uppercase;
 }
 .post-visit-document .doc-subsection-label {
-  margin: 0 0 7px !important;
-  padding: 5px 8px !important;
-  border: 1px solid var(--border) !important;
-  border-left: 3px solid var(--accent) !important;
-  border-radius: 3px !important;
-  background: var(--panel-h) !important;
-  color: var(--fg-d) !important;
-  font-size: 7.5pt !important;
+  margin: 0 0 10px !important;
+  padding: 0 0 4px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--border-l) !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--doc-warm-gray) !important;
+  font-size: 7pt !important;
   font-weight: 700 !important;
-  letter-spacing: 0.07em !important;
+  letter-spacing: 0.14em !important;
   text-transform: uppercase;
 }
 .post-visit-document .doc-meta-label {
