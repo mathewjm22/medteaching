@@ -16179,11 +16179,11 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
     if (illnessRows.length > 0) {
       html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-puzzle-piece"></i> Illness Script</div>`;
       html += `<p class="teaching-intro">The classic pattern for this diagnosis, anchored to how this patient fits or diverges.</p>`;
-      html += `<table class="mini-teach-table"><tbody>`;
+      html += `<div class="illness-script-dl">`;
       illnessRows.forEach(([label, value]) => {
-        html += `<tr><th>${esc(label)}</th><td>${esc(value)}</td></tr>`;
+        html += `<div class="illness-script-item"><div class="illness-script-label">${esc(label)}</div><div class="illness-script-body">${esc(value)}</div></div>`;
       });
-      html += `</tbody></table></div>`;
+      html += `</div></div>`;
     }
 
     const differentialItems = Array.isArray(c.differentialDiagnosis)
@@ -20324,26 +20324,30 @@ body.dark .encounter-group-title-overview {
   white-space: nowrap;
 }
 
-/* Meds table */
-.med-tbl { width: 100%; border-collapse: collapse; font-size: 9pt; margin-bottom: 8px; background: var(--bg); }
+/* Meds table — tightened for density. Alternating sand-tinted rows help
+   the eye track across 5-6 column rows without adding visual weight. */
+.med-tbl { width: 100%; border-collapse: collapse; font-size: 8.5pt; margin-bottom: 8px; background: var(--bg); }
 .med-tbl th {
   background: var(--panel-h);
-  font-size: 7pt;
+  font-size: 6.75pt;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: .05em;
+  letter-spacing: .08em;
   color: var(--fg-d);
-  padding: 6px 8px;
+  padding: 4px 7px;
   text-align: left;
   border-bottom: 1.5px solid var(--fg-d);
   white-space: nowrap;
 }
 .med-tbl td {
-  padding: 5px 8px;
+  padding: 4px 7px;
   border-bottom: 1px solid var(--border-l);
   color: var(--fg-m);
   vertical-align: top;
-  line-height: 1.4;
+  line-height: 1.42;
+}
+.med-tbl tbody tr:nth-child(even) td {
+  background: rgba(242, 217, 187, 0.09);
 }
 .med-tbl tr:last-child td { border-bottom: none; }
 
@@ -20469,7 +20473,7 @@ body.dark .problem-index-head { background: rgba(99,143,168,.13); }
   --problem-border: rgba(55, 108, 139, 0.22);
   border: 1px solid var(--problem-border);
   border-radius: 7px;
-  margin-bottom: 18px;
+  margin-bottom: 14px;
   page-break-inside: avoid;
   overflow: hidden;
   background: var(--problem-bg);
@@ -20724,8 +20728,8 @@ body.dark .background-current-state,
 body.dark .background-fact { background: rgba(17,24,39,.32); }
 body.dark .background-orientation { background: rgba(242,217,187,.055); }
 .prob-subsec {
-  margin-top: 8px;
-  padding-top: 6px;
+  margin-top: 10px;
+  padding-top: 7px;
   border-top: 1px dashed var(--border-l);
 }
 .prob-subsec:first-child { margin-top: 0; padding-top: 0; border-top: none; }
@@ -20792,18 +20796,51 @@ body.dark .background-orientation { background: rgba(242,217,187,.055); }
 body.dark .mini-teach-table { background: rgba(255,255,255,.02); }
 .mini-teach-table th,
 .mini-teach-table td {
-  padding: 5px 7px;
+  padding: 4px 7px;
   border-bottom: 1px solid var(--border-l);
   vertical-align: top;
   text-align: left;
   font-size: 8.5pt;
   line-height: 1.45;
 }
+.mini-teach-table tbody tr:nth-child(even) td {
+  background: rgba(242, 217, 187, 0.09);
+}
 .mini-teach-table tr:last-child th,
 .mini-teach-table tr:last-child td { border-bottom: none; }
 .mini-teach-table th { width: 22%; color: var(--fg-d); font-size: 7pt; text-transform: uppercase; letter-spacing: .05em; }
 .differential-table thead th { width: auto; background: var(--panel-h); color: var(--fg-d); }
 .differential-table thead th:first-child { width: 34%; }
+
+/* Illness Script — stacked definition-list layout. Replaces the previous
+   mini-teach-table treatment for illness scripts specifically (the
+   mini-teach-table is retained for differentials and other uses). Reads
+   faster than a two-column table and prints in less vertical space. */
+.illness-script-dl {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.illness-script-item {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.illness-script-label {
+  font-family: 'Inter', sans-serif;
+  font-size: 6.25pt;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--fg-d);
+  margin-bottom: 2px;
+}
+.illness-script-body {
+  font-size: 8.5pt;
+  line-height: 1.45;
+  color: var(--fg-m);
+  padding-left: 8px;
+  border-left: 1px solid var(--border-vl);
+}
 .history-question-list { list-style: none; margin: 0; padding: 0; }
 .history-question-list li { padding: 6px 8px; margin-bottom: 5px; border: 1px solid var(--border-l); border-radius: 4px; background: rgba(255,255,255,.34); }
 body.dark .history-question-list li { background: rgba(255,255,255,.02); }
@@ -21289,31 +21326,33 @@ body.dark .dx-teach { background: rgba(99, 143, 168, 0.10); }
   .html-only-link { display: none !important; }
 }
 
-/* Lab tables */
+/* Lab tables — tightened density for the trend grid. Row alternation is
+   deliberately absent here because the panel-section rows already visually
+   segment the table into readable groups. */
 .lab-tbl {
   width: 100%;
   border-collapse: collapse;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 9pt;
+  font-size: 8.5pt;
   margin-bottom: 6px;
   background: var(--bg);
 }
 .lab-tbl th {
   background: var(--panel-h);
   font-family: 'DM Sans', sans-serif;
-  font-size: 7pt;
+  font-size: 6.75pt;
   font-weight: 700;
   text-transform: uppercase;
-  letter-spacing: .05em;
+  letter-spacing: .08em;
   color: var(--fg-d);
-  padding: 5px 8px;
+  padding: 4px 7px;
   text-align: center;
   border-bottom: 1px solid var(--fg-d);
   white-space: nowrap;
 }
 .lab-tbl th:first-child { text-align: left; }
 .lab-tbl td {
-  padding: 4px 8px;
+  padding: 3px 7px;
   text-align: center;
   border-bottom: 1px solid var(--border-l);
   color: var(--fg-m);
@@ -22244,8 +22283,10 @@ body.dark .figures-box {
   .pq-answer { max-height: none !important; opacity: 1 !important; margin-top: 8px !important; padding: 8px 9px !important; border-width: 1px !important; }
   h1, h2, h3, h4, h5, h6, .sec-div, .prob-head { page-break-after: avoid; break-after: avoid; }
   p, li, div { orphans: 3; widows: 3; }
-  tr { page-break-inside: avoid; }
-  /* Consistency overrides — enforce the 4-size hierarchy */
+  tr { page-break-inside: avoid; }/* Consistency overrides — enforce the 4-size hierarchy at readable print sizes.
+     Bumped from 9pt to 9.5pt for body text since 9pt was sitting at the
+     readability floor for a clinical document meant to be scanned. Adds
+     roughly a half-page to full documents; worth it. */
 .oneliner,
 .allergy,
 .narrative-body,
@@ -22270,18 +22311,18 @@ body.dark .figures-box {
 .pq-answer,
 .lab-tbl,
 .lab-note {
-  font-size: 9pt;
+  font-size: 9.5pt;
 }
 .med-ind,
 .wrn ul li,
 .wrn ol li {
-  font-size: 8pt;
+  font-size: 8.5pt;
 }
-.prob-title { font-size: 11pt; }
-.vital-chip-val { font-size: 10pt; }
+.prob-title { font-size: 11.5pt; }
+.vital-chip-val { font-size: 10.5pt; }
 .prob-subsec-label { font-size: 7.5pt; }
-.result-main { font-size: 8.25pt; }
-.result-detail { font-size: 7.75pt; }
+.result-main { font-size: 8.75pt; }
+.result-detail { font-size: 8pt; }
 .doc-footer { font-size: 8pt; }
 }
 `;
@@ -22980,14 +23021,14 @@ body.post-visit-export.dark .post-visit-document {
 
 /* Section hierarchy: compact rules and panel labels from the prenote design. */
 .post-visit-document .doc-h2 {
-  margin: 16px 0 8px !important;
+  margin: 20px 0 10px !important;
   padding: 0 0 5px !important;
   border-bottom: 1.5px solid var(--border) !important;
   color: var(--fg-d) !important;
   font-size: 8pt !important;
   font-weight: 700 !important;
   line-height: 1.3 !important;
-  letter-spacing: 0.12em !important;
+  letter-spacing: 0.14em !important;
   text-transform: uppercase;
 }
 .post-visit-document .doc-subsection-label {
@@ -23018,6 +23059,17 @@ body.post-visit-export.dark .post-visit-document {
 .post-visit-document .doc-callout-pearl,
 .post-visit-document .doc-callout-quote,
 .post-visit-document .doc-callout-goal { font-size: 9pt !important; }
+
+/* Standardized vertical rhythm. Inline JSX margins vary from 1.5rem to 2.5rem
+   across the render tree — this rule normalizes all top-level sections in
+   the body block to a consistent 1.5rem spacing. Anything that specifically
+   needs more breathing room can still override via style attribute. */
+.post-visit-document .doc-body-mobile-padded > section:not(:last-child) {
+  margin-bottom: 1.5rem !important;
+}
+.post-visit-document .doc-body-mobile-padded > section:first-of-type {
+  margin-top: 0 !important;
+}
 
 /* Teaching cases become the same bordered problem cards used in the prenote. */
 .post-visit-document .doc-case-wrap {
@@ -23093,24 +23145,30 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
   font-size: 9pt !important;
 }
 .post-visit-document .doc-table thead th {
-  padding: 5px 8px !important;
+  padding: 4px 7px !important;
   border-bottom: 1.5px solid var(--fg-d) !important;
   background: var(--panel-h) !important;
   color: var(--fg-d) !important;
-  font-size: 7pt !important;
+  font-size: 6.75pt !important;
   font-weight: 700 !important;
-  letter-spacing: 0.05em !important;
+  letter-spacing: 0.08em !important;
   text-align: left;
   text-transform: uppercase;
 }
 .post-visit-document .doc-table tbody td {
-  padding: 5px 8px !important;
+  padding: 4px 7px !important;
   border-bottom: 1px solid var(--border-l) !important;
   background: transparent !important;
   color: var(--fg-m) !important;
-  font-size: 9pt !important;
-  line-height: 1.4;
+  font-size: 8.75pt !important;
+  line-height: 1.42;
   vertical-align: top;
+}
+/* Subtle alternating rows for tables with 4+ columns — helps the eye
+   track across wider rows without adding visual weight. Only applied to
+   .doc-table-scroll wrappers containing multi-column tables. */
+.post-visit-document .doc-table tbody tr:nth-child(even) td {
+  background: rgba(242, 217, 187, 0.09) !important;
 }
 .post-visit-document .doc-table tbody tr:last-child td { border-bottom: 0 !important; }
 .post-visit-document .doc-table .row-label,
@@ -23123,6 +23181,35 @@ body.post-visit-export.dark .post-visit-document .doc-case-wrap.case-tone-sand {
 .post-visit-document [style*="#0F2A44"],
 .post-visit-document [style*="var(--doc-navy)"] { color: var(--fg) !important; }
 .post-visit-document [style*="var(--doc-warm-gray)"] { color: var(--fg-d) !important; }
+
+/* Illness Script — stacked definition-list layout replaces the previous
+   two-column table. Label sits as a small uppercase caption above each
+   paragraph, which reads faster and prints in less vertical space. */
+.post-visit-document .illness-script-dl {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.post-visit-document .illness-script-item {
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.post-visit-document .illness-script-label {
+  font-family: 'Inter', sans-serif;
+  font-size: 6.5pt;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--doc-warm-gray);
+  margin-bottom: 2px;
+}
+.post-visit-document .illness-script-body {
+  font-size: 8.75pt;
+  line-height: 1.5;
+  color: var(--fg-m);
+  padding-left: 8px;
+  border-left: 1px solid var(--border-vl);
+}
 
 
 /* Post-visit callout system — consolidated to three semantic treatments:
@@ -24864,47 +24951,20 @@ function DocumentContent({ doc, phase, session }) {
                   <p style={{ margin: "0 0 0.6rem", fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
                     The classic pattern for this diagnosis — anchored to how our patient fits or diverges. Build this into your library for faster pattern recognition next time.
                   </p>
-                  <div className="doc-table-scroll">
-                  <table className="doc-table" style={{ fontSize: "0.85rem", tableLayout: "auto" }}>
-                    <tbody>
-                      {c.illnessScript.epidemiology && (
-                        <tr>
-                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Epidemiology</td>
-                          <td>{c.illnessScript.epidemiology}</td>
-                        </tr>
-                      )}
-                      {c.illnessScript.timeCourse && (
-                        <tr>
-                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Time course</td>
-                          <td>{c.illnessScript.timeCourse}</td>
-                        </tr>
-                      )}
-                      {c.illnessScript.keySymptoms && (
-                        <tr>
-                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Key symptoms</td>
-                          <td>{c.illnessScript.keySymptoms}</td>
-                        </tr>
-                      )}
-                      {c.illnessScript.keySigns && (
-                        <tr>
-                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Key signs</td>
-                          <td>{c.illnessScript.keySigns}</td>
-                        </tr>
-                      )}
-                      {c.illnessScript.keyLabsImaging && (
-                        <tr>
-                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Key labs / imaging</td>
-                          <td>{c.illnessScript.keyLabsImaging}</td>
-                        </tr>
-                      )}
-                      {c.illnessScript.naturalHistory && (
-                        <tr>
-                          <td className="row-label" style={{ width: "1%", whiteSpace: "nowrap", paddingRight: "1rem" }}>Natural history</td>
-                          <td>{c.illnessScript.naturalHistory}</td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
+                  <div className="illness-script-dl">
+                    {[
+                      ["Epidemiology", c.illnessScript.epidemiology],
+                      ["Time course", c.illnessScript.timeCourse],
+                      ["Key symptoms", c.illnessScript.keySymptoms],
+                      ["Key signs", c.illnessScript.keySigns],
+                      ["Key labs / imaging", c.illnessScript.keyLabsImaging],
+                      ["Natural history", c.illnessScript.naturalHistory],
+                    ].filter(([, val]) => val).map(([label, val], i) => (
+                      <div key={i} className="illness-script-item">
+                        <div className="illness-script-label">{label}</div>
+                        <div className="illness-script-body">{val}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
               )}
