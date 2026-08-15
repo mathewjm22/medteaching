@@ -2849,7 +2849,13 @@ export default function App() {
     storage.set("theme", next).catch(() => {});
   };
 
- // ===== Session mode =====
+ // ===== Evidence attribution acknowledgment =====
+  // When synthesizeSources reports that some Step 4 sources received zero
+  // claim attributions, the attending must acknowledge before proceeding.
+  // Cleared on every new generation attempt.
+  const [uncitedSourcesAcknowledged, setUncitedSourcesAcknowledged] = React.useState(false);
+
+  // ===== Session mode =====
   // "post" = attending pastes clinical note AFTER visit; AI teaches retrospectively.
   // "pre" = attending pastes prenote BEFORE visit; AI generates in-room reference doc.
   // Ephemeral state — resets on page refresh.
@@ -3843,6 +3849,136 @@ RULES:
     }
   };
 
+  // ===== Deterministic post-visit assessment-block parser =====
+  // Post-visit notes commonly have "PROBLEM NAME (ICD)" or "PROBLEM NAME"
+  // as a section header followed by an ASSESSMENT: block. Parsing these
+  // deterministically lets us verify that AI-extracted problems actually
+  // exist in the note's assessment structure, matching the reliability
+  // floor that pre-visit gets from PMH parsing.
+  //
+  // Returns array of { header, assessmentText } where header is the raw
+  // problem heading and assessmentText is the associated assessment content.
+  //
+  // Recognizes headers by these patterns:
+  //   1. ALL CAPS line ≤80 chars with no colon, followed within 5 lines by
+  //      an "ASSESSMENT:" or "**ASSESSMENT:**" or "Assessment:" block
+  //   2. Divider-wrapped headers ("==== ... ====")
+  //   3. "PROBLEM N: NAME" style enumeration
+  //
+  // Falls back gracefully — a note without structured per-problem blocks
+  // returns an empty array, and the caller trusts the AI extraction as before.
+  const parsePostVisitAssessmentBlocks = (noteText) => {
+    if (!noteText || typeof noteText !== "string") return [];
+
+    const lines = noteText.split(/\r?\n/);
+    const blocks = [];
+    let currentHeader = null;
+    let currentHeaderIndex = -1;
+    let currentBuffer = [];
+    let currentAssessmentText = "";
+    let inAssessment = false;
+
+    const isHeaderLine = (line, lineIndex) => {
+      const trimmed = String(line || "").trim();
+      if (!trimmed || trimmed.length > 100) return false;
+
+      // Skip lines that look like ordinary sentences or field labels
+      if (/[.!?]$/.test(trimmed)) return false;
+      if (/^[a-z]/.test(trimmed)) return false;
+
+      // ALL CAPS header (allowing digits, spaces, /, &, -, ., (), commas)
+      const allCapsPattern = /^[A-Z][A-Z0-9 /&.,\-()]{3,80}$/;
+      const looksLikeAllCaps = allCapsPattern.test(trimmed);
+
+      // "PROBLEM N: NAME" enumeration
+      const enumerated = /^(?:PROBLEM|ISSUE|#)\s*\d+\s*[:.]?\s*[A-Z]/i.test(trimmed);
+
+      // Divider-flanked header — check adjacent lines
+      let dividerFlanked = false;
+      if (allCapsPattern.test(trimmed)) {
+        for (let k = Math.max(0, lineIndex - 2); k <= Math.min(lines.length - 1, lineIndex + 2); k++) {
+          if (k === lineIndex) continue;
+          if (/^={5,}$/.test(String(lines[k] || "").trim())) {
+            dividerFlanked = true;
+            break;
+          }
+        }
+      }
+
+      if (!looksLikeAllCaps && !enumerated && !dividerFlanked) return false;
+
+      // Confirm by looking ahead for an ASSESSMENT: block within 8 lines
+      let sawAssessment = false;
+      for (let k = lineIndex + 1; k < Math.min(lines.length, lineIndex + 10); k++) {
+        const ahead = String(lines[k] || "").trim();
+        if (/^\*{0,2}\s*(?:ASSESSMENT|IMPRESSION)\s*(?:\([^)]*\))?\s*:?\*{0,2}\s*$/i.test(ahead)) {
+          sawAssessment = true;
+          break;
+        }
+        // If we hit another likely header first, this one isn't followed by an assessment
+        if (allCapsPattern.test(ahead) && !ahead.includes(":")) break;
+      }
+
+      return sawAssessment;
+    };
+
+    const isAssessmentLabel = (line) =>
+      /^\*{0,2}\s*(?:ASSESSMENT|IMPRESSION)\s*(?:\([^)]*\))?\s*:?\*{0,2}\s*$/i.test(String(line || "").trim());
+
+    const isPlanLabel = (line) =>
+      /^\*{0,2}\s*(?:PLAN|MANAGEMENT)\s*:?\*{0,2}\s*$/i.test(String(line || "").trim());
+
+    const flush = () => {
+      if (currentHeader && currentAssessmentText.trim()) {
+        blocks.push({
+          header: currentHeader,
+          assessmentText: currentAssessmentText.trim(),
+        });
+      }
+      currentHeader = null;
+      currentHeaderIndex = -1;
+      currentBuffer = [];
+      currentAssessmentText = "";
+      inAssessment = false;
+    };
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const trimmed = String(line || "").trim();
+
+      if (isHeaderLine(line, i)) {
+        flush();
+        // Strip ICD code, divider chars, and enum prefix from the header
+        currentHeader = trimmed
+          .replace(/^(?:PROBLEM|ISSUE|#)\s*\d+\s*[:.]?\s*/i, "")
+          .replace(/\s*\([A-Z]\d{2}(?:\.\d{1,4})?\)\s*$/i, "")
+          .trim();
+        currentHeaderIndex = i;
+        continue;
+      }
+
+      if (!currentHeader) continue;
+
+      if (isAssessmentLabel(trimmed)) {
+        inAssessment = true;
+        continue;
+      }
+
+      // Stop collecting the assessment when we hit a Plan label or the next header
+      if (inAssessment && isPlanLabel(trimmed)) {
+        inAssessment = false;
+        continue;
+      }
+
+      if (inAssessment) {
+        currentAssessmentText += (currentAssessmentText ? "\n" : "") + line;
+      }
+    }
+
+    flush();
+    return blocks;
+  };
+
   // ===== Analyze note with AI =====
 const analyzeNote = async () => {
     if (!clinicalNote.trim()) return;
@@ -4309,6 +4445,51 @@ Focus on: ${phase.focus}`;
             shortSubtitle: "From prenote PMH",
             source: "prenote",
           }));
+        }
+
+        // Post-visit reliability floor: parse the note's per-problem ASSESSMENT
+        // blocks deterministically and tag any AI problem that lacks a matching
+        // block as "ai-only-no-assessment". The UI shows a stronger warning for
+        // these, since a problem without a corresponding assessment section is
+        // more likely to be an AI hallucination or over-generalization.
+        if (!isPreVisit && mergedActiveProblems.length > 0) {
+          const assessmentBlocks = parsePostVisitAssessmentBlocks(clinicalNote);
+          if (assessmentBlocks.length > 0) {
+            const normalizeForCompare = (s) =>
+              String(s || "").toLowerCase().replace(/\s+/g, " ").replace(/[^a-z0-9\s]/g, "").trim();
+            const assessmentKeys = assessmentBlocks.map(b => normalizeForCompare(b.header));
+
+            mergedActiveProblems = mergedActiveProblems.map(p => {
+              const problemKey = normalizeForCompare(p.problem);
+              if (!problemKey) return p;
+              const hasAssessment = assessmentKeys.some(ak => {
+                if (ak === problemKey) return true;
+                if (ak.length < 3 || problemKey.length < 3) return false;
+                if (ak.includes(problemKey) || problemKey.includes(ak)) return true;
+                // Token overlap fallback
+                const akTokens = new Set(ak.split(/\s+/).filter(t => t.length > 3));
+                const pkTokens = new Set(problemKey.split(/\s+/).filter(t => t.length > 3));
+                if (akTokens.size === 0 || pkTokens.size === 0) return false;
+                const smaller = akTokens.size <= pkTokens.size ? akTokens : pkTokens;
+                const larger = smaller === akTokens ? pkTokens : akTokens;
+                let shared = 0;
+                smaller.forEach(t => { if (larger.has(t)) shared += 1; });
+                return shared / smaller.size >= 0.7;
+              });
+              if (!hasAssessment) {
+                return { ...p, source: "ai-only-no-assessment" };
+              }
+              return { ...p, source: "note-assessment+ai" };
+            });
+
+            const noAssessmentCount = mergedActiveProblems.filter(p => p.source === "ai-only-no-assessment").length;
+            if (noAssessmentCount > 0) {
+              console.warn(
+                `[analyzeNote] ${noAssessmentCount} AI-extracted problem(s) have no matching ASSESSMENT block in the note:`,
+                mergedActiveProblems.filter(p => p.source === "ai-only-no-assessment").map(p => p.problem)
+              );
+            }
+          }
         }
       }
 
@@ -5097,7 +5278,8 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 
 {
   "problem": "${problem}",
-  "caseSummary": "A brief 2-4 sentence attending-to-student note capturing what would be most helpful to understand about this problem before or after the visit. Use warm, invitational language such as 'It may be helpful to think about...', 'One way to connect these findings is...', or 'This could be a useful point to discuss with the patient.' Explain the clinical idea, connect it to this patient's chart, and suggest how it may inform the conversation or plan. Never begin with 'You need to understand,' 'You should know,' or another command.",
+"caseSummary": "A brief 2-4 sentence attending-to-student note capturing what would be most helpful to understand about this problem before or after the visit. Use warm, invitational language such as 'It may be helpful to think about...', 'One way to connect these findings is...', or 'This could be a useful point to discuss with the patient.' Explain the clinical idea, connect it to this patient's chart, and suggest how it may inform the conversation or plan. Never begin with 'You need to understand,' 'You should know,' or another command.",
+  "keyTakeaway": "ONE SENTENCE — the single most important thing the student should remember about this problem, if they remembered nothing else. Written as a memorable clinical rule tied to this patient. Examples: 'A 1.2 cm TR4 nodule with normal TSH gets surveillance, not FNA — the 1.5 cm threshold matters more than the TI-RADS category.' or 'Any visible CAC in a patient like this converts borderline hyperlipidemia into a clear statin indication.' Should feel like the one line the student would highlight and remember on rounds. Not a summary — a rule.",
   "primaryDiagnosis": {"name": "the diagnosis", "briefDefinition": "1-2 sentences framed around what makes it relevant for ${isPreVisit ? "the upcoming visit with THIS patient" : "THIS patient"}"},
   "illnessScript": {
     "epidemiology": "1-2 sentences on who typically gets this. Reference ${isPreVisit ? "the patient's chart-documented demographics" : "our patient's demographics"} where they fit or contrast the pattern.",
@@ -6761,6 +6943,10 @@ Formatting rules:
       });
     }
 
+    // Reset the uncited-sources acknowledgment so the audit banner reappears
+    // if this new attempt also produces uncited sources.
+    setUncitedSourcesAcknowledged(false);
+
     // Track this attempt's per-unit outcomes for the summary panel
     const attempt = {
       synthesis: null,
@@ -6795,14 +6981,9 @@ Formatting rules:
           synthesized = await synthesizeSources();
           setSynthesizedEvidence(synthesized);
           attempt.synthesis = "success";
-          // Surface uncited sources as soft warnings — the synthesis succeeded
-          // but the AI silently ignored some of the attending's inputs.
-          if (synthesized?.uncitedSources?.length > 0) {
-            attempt.errors.push({
-              unit: "synthesis-attribution",
-              message: `The AI didn't cite ${synthesized.uncitedSources.length} of your source(s): ${synthesized.uncitedSources.join(", ")}. The content may have overlapped with other sources, or the AI may have skipped it. Consider re-running synthesis or verifying the missing source added value.`,
-            });
-          }
+          // Uncited sources are surfaced via the dedicated attribution audit
+          // banner in the Review panel (see uncitedSourcesAcknowledged state),
+          // so we don't duplicate them in the errors list.
         } catch (e) {
           attempt.synthesis = "failed";
           attempt.errors.push({ unit: "synthesis", message: e.message });
@@ -8684,51 +8865,93 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                   When are you creating this document — before you see the patient, or after?
                 </p>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <button
-                  onClick={() => setSessionMode("post")}
-                  className={`text-left p-4 rounded-lg border-2 transition ${
-                    sessionMode === "post"
-                      ? "border-indigo-500 bg-indigo-50"
-                      : "border-slate-200 bg-white hover:border-slate-300"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sessionMode === "post" ? "border-indigo-600 bg-indigo-600" : "border-slate-300 bg-white"}`}>
-                      {sessionMode === "post" && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+              {(() => {
+                // Session mode is locked once analysis has populated. Switching
+                // silently would leave garbage state — the AI-extracted problem
+                // list, prompts, and rendered document all depend on which mode
+                // was active when the note was analyzed.
+                const modeLocked = Boolean(noteAnalysis) || Boolean(generatedDoc) || Boolean(previewData);
+                const attemptSwitch = (target) => {
+                  if (!modeLocked) {
+                    setSessionMode(target);
+                    return;
+                  }
+                  if (target === sessionMode) return;
+                  const confirmed = confirm(
+                    `You've already analyzed a note in ${sessionMode === "pre" ? "pre-visit" : "post-visit"} mode. Switching to ${target === "pre" ? "pre-visit" : "post-visit"} requires clearing the current session. Continue?`
+                  );
+                  if (!confirmed) return;
+                  clearEditor();
+                  setSessionMode(target);
+                };
+                return (
+                  <>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <button
+                        onClick={() => attemptSwitch("post")}
+                        className={`text-left p-4 rounded-lg border-2 transition ${
+                          sessionMode === "post"
+                            ? "border-indigo-500 bg-indigo-50"
+                            : "border-slate-200 bg-white hover:border-slate-300"
+                        } ${modeLocked && sessionMode !== "post" ? "opacity-60" : ""}`}
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sessionMode === "post" ? "border-indigo-600 bg-indigo-600" : "border-slate-300 bg-white"}`}>
+                            {sessionMode === "post" && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                          </div>
+                          <div className={`font-semibold text-sm ${sessionMode === "post" ? "text-indigo-900" : "text-slate-900"}`}>
+                            Post-visit teaching
+                          </div>
+                          {modeLocked && sessionMode === "post" && (
+                            <span className="text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded-full font-medium ml-auto">
+                              Locked
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-600 ml-6">
+                          Paste the clinical note from an encounter you already saw. Generates a debrief teaching document anchored to what happened.
+                        </div>
+                      </button>
+                      <button
+                        onClick={() => attemptSwitch("pre")}
+                        className={`text-left p-4 rounded-lg border-2 transition ${
+                          sessionMode === "pre"
+                            ? "border-indigo-500 bg-indigo-50"
+                            : "border-slate-200 bg-white hover:border-slate-300"
+                        } ${modeLocked && sessionMode !== "pre" ? "opacity-60" : ""}`}
+                      >
+                        <div className="flex items-center gap-2 mb-1">
+                          <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sessionMode === "pre" ? "border-indigo-600 bg-indigo-600" : "border-slate-300 bg-white"}`}>
+                            {sessionMode === "pre" && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                          </div>
+                          <div className={`font-semibold text-sm ${sessionMode === "pre" ? "text-indigo-900" : "text-slate-900"}`}>
+                            Pre-visit prep
+                          </div>
+                          <span className="text-[10px] uppercase tracking-wider bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium">
+                            New
+                          </span>
+                          {modeLocked && sessionMode === "pre" && (
+                            <span className="text-[10px] uppercase tracking-wider bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded-full font-medium ml-auto">
+                              Locked
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-slate-600 ml-6">
+                          Paste a prenote before the visit. Generates an in-room reference doc for the student + anticipatory teaching prep.
+                        </div>
+                      </button>
                     </div>
-                    <div className={`font-semibold text-sm ${sessionMode === "post" ? "text-indigo-900" : "text-slate-900"}`}>
-                      Post-visit teaching
-                    </div>
-                  </div>
-                  <div className="text-xs text-slate-600 ml-6">
-                    Paste the clinical note from an encounter you already saw. Generates a debrief teaching document anchored to what happened.
-                  </div>
-                </button>
-                <button
-                  onClick={() => setSessionMode("pre")}
-                  className={`text-left p-4 rounded-lg border-2 transition ${
-                    sessionMode === "pre"
-                      ? "border-indigo-500 bg-indigo-50"
-                      : "border-slate-200 bg-white hover:border-slate-300"
-                  }`}
-                >
-                  <div className="flex items-center gap-2 mb-1">
-                    <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sessionMode === "pre" ? "border-indigo-600 bg-indigo-600" : "border-slate-300 bg-white"}`}>
-                      {sessionMode === "pre" && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
-                    </div>
-                    <div className={`font-semibold text-sm ${sessionMode === "pre" ? "text-indigo-900" : "text-slate-900"}`}>
-                      Pre-visit prep
-                    </div>
-                    <span className="text-[10px] uppercase tracking-wider bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-medium">
-                      New
-                    </span>
-                  </div>
-                  <div className="text-xs text-slate-600 ml-6">
-                    Paste a prenote before the visit. Generates an in-room reference doc for the student + anticipatory teaching prep.
-                  </div>
-                </button>
-              </div>
+                    {modeLocked && (
+                      <div className="mt-3 p-3 bg-slate-100 border border-slate-200 rounded-lg text-xs text-slate-700 flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5 text-slate-500" />
+                        <div>
+                          <strong>Mode locked for this session.</strong> You've already analyzed a note or generated content in {sessionMode === "pre" ? "pre-visit" : "post-visit"} mode. Switching modes would leave the note analysis, problem list, and generated content out of sync. Clear the session to switch.
+                        </div>
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               {sessionMode === "pre" && (
                 <div className="mt-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-start gap-2">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -9020,10 +9243,19 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                       </span>
                     </div>
                     <p className="text-xs text-slate-600 mb-3 ml-9">Each selected problem generates its own teaching case in the final document.</p>
-                    {/* Post-visit AI verification prompt — post-visit notes have no
-                        deterministic "problem list" section to enforce against, so the
-                        AI extraction is unverified. Warn the attending before they
-                        burn AI calls on a fabricated problem. */}
+                    {/* Post-visit verification prompt. Now split into two tiers:
+                        - "no assessment" problems get a red, more urgent warning
+                          because they lack a matching ASSESSMENT block in the note
+                        - "ai-extracted" (legacy tag for notes with no structured
+                          assessment blocks at all) gets the softer amber warning */}
+                    {sessionMode === "post" && activeProblems.some(p => p.source === "ai-only-no-assessment") && (
+                      <div className="ml-9 mb-3 p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-900 flex items-start gap-2">
+                        <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
+                        <div>
+                          <strong>Some problems have no matching ASSESSMENT block in the note.</strong> These are marked <span className="font-mono bg-red-100 px-1 rounded">AI · no assessment</span>. The AI may have hallucinated or over-generalized a problem the note doesn't actually address. Verify these especially carefully before selecting — you don't want to burn an AI call generating teaching content for a problem the patient doesn't have.
+                        </div>
+                      </div>
+                    )}
                     {sessionMode === "post" && activeProblems.some(p => p.source === "ai-extracted") && (
                       <div className="ml-9 mb-3 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-xs text-amber-900 flex items-start gap-2">
                         <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
@@ -9055,6 +9287,16 @@ Generate 3-4 CONTENT-BASED long-term learning goals for the diagnoses in this ca
                                   {p.source === "ai-extracted" && !isCustom && (
                                     <span className="text-[10px] uppercase tracking-wider bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-medium" title="Extracted by AI from the note — verify before selecting">
                                       AI · verify
+                                    </span>
+                                  )}
+                                  {p.source === "ai-only-no-assessment" && !isCustom && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-red-100 text-red-800 px-1.5 py-0.5 rounded-full font-medium border border-red-200" title="AI extracted this problem but the note has no matching ASSESSMENT block. Higher risk of hallucination — verify carefully before selecting.">
+                                      AI · no assessment
+                                    </span>
+                                  )}
+                                  {p.source === "note-assessment+ai" && !isCustom && (
+                                    <span className="text-[10px] uppercase tracking-wider bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded-full font-medium" title="Confirmed against the note's per-problem ASSESSMENT structure">
+                                      Verified in note
                                     </span>
                                   )}
                                   {p.source === "prenote" && (
@@ -10875,8 +11117,59 @@ function PreviewEditor({ previewData, setPreviewData, togglePreviewSection, togg
     );
   };
 
+ // Uncited-source audit: extract from synthesizedEvidence if available. This
+  // is a distinct warning from the general error list because it represents
+  // silent evidence loss — the attending pasted a source, it got processed,
+  // but no claim in the final document draws from it.
+  const uncitedSources = previewData?.sections?.synthesizedEvidence?.content?.uncitedSources || [];
+
   return (
     <div>
+      {/* Evidence attribution audit — prominent, blocking-style warning when
+          any Step 4 source received zero claim attributions from the AI. */}
+      {uncitedSources.length > 0 && !uncitedSourcesAcknowledged && (
+        <div className="rounded-lg border-2 border-amber-400 bg-amber-50 p-4 mb-4 shadow-md">
+          <div className="flex items-start justify-between gap-3 flex-wrap">
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center gap-2 mb-2">
+                <AlertCircle className="w-5 h-5 text-amber-700 flex-shrink-0" />
+                <h3 className="text-base font-bold text-amber-900">
+                  Some Step 4 sources were not used by the AI
+                </h3>
+              </div>
+              <div className="text-sm text-amber-900 mb-3">
+                <strong>{uncitedSources.length} of your source{uncitedSources.length !== 1 ? "s" : ""}</strong> received zero claim attributions during evidence synthesis:
+                <ul className="list-disc ml-5 mt-2 space-y-0.5">
+                  {uncitedSources.map((src, i) => (
+                    <li key={i} className="font-medium">{src}</li>
+                  ))}
+                </ul>
+              </div>
+              <div className="text-xs text-amber-800 bg-amber-100 border border-amber-200 rounded p-2.5 mb-3">
+                <strong>Why this matters:</strong> The AI may have determined that these sources overlapped with other sources and had no unique claims to contribute. But it's also possible the AI silently ignored valuable material — especially for PDFs, which often have distinctive full-text detail (specific trial numbers, patient cohort data, dosing subtleties) that broad research aggregators skim over. Verify the missing sources actually added value before finalizing.
+              </div>
+              <div className="flex gap-2 flex-wrap">
+                <button
+                  onClick={() => setUncitedSourcesAcknowledged(true)}
+                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium flex items-center gap-1.5"
+                >
+                  <Check className="w-4 h-4" />
+                  I've reviewed — proceed
+                </button>
+                <button
+                  onClick={onRegenerate}
+                  disabled={aiStatus.generating}
+                  className="px-4 py-2 bg-white hover:bg-amber-100 text-amber-900 border border-amber-400 rounded-lg text-sm font-medium disabled:opacity-50 flex items-center gap-1.5"
+                >
+                  <Wand2 className="w-4 h-4" />
+                  Re-run synthesis
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Generation summary — only shown after a generation attempt */}
       {attemptSummary && (
         <div className={`rounded-lg border p-4 mb-4 ${attemptSummary.hasFailures ? "bg-amber-50 border-amber-200" : "bg-emerald-50 border-emerald-200"}`}>
@@ -15423,6 +15716,13 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
 
   html += `<div class="prob-body">`;
 
+  // ── Key takeaway ("if you remember only one thing") — highest-priority
+  //    single-line rule the student should carry into the room. Rendered
+  //    ABOVE the case summary so it's the first thing they see. ──
+  if (isSelected && c.keyTakeaway) {
+    html += `<div class="problem-key-takeaway"><div class="problem-key-takeaway-label"><i class="fa-solid fa-star"></i> If you remember only one thing</div><div class="problem-key-takeaway-text">${esc(c.keyTakeaway)}</div></div>`;
+  }
+
   // ── Attending case summary (soft sand panel; no extra vertical rail) ──
   if (isSelected && c.caseSummary) {
     html += `<p class="problem-attending-summary">${esc(softenTeachingVoice(c.caseSummary))}</p>`;
@@ -19207,6 +19507,45 @@ body.dark .oneliner { background: rgba(99,143,168,.12); border-color: rgba(99,14
 .oneliner strong { color: var(--accent); }
 body.dark .oneliner strong { color: var(--accent); }
 
+/* Aggregated don't-miss checklist */
+.aggregated-dont-miss {
+  margin: 10px 0 12px;
+  padding: 9px 11px;
+  border: 1px solid rgba(255, 87, 87, 0.28);
+  border-left: 3px solid var(--danger);
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(90deg, rgba(255, 87, 87, 0.075) 0%, rgba(255, 87, 87, 0.02) 100%);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.aggregated-dont-miss-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 5px;
+  color: var(--danger-text);
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+.aggregated-dont-miss ul {
+  margin: 0;
+  padding-left: 18px;
+  list-style: disc;
+}
+.aggregated-dont-miss li {
+  margin-bottom: 3px;
+  color: var(--danger-text);
+  font-size: 8.5pt;
+  line-height: 1.45;
+}
+.aggregated-dont-miss .dm-problem {
+  color: var(--danger-text);
+  font-weight: 700;
+  margin-right: 3px;
+}
+
 /* Allergy bar */
 .allergy {
   display: inline-flex;
@@ -19880,6 +20219,35 @@ body.dark .prob-title { color: var(--accent); }
   font-size: 9pt !important;
   font-style: italic;
   line-height: 1.5 !important;
+}
+.problem-key-takeaway {
+  margin: 0 0 10px;
+  padding: 9px 11px;
+  border-left: 3px solid var(--palette-alert);
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(90deg, rgba(255, 87, 87, 0.10) 0%, rgba(255, 87, 87, 0.03) 100%);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+.problem-key-takeaway-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+  color: var(--palette-alert);
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+.problem-key-takeaway-text {
+  color: var(--fg);
+  font-size: 9.5pt;
+  font-weight: 600;
+  line-height: 1.45;
+}
+body.dark .problem-key-takeaway {
+  background: linear-gradient(90deg, rgba(255, 87, 87, 0.13) 0%, rgba(255, 87, 87, 0.04) 100%);
 }
 body.dark .problem-attending-summary {
   border-color: rgba(242, 217, 187, 0.14);
@@ -21499,6 +21867,21 @@ ${headerHtml}
 ${oneLinerHtml}
 ${allergyBarHtml}
 ${overviewHtml}
+${(() => {
+  // Aggregated don't-miss strip. Pulls from every enabled patient-diagnosis
+  // teaching case and renders as a single pre-flight checklist near the top.
+  const aggregatedDontMiss = enabledCases.flatMap(tc => {
+    const problem = tc.data?.problem || tc.problem || "";
+    const items = Array.isArray(tc.data?.dontMiss)
+      ? tc.data.dontMiss.filter(item => item && String(item).trim())
+      : (typeof tc.data?.dontMiss === "string" && tc.data.dontMiss.trim()
+          ? [tc.data.dontMiss.trim()]
+          : []);
+    return items.map(item => ({ problem, item }));
+  });
+  if (aggregatedDontMiss.length === 0) return "";
+  return `<div class="aggregated-dont-miss"><div class="aggregated-dont-miss-label"><i class="fa-solid fa-triangle-exclamation"></i> Don't Miss — All Problems</div><ul>${aggregatedDontMiss.map(entry => `<li>${entry.problem ? `<span class="dm-problem">[${esc(entry.problem)}]</span> ` : ""}${esc(entry.item)}</li>`).join("")}</ul></div>`;
+})()}
 ${topNarrativeHtml}
 ${priorityFocusHtml}
 ${refGridHtml}
@@ -23379,6 +23762,63 @@ function DocumentContent({ doc, phase, session }) {
           </section>
         )}
 
+        {/* Don't Miss — aggregated across all cases. Pre-flight checklist
+            the student can scan before entering a room or during a shelf-style
+            review. Individual per-case dontMiss boxes remain in each case
+            section since they read better with local context. */}
+        {(() => {
+          const aggregatedDontMiss = enabledCases.flatMap(tc => {
+            const problem = tc.data?.problem || "";
+            const items = Array.isArray(tc.data?.dontMiss)
+              ? tc.data.dontMiss.filter(item => item && String(item).trim())
+              : (typeof tc.data?.dontMiss === "string" && tc.data.dontMiss.trim()
+                  ? [tc.data.dontMiss.trim()]
+                  : []);
+            return items.map(item => ({ problem, item }));
+          });
+          if (aggregatedDontMiss.length === 0) return null;
+          return (
+            <section className="keep-together" style={{ marginBottom: "2rem" }}>
+              <div style={{
+                padding: "0.85rem 1rem",
+                background: "linear-gradient(90deg, rgba(255, 87, 87, 0.08) 0%, rgba(255, 87, 87, 0.02) 100%)",
+                border: "1px solid rgba(255, 87, 87, 0.28)",
+                borderLeft: "3px solid var(--doc-conflict)",
+                borderRadius: "0 4px 4px 0",
+              }}>
+                <div style={{
+                  fontFamily: "'Inter', sans-serif",
+                  fontSize: "0.68rem",
+                  fontWeight: 800,
+                  letterSpacing: "0.12em",
+                  textTransform: "uppercase",
+                  color: "var(--doc-conflict)",
+                  marginBottom: "0.5rem",
+                }}>
+                  Don't Miss — All Problems
+                </div>
+                <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                  {aggregatedDontMiss.map((entry, i) => (
+                    <li key={i} style={{
+                      marginBottom: "0.35rem",
+                      fontSize: "0.87rem",
+                      lineHeight: 1.5,
+                      color: "#7a1f2b",
+                    }}>
+                      {entry.problem && (
+                        <span style={{ fontWeight: 700, marginRight: "0.35rem" }}>
+                          [{entry.problem}]
+                        </span>
+                      )}
+                      {entry.item}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </section>
+          );
+        })()}
+
         {/* Session Goal */}
         {s.sessionGoal?.enabled && s.sessionGoal.content && (
           <section style={{ marginBottom: "2rem" }}>
@@ -23461,7 +23901,36 @@ function DocumentContent({ doc, phase, session }) {
                   );
                 })()}
               </div>
-{c.caseSummary && (
+{c.keyTakeaway && (
+                <div className="keep-together" style={{
+                  marginBottom: "1rem",
+                  padding: "0.75rem 1rem",
+                  background: "linear-gradient(90deg, rgba(242, 217, 187, 0.45) 0%, rgba(242, 217, 187, 0.18) 100%)",
+                  borderLeft: "3px solid var(--doc-terracotta)",
+                  borderRadius: "0 4px 4px 0",
+                }}>
+                  <div style={{
+                    fontFamily: "'Inter', sans-serif",
+                    fontSize: "0.65rem",
+                    fontWeight: 800,
+                    letterSpacing: "0.14em",
+                    textTransform: "uppercase",
+                    color: "var(--doc-terracotta)",
+                    marginBottom: "0.35rem",
+                  }}>
+                    If you remember only one thing
+                  </div>
+                  <div style={{
+                    fontSize: "0.95rem",
+                    fontWeight: 600,
+                    lineHeight: 1.5,
+                    color: "var(--doc-navy)",
+                  }}>
+                    {c.keyTakeaway}
+                  </div>
+                </div>
+              )}
+              {c.caseSummary && (
                 <div className="keep-together" style={{
                   marginBottom: "1.5rem",
                   padding: "0.25rem 0",
