@@ -25781,10 +25781,19 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
 
   if (!content.synthesized && content.singleSource) {
     // Fallback path: only one source, no AI synthesis ran. Parse into
-    // structured blocks (headings, paragraphs, lists, and — critically —
-    // detect PROBLEM N / SECTION headers embedded in plain text so the
-    // student gets navigable, well-formatted evidence instead of one giant
-    // wall of text.
+    // structured blocks (headings, paragraphs, lists, sub-bullets) — critically
+    // designed to handle content where the source didn't use clean HTML
+    // structure and instead embedded section headers inline in prose.
+    //
+    // Handles all of these real-world OpenEvidence/UpToDate/DoxGPT patterns:
+    //   1. Clean HTML with <h3>, <p>, <ul>, <ol>, etc.
+    //   2. Inline section headers ending with dash: "Shelf Exam Pearls-"
+    //   3. Title Case labels ending with colon: "Diagnostic Reasoning:"
+    //   4. ALL-CAPS section markers: "WORKUP"
+    //   5. Numbered enumeration inline: "1) foo 2) bar 3) baz"
+    //   6. Dash-prefixed sub-bullets embedded in paragraphs: "- Trapezius..."
+    //   7. Em-dash arrows: "premise → conclusion → outcome"
+    //   8. Semi-colon-separated multi-part lists
     const parseUnsynthesizedContent = (rawHtml) => {
       if (!rawHtml) return [];
       const tempDiv = document.createElement("div");
@@ -25817,95 +25826,189 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
       };
       Array.from(tempDiv.childNodes).forEach(walkHtml);
 
-      // If HTML gave us structure, use it. Otherwise parse plain text.
-      // A common failure mode: OpenEvidence content comes as one giant <p>
-      // with "PROBLEM 1" / "PROBLEM 2" / bold labels embedded inline.
-      // Detect that case: if we only got 1-2 blocks but the text is very long,
-      // re-parse as plain text.
+      // If HTML gave us paragraph/heading structure, use it as-is. But if HTML
+      // parsing produced too few blocks for the amount of text, the content is
+      // likely one giant paragraph with inline structure — reparse from scratch.
       const textLength = tempDiv.textContent.length;
-      const needsPlainTextReparse = blocks.length <= 2 && textLength > 800;
+      const needsPlainTextReparse =
+        blocks.length <= 2 ||                                         // barely any structure
+        blocks.every(b => b.type !== "heading") && textLength > 1500; // no headings in long text
 
-      if (needsPlainTextReparse) {
-        blocks.length = 0; // reset
+      if (!needsPlainTextReparse) return blocks;
 
-        const plainText = stripRefMarkers(tempDiv.textContent);
+      // ============ PLAIN-TEXT STRUCTURED REPARSE ============
+      blocks.length = 0; // reset
+      const plainText = stripRefMarkers(tempDiv.textContent);
 
-        // Split on strong structural markers. These are the boundaries that
-        // reliably indicate a new section: ALL-CAPS labels followed by colon,
-        // "PROBLEM N", "SECTION N", numbered problem headers, etc.
-        // Use lookahead so the marker stays with its section.
-        const majorSplitRegex = /(?=\b(?:PROBLEM\s+\d+|SECTION\s+\d+|CASE\s+\d+|DISCORDANCE\s*#?\s*\d+|TOPIC\s+\d+|SHELF\s+EXAM\s+PEARLS?|DIAGNOSTIC\s+REASONING|WORKUP|MANAGEMENT|CROSS[- ]PROBLEM\s+INTERACTIONS?|HIGH[- ]YIELD\s+CITATIONS?|PRACTICE[- ]CHANGING\s+EVIDENCE|ALTERNATIVES\s+TABLE|GUIDELINE\s+COMPARISON)\b)/gi;
+      // Known section header labels that mark structural boundaries. Case-
+      // insensitive match. These become "level 4" headings.
+      const SECTION_LABELS = [
+        "Shelf Exam Pearls",
+        "Shelf Pearls",
+        "Diagnostic Reasoning",
+        "Diagnostic Approach",
+        "Workup",
+        "Evaluation",
+        "Management",
+        "Treatment",
+        "Cross-Problem Interactions",
+        "Cross Problem Interactions",
+        "High-Yield Citations",
+        "High Yield Citations",
+        "Practice-Changing Evidence",
+        "Practice Changing Evidence",
+        "Recent Updates",
+        "Alternatives Table",
+        "Alternatives",
+        "Guideline Comparison",
+        "Guidelines",
+        "Key Points",
+        "Key Concepts",
+        "Pathophysiology",
+        "Epidemiology",
+        "Clinical Features",
+        "Differential Diagnosis",
+        "Prognosis",
+        "Complications",
+        "Follow-up",
+        "Follow up",
+        "Monitoring",
+        "Prevention",
+        "Special Populations",
+        "Red Flags",
+      ];
 
-        // Also detect inline bold-style labels that OpenEvidence often uses:
-        // "Shelf Exam Pearls" / "Diagnostic Reasoning:" / "Key classifications to know:"
-        // These are Title Case phrases ending with colon.
-        const inlineLabelRegex = /(?<=[.!?]\s)(?=[A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+){1,5}\s*:)/g;
+      // Build a regex that matches these labels when they appear either:
+      //  (a) at the start of the text
+      //  (b) after a period/period-space
+      //  (c) preceded by a space when directly followed by "-" or ":"
+      //      (the "Shelf Exam Pearls-" inline pattern from OpenEvidence)
+      const labelPattern = SECTION_LABELS
+        .map(l => l.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"))
+        .join("|");
+      const sectionSplitRegex = new RegExp(
+        `(?:^|(?<=[.!?]\\s)|(?<=\\s))(?=(?:${labelPattern})(?:\\s*[-:—])?)`,
+        "gi"
+      );
 
-        const chunks = plainText
-          .split(majorSplitRegex)
-          .flatMap(c => c.split(/\n{2,}/))
-          .flatMap(c => c.split(inlineLabelRegex))
-          .map(c => c.trim())
-          .filter(Boolean);
+      // Split into major section chunks
+      let chunks = plainText.split(sectionSplitRegex).map(c => c.trim()).filter(Boolean);
 
-        chunks.forEach(chunk => {
-          // Detect PROBLEM N / SECTION N as a top-level heading
-          const majorHeadingMatch = chunk.match(/^(PROBLEM\s+\d+|SECTION\s+\d+|CASE\s+\d+|DISCORDANCE\s*#?\s*\d+|TOPIC\s+\d+)\s*[:—–-]?\s*(.*)$/is);
-          if (majorHeadingMatch) {
-            blocks.push({ type: "heading", level: 3, text: majorHeadingMatch[1].trim() });
-            const rest = majorHeadingMatch[2].trim();
-            if (rest) {
-              // Recursively parse the remainder for sub-headings
-              const subMatch = rest.match(/^([A-Z][a-zA-Z\s]{3,60})\s*[:—](.+)$/s);
-              if (subMatch) {
-                blocks.push({ type: "heading", level: 4, text: subMatch[1].trim() });
-                if (subMatch[2].trim()) blocks.push({ type: "paragraph", text: subMatch[2].trim() });
-              } else {
-                blocks.push({ type: "paragraph", text: rest });
-              }
+      // Also split any chunk on PROBLEM N / SECTION N / TOPIC N / DISCORDANCE N
+      // enumeration boundaries — these appear across multi-problem content
+      chunks = chunks.flatMap(chunk => {
+        const majorEnumRegex = /(?=\b(?:PROBLEM|SECTION|CASE|TOPIC)\s+\d+\b|(?=\bDISCORDANCE\s*#?\s*\d+\b))/gi;
+        return chunk.split(majorEnumRegex).map(c => c.trim()).filter(Boolean);
+      });
+
+      // Helper: parse a single chunk into a heading + body, then further
+      // decompose body into paragraphs, sub-bullets, and inline lists.
+      const parseChunk = (chunk) => {
+        // Try major enumeration heading first (PROBLEM N, TOPIC N, etc.)
+        const majorMatch = chunk.match(/^(PROBLEM\s+\d+|SECTION\s+\d+|CASE\s+\d+|TOPIC\s+\d+|DISCORDANCE\s*#?\s*\d+)\s*[:—–-]?\s*(.*)$/is);
+        if (majorMatch) {
+          blocks.push({ type: "heading", level: 3, text: majorMatch[1].trim() });
+          if (majorMatch[2].trim()) parseBody(majorMatch[2].trim());
+          return;
+        }
+
+        // Try known section label (Shelf Exam Pearls, Workup, etc.)
+        const sectionLabelMatch = chunk.match(
+          new RegExp(`^(${labelPattern})(?:\\s*[-:—]\\s*|\\s+)(.+)$`, "is")
+        );
+        if (sectionLabelMatch) {
+          blocks.push({ type: "heading", level: 4, text: sectionLabelMatch[1].trim() });
+          parseBody(sectionLabelMatch[2].trim());
+          return;
+        }
+
+        // Try ALL-CAPS section label
+        const allCapsMatch = chunk.match(/^([A-Z][A-Z\s&/,-]{4,60})\s*[:—-]\s*(.+)$/s);
+        if (allCapsMatch && !/[a-z]/.test(allCapsMatch[1])) {
+          blocks.push({ type: "heading", level: 4, text: allCapsMatch[1].trim() });
+          parseBody(allCapsMatch[2].trim());
+          return;
+        }
+
+        // No structural heading found — just parse the whole chunk as body
+        parseBody(chunk);
+      };
+
+      // Parse body text into paragraphs, sub-bullets, and inline lists.
+      // Handles the common OpenEvidence patterns: "- Sub-item text.- Next item"
+      // and inline numbered lists "1) foo 2) bar 3) baz".
+      const parseBody = (bodyText) => {
+        if (!bodyText || bodyText.length < 3) return;
+
+        // First, detect dash-prefixed sub-bullets. Real OpenEvidence output
+        // uses "- " as a marker for sub-items inside a paragraph, often glued
+        // without a space after a period: ".- Trapezius innervation..."
+        // Split on dash-space when preceded by end-of-sentence OR at start.
+        const dashBulletRegex = /(?:^|\s)-\s+(?=[A-Z])/g;
+        const dashSegments = bodyText.split(dashBulletRegex).map(s => s.trim()).filter(Boolean);
+
+        // If we got multiple dash segments AND the first one isn't itself a
+        // paragraph that runs longer than any of the bullets, treat everything
+        // after the first as sub-bullets attached to the first as intro.
+        if (dashSegments.length >= 2) {
+          const intro = dashSegments[0];
+          const bullets = dashSegments.slice(1);
+
+          // Only treat as list if the bullets look like actual list items
+          // (short-to-medium length, not just one much longer than the others)
+          const avgBulletLen = bullets.reduce((sum, b) => sum + b.length, 0) / bullets.length;
+          const looksLikeList = bullets.every(b => b.length < avgBulletLen * 3) && bullets.length >= 2;
+
+          if (looksLikeList) {
+            // Push intro as paragraph if substantive
+            if (intro.length > 20) {
+              parseInlineNumberedOrParagraph(intro);
             }
+            // Push bullets as a list — but also check each bullet for inline
+            // sub-structure (e.g., ": " followed by content = a nested label)
+            const cleanBullets = bullets.map(b => b.replace(/\s+/g, " ").trim());
+            blocks.push({ type: "list", ordered: false, items: cleanBullets });
             return;
           }
+        }
 
-          // Detect ALL-CAPS section labels
-          const allCapsMatch = chunk.match(/^([A-Z][A-Z\s&/,-]{4,60})\s*[:—](.+)$/s);
-          if (allCapsMatch) {
-            blocks.push({ type: "heading", level: 4, text: allCapsMatch[1].trim() });
-            const body = allCapsMatch[2].trim();
-            if (body) blocks.push({ type: "paragraph", text: body });
-            return;
-          }
+        // No dash-bullet structure — check for inline numbered list
+        parseInlineNumberedOrParagraph(bodyText);
+      };
 
-          // Detect Title Case label followed by content
-          const titleCaseMatch = chunk.match(/^([A-Z][a-zA-Z]+(?:\s+[A-Z]?[a-zA-Z]+){0,6})\s*[:—](.+)$/s);
-          if (titleCaseMatch && titleCaseMatch[1].length < 60) {
-            blocks.push({ type: "heading", level: 5, text: titleCaseMatch[1].trim() });
-            const body = titleCaseMatch[2].trim();
-            if (body) {
-              // Check if body is a semicolon-separated list (common in evidence text)
-              const items = body.split(/;\s+(?=[A-Z(])/);
-              if (items.length >= 3) {
-                blocks.push({ type: "list", ordered: false, items: items.map(i => i.trim().replace(/[.;]$/, "")) });
-              } else {
-                blocks.push({ type: "paragraph", text: body });
-              }
-            }
-            return;
-          }
-
-          // Detect enumerated lists inline: "1) ... 2) ... 3) ..."
-          const numberedListMatch = chunk.match(/(\d+\)\s*[^0-9]+?)(?=\d+\)|$)/g);
-          if (numberedListMatch && numberedListMatch.length >= 2) {
-            const items = numberedListMatch.map(item => item.replace(/^\d+\)\s*/, "").trim().replace(/[.;]$/, ""));
+      const parseInlineNumberedOrParagraph = (text) => {
+        // Inline enumerated list: "1) foo 2) bar 3) baz"
+        // Match multiple "N) ..." segments with lookahead to the next number
+        const numberedMatches = text.match(/\d+\)\s*[^0-9]+?(?=\s*\d+\)|$)/g);
+        if (numberedMatches && numberedMatches.length >= 2) {
+          const items = numberedMatches
+            .map(item => item.replace(/^\s*\d+\)\s*/, "").trim().replace(/[.;]$/, ""))
+            .filter(Boolean);
+          if (items.length >= 2) {
             blocks.push({ type: "list", ordered: true, items });
             return;
           }
+        }
 
-          // Default: plain paragraph
-          blocks.push({ type: "paragraph", text: chunk });
+        // Check for semicolon-separated list (3+ semicolon-separated clauses
+        // starting with capital letters or parens = probably a list)
+        if (text.length > 100 && (text.match(/;\s+[A-Z(]/g) || []).length >= 3) {
+          const items = text.split(/;\s+(?=[A-Z(])/).map(i => i.trim().replace(/[.;]$/, "")).filter(Boolean);
+          if (items.length >= 3) {
+            blocks.push({ type: "list", ordered: false, items });
+            return;
+          }
+        }
+
+        // No list structure — plain paragraph, but split on double-newline
+        // if the text somehow retained paragraph breaks.
+        const paragraphs = text.split(/\n{2,}/).map(p => p.trim()).filter(Boolean);
+        paragraphs.forEach(p => {
+          blocks.push({ type: "paragraph", text: p });
         });
-      }
+      };
 
+      chunks.forEach(parseChunk);
       return blocks;
     };
     const structuredBlocks = parseUnsynthesizedContent(content.singleSource.contentHtml || "");
@@ -25916,28 +26019,64 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
           From <strong style={{ color: "var(--doc-navy)", fontStyle: "normal" }}>{content.singleSource.source}</strong>. Supplementary content organized by topic — refer here for detail beyond what appears in the case discussion above.
         </p>
         <div style={{
-          padding: "1rem 1.25rem",
+          padding: "1.1rem 1.35rem",
           background: "var(--doc-paper)",
           borderLeft: "3px solid var(--doc-navy-mid)",
           borderRadius: "0 4px 4px 0",
         }}>
           {structuredBlocks.map((block, i) => {
             if (block.type === "heading") {
-              // Level 3 = major heading (PROBLEM N), level 4 = section, level 5 = subsection
+              // Three heading levels with distinct visual weight:
+              //   level 3 = major (PROBLEM N, TOPIC N) — uppercase, hairline underline
+              //   level 4 = section (Shelf Exam Pearls, Workup) — sand-tinted band
+              //   level 5 = subsection — bold label inline with content
               const isMajor = block.level <= 3;
               const isSection = block.level === 4;
+              if (isMajor) {
+                return (
+                  <div key={i} style={{
+                    fontFamily: "'Inter', sans-serif",
+                    fontSize: "0.95rem",
+                    fontWeight: 700,
+                    color: "var(--doc-navy)",
+                    margin: "1.5rem 0 0.6rem",
+                    lineHeight: 1.3,
+                    letterSpacing: "0.05em",
+                    textTransform: "uppercase",
+                    paddingBottom: "0.3rem",
+                    borderBottom: "1px solid var(--doc-hairline)",
+                  }}>
+                    {block.text}
+                  </div>
+                );
+              }
+              if (isSection) {
+                return (
+                  <div key={i} style={{
+                    fontFamily: "'Inter', sans-serif",
+                    fontSize: "0.82rem",
+                    fontWeight: 700,
+                    color: "var(--doc-navy)",
+                    margin: "1.1rem -0.35rem 0.5rem",
+                    padding: "0.35rem 0.6rem",
+                    background: "rgba(242, 217, 187, 0.30)",
+                    borderLeft: "2px solid var(--doc-navy-mid)",
+                    letterSpacing: "0.03em",
+                    lineHeight: 1.3,
+                  }}>
+                    {block.text}
+                  </div>
+                );
+              }
               return (
                 <div key={i} style={{
                   fontFamily: "'Inter', sans-serif",
-                  fontSize: isMajor ? "0.95rem" : isSection ? "0.85rem" : "0.8rem",
-                  fontWeight: isMajor ? 700 : 600,
+                  fontSize: "0.8rem",
+                  fontWeight: 600,
                   color: "var(--doc-navy)",
-                  margin: isMajor ? "1.5rem 0 0.6rem" : isSection ? "1rem 0 0.4rem" : "0.75rem 0 0.3rem",
-                  lineHeight: 1.3,
-                  letterSpacing: isMajor ? "0.05em" : "0.02em",
-                  textTransform: isMajor ? "uppercase" : "none",
-                  paddingBottom: isMajor ? "0.3rem" : 0,
-                  borderBottom: isMajor ? "1px solid var(--doc-hairline)" : "none",
+                  margin: "0.7rem 0 0.3rem",
+                  lineHeight: 1.35,
+                  letterSpacing: "0.02em",
                 }}>
                   {block.text}
                 </div>
@@ -25946,15 +26085,35 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
             if (block.type === "list") {
               const ListTag = block.ordered ? "ol" : "ul";
               return (
-                <ListTag key={i} style={{ margin: "0.4rem 0 0.75rem", paddingLeft: "1.35rem" }}>
+                <ListTag
+                  key={i}
+                  style={{
+                    margin: "0.4rem 0 0.8rem",
+                    paddingLeft: "1.35rem",
+                    listStyle: block.ordered ? "decimal" : "disc",
+                  }}
+                >
                   {block.items.map((item, ii) => (
-                    <li key={ii} style={{ fontSize: "0.87rem", marginBottom: "0.35rem", lineHeight: 1.55 }}>{item}</li>
+                    <li key={ii} style={{
+                      fontSize: "0.87rem",
+                      marginBottom: "0.4rem",
+                      lineHeight: 1.55,
+                      paddingLeft: "0.15rem",
+                    }}>
+                      {item}
+                    </li>
                   ))}
                 </ListTag>
               );
             }
             return (
-              <p key={i} style={{ fontSize: "0.88rem", margin: "0 0 0.75rem", lineHeight: 1.6 }}>{block.text}</p>
+              <p key={i} style={{
+                fontSize: "0.88rem",
+                margin: "0 0 0.8rem",
+                lineHeight: 1.6,
+              }}>
+                {block.text}
+              </p>
             );
           })}
           {structuredBlocks.length === 0 && (
@@ -25965,7 +26124,6 @@ function EvidenceDeepDive({ content, allSourceImages = [], isPreview = false }) 
         </div>
       </section>
     );
-  }
 
   if (!content.synthesized || !content.topics?.length) return null;
 
