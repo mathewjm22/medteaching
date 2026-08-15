@@ -2775,6 +2775,211 @@ const DRAFT_STORAGE_KEY = "draft-v1";
 // (Chrome ~5MB, Safari lower under some conditions). We stay conservative.
 const DRAFT_MAX_BYTES = 4_000_000;
 
+// ============ CHEAT SHEET BUILDER ============
+// Produces a single-page density-optimized HTML export focused on the highest-
+// yield content: patient one-liner, aggregated don't-miss, one-line key
+// takeaway per problem, top core learning points, top 3 shelf-relevant facts.
+// Meant to be printed on one side of paper and pulled out during rounds.
+const buildCheatSheetHtml = (doc, session) => {
+  if (!doc) return "";
+  const s = doc.sections || {};
+  const na = doc.noteAnalysis || {};
+  const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+  const sessionDate = session?.sessionDate || new Date().toISOString().split("T")[0];
+  const student = doc.student || "Student";
+  const patient = na.patientDescriptor?.trim() || "Patient";
+  const chief = doc.chiefConcern?.trim() || doc.workingDx?.trim() || "";
+
+  const esc = (str) => String(str ?? "")
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+
+  // Aggregate the highest-yield content across cases
+  const allDontMiss = enabledCases.flatMap(tc => {
+    const problem = tc.data?.problem || tc.problem || "";
+    const items = Array.isArray(tc.data?.dontMiss)
+      ? tc.data.dontMiss.filter(item => item && String(item).trim())
+      : (typeof tc.data?.dontMiss === "string" && tc.data.dontMiss.trim()
+          ? [tc.data.dontMiss.trim()] : []);
+    return items.map(item => ({ problem, item }));
+  });
+
+  const allCoreLearningPoints = enabledCases.flatMap(tc => {
+    const problem = tc.data?.problem || tc.problem || "";
+    const points = (tc.data?.keyLearningPoints || [])
+      .filter(lp => lp?.priority === "core")
+      .map(lp => ({ problem, point: lp.point, explanation: lp.explanation, citation: lp.citation }));
+    return points;
+  });
+
+  const allShelfPoints = enabledCases.flatMap(tc => {
+    const problem = tc.data?.problem || tc.problem || "";
+    return (tc.data?.keyLearningPoints || [])
+      .filter(lp => lp?.shelfRelevant)
+      .slice(0, 3)
+      .map(lp => ({ problem, point: lp.point, explanation: lp.explanation }));
+  }).slice(0, 6);
+
+  const cssBlock = `
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      font-size: 8.5pt;
+      line-height: 1.35;
+      color: #1a1f2e;
+      background: white;
+      padding: 12px 16px;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      border-bottom: 1.5px solid #376c8b;
+      padding-bottom: 5px;
+      margin-bottom: 8px;
+    }
+    .patient-name { font-size: 12pt; font-weight: 700; color: #376c8b; }
+    .patient-meta { font-size: 7pt; color: #6b7280; }
+    .one-liner {
+      font-size: 8pt;
+      color: #374151;
+      padding: 5px 8px;
+      background: #f7f8fa;
+      border-left: 2px solid #376c8b;
+      margin-bottom: 8px;
+      line-height: 1.42;
+    }
+    .cheat-section {
+      margin-bottom: 8px;
+      break-inside: avoid;
+    }
+    .cheat-label {
+      font-size: 6.5pt;
+      font-weight: 800;
+      letter-spacing: 0.11em;
+      text-transform: uppercase;
+      color: #376c8b;
+      margin-bottom: 3px;
+      padding-bottom: 2px;
+      border-bottom: 1px solid #d8dde5;
+    }
+    .cheat-label.danger { color: #7a1f2b; border-bottom-color: rgba(255, 87, 87, 0.32); }
+    .cheat-label.shelf { color: #78350f; border-bottom-color: rgba(202, 138, 4, 0.32); }
+    .takeaway-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      gap: 4px 10px;
+    }
+    .takeaway-item {
+      padding: 4px 6px;
+      background: rgba(242, 217, 187, 0.24);
+      border-left: 2px solid #ca8a04;
+      font-size: 7.75pt;
+      line-height: 1.4;
+    }
+    .takeaway-problem {
+      font-weight: 700;
+      color: #376c8b;
+      font-size: 7pt;
+      display: block;
+      margin-bottom: 1px;
+    }
+    ul.tight { margin: 0; padding-left: 14px; list-style: disc; }
+    ul.tight li { margin-bottom: 2px; font-size: 7.75pt; line-height: 1.4; }
+    ul.tight li strong { color: #376c8b; }
+    .dm-list li { color: #7a1f2b; }
+    .dm-list li .problem-tag { font-weight: 700; margin-right: 3px; }
+    .footer {
+      margin-top: 8px;
+      padding-top: 4px;
+      border-top: 1px solid #d8dde5;
+      font-size: 6pt;
+      color: #94a3b8;
+      display: flex;
+      justify-content: space-between;
+    }
+    .col-2 { column-count: 2; column-gap: 14px; }
+    .col-2 > * { break-inside: avoid; }
+    @page { size: letter; margin: 0.35in; }
+    @media print { body { padding: 0; } }
+  `;
+
+  let body = "";
+  body += `<div class="header">
+    <div class="patient-name">${esc(patient)}${chief ? ` — <span style="font-weight:500;color:#374151;font-size:9pt;">${esc(chief)}</span>` : ""}</div>
+    <div class="patient-meta">${esc(student)} · ${esc(sessionDate)} · Month ${doc.phase?.monthsIn || "?"}</div>
+  </div>`;
+
+  if (na.oneLiner) body += `<div class="one-liner">${esc(na.oneLiner)}</div>`;
+
+  // Top row: takeaways per case, densely packed
+  const takeaways = enabledCases.map(tc => ({
+    problem: tc.data?.problem || "",
+    takeaway: tc.data?.keyTakeaway || "",
+  })).filter(t => t.takeaway);
+  if (takeaways.length > 0) {
+    body += `<div class="cheat-section">
+      <div class="cheat-label">Key Takeaways — One Per Problem</div>
+      <div class="takeaway-grid">
+        ${takeaways.map(t => `<div class="takeaway-item"><span class="takeaway-problem">${esc(t.problem)}</span>${esc(t.takeaway)}</div>`).join("")}
+      </div>
+    </div>`;
+  }
+
+  // Don't miss aggregation
+  if (allDontMiss.length > 0) {
+    body += `<div class="cheat-section">
+      <div class="cheat-label danger">Don't Miss — All Problems</div>
+      <ul class="tight dm-list">
+        ${allDontMiss.map(d => `<li><span class="problem-tag">[${esc(d.problem)}]</span>${esc(d.item)}</li>`).join("")}
+      </ul>
+    </div>`;
+  }
+
+  // Two-column layout for core points and shelf points
+  body += `<div class="col-2">`;
+
+  if (allCoreLearningPoints.length > 0) {
+    body += `<div class="cheat-section">
+      <div class="cheat-label">Core Facts</div>
+      <ul class="tight">
+        ${allCoreLearningPoints.map(lp => `<li><strong>${esc(lp.point)}:</strong> ${esc(lp.explanation)}${lp.citation ? ` <em style="color:#94a3b8;">(${esc(lp.citation)})</em>` : ""}</li>`).join("")}
+      </ul>
+    </div>`;
+  }
+
+  if (allShelfPoints.length > 0) {
+    body += `<div class="cheat-section">
+      <div class="cheat-label shelf">Shelf-Relevant Points</div>
+      <ul class="tight">
+        ${allShelfPoints.map(sp => `<li><strong>${esc(sp.point)}:</strong> ${esc(sp.explanation)}</li>`).join("")}
+      </ul>
+    </div>`;
+  }
+
+  body += `</div>`;
+
+  body += `<div class="footer">
+    <div>Cheat sheet — for hallway reference. Full teaching document has details, citations, and shelf questions.</div>
+    <div>Session ${esc(doc.sessionId || "no-id")}</div>
+  </div>`;
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Cheat Sheet — ${esc(patient)} — ${esc(sessionDate)}</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <style>${cssBlock}</style>
+</head>
+<body>${body}
+<script>window.addEventListener('load', function(){ setTimeout(function(){ window.print(); }, 500); });<\/script>
+</body>
+</html>`;
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("setup");
   const [saved, setSaved] = useState(false);
@@ -5290,9 +5495,13 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
     "naturalHistory": "1-2 sentences on what happens if untreated, and typical response to first-line treatment. ${isPreVisit ? "Anchor to what the chart trajectory suggests to expect going forward." : "Anchor to what we expect for our patient specifically."}"
   },
   "differentialDiagnosis": [{"diagnosis": "alternative", "reasoning": "${isPreVisit ? "why you should hold this in mind going into the visit — reference the patient's chart features, meds, or context" : "why you considered it for OUR patient — reference her actual features, meds, or context"}"}],
-  "keyLearningPoints": [{"point": "concise title", "explanation": "2-4 conversational sentences that START with ${isPreVisit ? "something specific from the chart" : "something specific about our patient's presentation"}, THEN ${isPreVisit ? "help the student connect that fact to the upcoming discussion or plan" : "teach the concept"}. Write as a supportive attending speaking directly with the student. Prefer 'It may be helpful to...', 'One way to think about this...', or 'You may notice...' and never use 'You need to understand' or 'You should know.' The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty"}],
+"keyLearningPoints": [{"point": "concise title", "explanation": "2-4 conversational sentences that START with ${isPreVisit ? "something specific from the chart" : "something specific about our patient's presentation"}, THEN ${isPreVisit ? "help the student connect that fact to the upcoming discussion or plan" : "teach the concept"}. Write as a supportive attending speaking directly with the student. Prefer 'It may be helpful to...', 'One way to think about this...', or 'You may notice...' and never use 'You need to understand' or 'You should know.' The real clinical citation appears in the 'citation' field below and will be shown inline in italics; do NOT also put it in the explanation prose in parentheses.", "citation": "real trial name / org+year / USPSTF grade — NEVER a tool name like OpenEvidence", "provenance": ["AI-tool names for internal tracking only"], "figureRef": "figure ID from FIGURES AVAILABLE if visualized, else empty", "priority": "REQUIRED — one of: core, context, deep. 'core' = would appear on a Medicine shelf exam or is essential for safe clinical care. 'context' = helps the student sound thoughtful on rounds or explains a nuance. 'deep' = useful for eventual mastery but not required at their current level. Tag conservatively — most points are 'context'; use 'core' sparingly for genuinely must-know facts.", "shelfRelevant": "REQUIRED boolean — true if this exact scenario or reasoning pattern appears on the IM shelf or Step 2 CK; false otherwise. Be honest — not everything is shelf-relevant.", "activeRecallPrompt": "one short question the student could ask themselves to test recall of this point, written as if they were quizzing themselves. Example: 'Why does the 1.5 cm TR4 threshold matter more than the TI-RADS category?' Keep it under 20 words."}],
 "shelfQuestions": [{"specialty": "one-word or short specialty tag for this question — e.g., 'Pathophysiology', 'Psychiatry', 'Nephrology', 'Gastroenterology', 'Hepatology', 'Preventive Medicine', 'Veterans Health Policy', 'Clinical Reasoning' — pick what best matches the concept being tested, not the patient's diagnosis", "vignette": "clinical vignette calibrated to the SHELF DIFFICULTY level specified below. Can invent a new patient for the vignette if useful.", "options": {"A":"...","B":"...","C":"...","D":"..."}, "correctAnswer": "A/B/C/D", "explanation": "detailed teaching explanation of why the correct answer is right and why each distractor is wrong"}],
-  "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
+  "pauseAndThink": {"prompt": "ONE question presented mid-case that asks the student to pause reading and commit to an answer before they see how the case unfolds. Should be genuinely thought-provoking, not a trivia question. Examples: 'Before you read on — given this patient's TSH of 0.52 and 1.2 cm TR4 nodule, what would you recommend and why?' or 'Given the CAC finding on his LDCT, what should you do with his borderline lipid panel today?' Written as a direct question to the reader.", "reveal": "1-2 sentence answer/discussion that appears when the student clicks to reveal. Should confirm what the ideal reasoning path looked like and reference the specifics they were reasoning about. Leave both prompt and reveal as empty strings if the case doesn't have a natural decision-point worth pausing on."},
+  "commonWrongTurns": ["array of 1-3 short items describing where medical students COMMONLY GET THIS WRONG in reasoning — not clinical safety issues (those are dontMiss). This is about diagnostic reasoning traps and anchoring pitfalls specific to this problem. Examples: 'Anchoring on the TI-RADS 4 label and recommending biopsy — the 1.5 cm size threshold matters more than the category.' 'Assuming all incidental CAC needs a stress test — asymptomatic CAC guides preventive therapy, not ischemia workup.' 'Attributing shoulder radiation to cervical radiculopathy without noting it doesn't extend past the elbow.' Each is one sentence naming the misstep plus the correction. Return empty array if no common reasoning trap applies."],
+  "nextPatientLikeThis": ["array of 2-3 short diagnostic questions the student should ask themselves the NEXT time they see a patient with a similar chart pattern. These are portable heuristics extracted from this specific case. Examples: 'When you see a thyroid nodule, always check TSH first — a suppressed TSH changes the whole workup.' 'When incidental CAC appears on any chest CT, ask yourself: is this patient statin-eligible?' 'When a patient has back pain with radiation, ask where the radiation stops — past the elbow implicates the cervical spine.' Written as portable clinical questions, not as this-case-specific facts."],
+  "failureMode": {"triggerToReconsider": "ONE sentence describing what would make you reconsider the diagnosis after starting the plan. Example: 'If this patient's back pain fails to improve in 4-6 weeks of conservative management, or if new neurologic deficits emerge, reconsider whether structural imaging is warranted.' Empty string if not applicable.", "expectedTimeframe": "short phrase for the expected response window — e.g., '2-4 weeks', 'by next visit', '3 months for symptom resolution'. Empty string if not applicable."},
+    "focusedHistoryQuestions": [{"question": "the question", "rationale": "${isPreVisit ? "what you'll be listening for when the student asks this in the upcoming visit — tie to what the chart tells us" : "what YOU as attending were listening for when I would have asked this in OUR patient's visit today"}"}],
   "physicalExam": {"maneuver": "exam maneuver relevant to ${isPreVisit ? "what the student should perform or ask the attending to demonstrate in the upcoming visit" : "OUR patient's presentation"}", "steps": ["step 1", "step 2"], "interpretation": "${isPreVisit ? "what a positive/negative finding would tell you and how it should change your thinking" : "what a positive/negative finding would tell you about THIS patient specifically"}"},
   "keyLabsAndImaging": [{"study": "completed lab, imaging study, or procedure name", "date": "date performed if explicitly documented, otherwise empty string", "result": "this patient's actual chart-documented result — REQUIRED; omit the entire item if no result is documented", "resultType": "lab or diagnostic", "whatItDoes": "plain-language explanation of what the test measures or detects", "valueExplanation": "plain-language definitions of every abbreviation, score, unit, and component shown in result; compare related components when useful", "whyOrdered": "why this test was ordered for this patient in this clinical scenario", "clinicalMeaning": "brief interpretation of what this patient's result means now", "teachingPoint": "2-4 warm, conversational sentences from the attending to the student connecting the test, this patient's indication, and the actual result; use Step 4 evidence when relevant and avoid command-like wording", "citation": "real guideline/trial/society reference when available; never an AI tool name", "provenance": ["AI-tool names for internal tracking only"]}],
 "treatmentApproach": {"firstLine": [{"treatment": "medication or THERAPEUTIC intervention NAME ONLY — never a diagnostic test, lab, imaging study, screening test, surveillance schedule, or monitoring study. Do NOT prefix with action verbs like 'Continue', 'Start', 'Initiate', 'Add', or 'Consider'.", "dosing": "dose/route/frequency or therapeutic schedule", "teachingRationale": "what this treatment or consult actually does, what it targets, the expected benefit, and why that target fits this patient's scenario; for referrals or allied-health consults, explain the clinician's role and specific focus", "monitoring": "what to check and when. For medications: labs to follow (e.g., 'basic metabolic panel at 2 weeks after starting or dose change; then every 6-12 months'), symptoms to reassess, timing of follow-up. For consults or non-drug therapies: how to know it is working. Empty string if not applicable.", "adverseEffectsToWatch": "1-2 sentences on the clinically meaningful adverse effects for THIS patient — reference their comorbidities, other meds, or context where relevant. Do not enumerate every possible side effect; name the ones that would change management or require patient counseling. Empty string if not applicable (e.g., for a consult referral).", "evidence": "landmark trial/guideline citation for why this is first-line — real reference, never a tool name", "provenance": ["AI-tool names for internal tracking only"]}], "additional": ["${isPreVisit ? "patient-specific considerations, including future monitoring recommendations that are not completed results" : "patient-specific considerations, including future monitoring recommendations that are not completed results"}"]},
@@ -5302,7 +5511,7 @@ Return ONLY valid JSON (no markdown fences, no commentary). CRITICAL JSON RULES:
 "landmarkTrial": {"name": "the single most practice-defining trial for this problem. If the STRUCTURED EVIDENCE above explicitly names a specific trial (e.g., 'MESA', 'SPRINT', 'PARADIGM-HF', 'NOTIFY-1', 'ADAM', 'PIVOTAL'), PREFER that trial over an unrelated famous trial you know from general training — the attending curated those sources deliberately. If the evidence doesn't name a specific trial, then fall back to the most practice-defining trial you know for this diagnosis. Leave empty string only if no single trial is clearly practice-defining.", "oneLineSummary": "one sentence: what the trial showed and why it changed practice. Example: 'In high-risk patients, targeting SBP <120 vs <140 reduced cardiovascular events by 25% at the cost of more AKI and syncope.' If the trial came from the structured evidence, use the evidence's phrasing of the finding rather than inventing your own. Leave empty string if no clear trial."},
   "practiceChangingUpdate": {"summary": "ONLY populate this field if the last 2-3 years (roughly 2023-2026) have produced evidence that MATERIALLY CHANGED how this problem is managed — a new drug approval that shifted first-line therapy, a major trial that flipped practice, an updated guideline with a substantive change. One sentence naming the update and citing the source (e.g., '2024 ADA guidelines added tirzepatide as first-line for T2DM with obesity, based on SURPASS-1 through SURPASS-5.'). If no recent practice-changing evidence exists — or if all the important evidence is >3 years old — leave this as an empty string. Do NOT populate this to be helpful when nothing has really changed; the value of this field depends on it firing only when there is a real recent update.", "yearRange": "e.g., '2024' or '2023-2025' — the year(s) when the update landed"},
     "recommendedReading": [{"reference": "landmark trial/guideline name", "relevance": "${isPreVisit ? "why I want you to skim this BEFORE the visit" : "why I want you to read this after seeing OUR patient today"}"}],
-  "communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}"},
+"communicationTeaching": {"scenario": "${isPreVisit ? "a specific conversation you should be ready for in the upcoming visit given the chart" : "a specific conversation that came up (or could have come up) in OUR visit today"}", "script": "${isPreVisit ? "example language you could use — reference her chart-documented context" : "example language YOU could use with this patient — reference her actual concerns, quotes, or emotional state"}", "alternativePhrasings": [{"style": "one of: 'Formal', 'Warm', 'Direct', 'Metaphor-based', 'Concrete'", "text": "an alternative way to convey the same clinical message in a different register. Should be a genuinely different phrasing, not a paraphrase of the primary script — different word choice, sentence structure, and rhetorical approach. Example if primary script uses medical terms: an alternative in plain language. Example if primary is warm: an alternative that's more direct and clinical."}]},
   "clinicalPearl": "one memorable teaching point framed as something YOU as the attending want the student to walk away ${isPreVisit ? "thinking about as they go into the visit" : "remembering from OUR encounter today"}",
  "quoteToDiscuss": "${isPreVisit ? "leave empty string — visit has not happened yet" : "if the patient said something in the note that is teachable, quote it verbatim; else empty string"}",
   "absorbedEvidenceTopics": ["list of exact topic strings from the STRUCTURED EVIDENCE block above whose content you fully integrated into this case's teaching. This lets the app avoid duplicating those topics in a separate evidence section. Only list topics whose key facts you actually used in this case. Empty array if no evidence was provided or nothing was relevant."]
@@ -5321,6 +5530,16 @@ Before returning your JSON, verify these NEW fields are present in your response
 ✓ dontMiss — REQUIRED array (may be empty [] if no specific warning applies, but the KEY must exist in your JSON output). Contains 2-3 don't-miss items, iatrogenic risks, or prescribing pitfalls for THIS problem in THIS patient. Each item is one sentence.
 
 ✓ EVIDENCE INTEGRATION CHECK: If the STRUCTURED EVIDENCE block contained specific facts relevant to this problem (trial names, guideline thresholds, cross-problem interactions, dosing nuance, contraindications), verify that those specifics appear inside your keyLearningPoints, treatmentApproach, differentialDiagnosis, or dontMiss fields — NOT paraphrased away into generic teaching. A case with rich curated evidence should read specifically, not generically. If you find yourself writing "guidelines recommend..." without a year or society, go back and add the specific citation from the evidence block.
+
+✓ ACTIVE-LEARNING FIELDS CHECK: The following fields structure ACTIVE learning (retrieval, priority triage, common traps, portable heuristics) rather than passive reading. Verify each is populated:
+  - keyLearningPoints[].priority (core/context/deep) and .shelfRelevant (boolean) — tag conservatively; most points are context.
+  - keyLearningPoints[].activeRecallPrompt — one short retrieval question per point.
+  - pauseAndThink — one decision-point question mid-case, with a hidden reveal. Skip only if the case has no natural pause point.
+  - commonWrongTurns — 1-3 reasoning traps specific to this problem, distinct from dontMiss (which is about clinical safety).
+  - nextPatientLikeThis — 2-3 portable heuristics for future encounters with similar patterns.
+  - failureMode — what triggers reconsideration and on what timeframe. Skip if not applicable.
+
+Do NOT skip these fields to save tokens. They are the highest-value pedagogical additions to this document.
 
 If these fields are absent from your JSON output, the response is invalid.
 
@@ -16025,12 +16244,26 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
     // Key learning points (TEACH box)
     const keyLearningPoints = Array.isArray(c.keyLearningPoints) ? c.keyLearningPoints : [];
     if (keyLearningPoints.length > 0) {
-      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: ${esc(c.primaryDiagnosis?.name || problemName)}</div><ul>`;
-      keyLearningPoints.forEach(lp => {
+      html += `<div class="tch"><div class="tch-label"><i class="fa-solid fa-graduation-cap"></i> Teaching: ${esc(c.primaryDiagnosis?.name || problemName)}</div><ul class="teaching-point-list">`;
+      keyLearningPoints.forEach((lp, lpIdx) => {
         if (!lp || typeof lp !== "object") return;
-        html += `<li><b>${esc(lp.point || "")}:</b> ${esc(softenTeachingVoice(lp.explanation || ""))}`;
+        const priority = String(lp.priority || "context").toLowerCase();
+        const priorityMeta = {
+          core: { label: "Core", cls: "priority-core" },
+          context: { label: "Context", cls: "priority-context" },
+          deep: { label: "Deep", cls: "priority-deep" },
+        }[priority] || { label: "Context", cls: "priority-context" };
+        html += `<li data-priority="${esc(priority)}" data-shelf="${lp.shelfRelevant ? "true" : "false"}">`;
+        html += `<div class="teaching-point-header">`;
+        html += `<span class="priority-chip ${priorityMeta.cls}">${esc(priorityMeta.label)}</span>`;
+        if (lp.shelfRelevant) html += `<span class="shelf-badge">SHELF</span>`;
+        html += `<b>${esc(lp.point || "")}:</b> ${esc(softenTeachingVoice(lp.explanation || ""))}`;
         if (lp.citation) html += ` <em style="opacity:.75;">(${esc(lp.citation)})</em>`;
         html += renderFigureReferenceLinks(lp.figureRefs || lp.figureRef, "See");
+        html += `</div>`;
+        if (lp.activeRecallPrompt) {
+          html += `<details class="recall-prompt"><summary>▸ Test yourself</summary><div class="recall-prompt-body">${esc(lp.activeRecallPrompt)}</div></details>`;
+        }
         html += `</li>`;
       });
       html += `</ul></div>`;
@@ -16064,17 +16297,56 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
       html += `</div>`;
     }
 
+    // Pause-and-think prompt with hidden reveal
+    if (c.pauseAndThink?.prompt && c.pauseAndThink?.reveal) {
+      html += `<div class="pause-think"><div class="pause-think-label"><i class="fa-solid fa-hand"></i> Pause and Think</div>`;
+      html += `<div class="pause-think-prompt">${esc(c.pauseAndThink.prompt)}</div>`;
+      html += `<details class="pause-think-reveal"><summary>▸ Reveal answer</summary><div class="pause-think-body">${esc(c.pauseAndThink.reveal)}</div></details>`;
+      html += `</div>`;
+    }
+
+    // Common wrong turns — reasoning traps distinct from clinical don't-miss
+    if (Array.isArray(c.commonWrongTurns) && c.commonWrongTurns.length > 0) {
+      html += `<div class="wrong-turns"><div class="wrong-turns-label"><i class="fa-solid fa-signs-post"></i> Where Students Commonly Get This Wrong</div>`;
+      html += `<ul>${c.commonWrongTurns.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div>`;
+    }
+
+    // Portable heuristics for future patients with similar patterns
+    if (Array.isArray(c.nextPatientLikeThis) && c.nextPatientLikeThis.length > 0) {
+      html += `<div class="next-patient"><div class="next-patient-label"><i class="fa-solid fa-forward"></i> Next Time You See a Patient Like This</div>`;
+      html += `<ul>${c.nextPatientLikeThis.map(item => `<li>${esc(item)}</li>`).join("")}</ul></div>`;
+    }
+
+    // Failure-mode: what would make you reconsider
+    if (c.failureMode?.triggerToReconsider) {
+      html += `<div class="failure-mode"><div class="failure-mode-label"><i class="fa-solid fa-arrows-rotate"></i> What Would Make You Reconsider</div>`;
+      html += `<div class="failure-mode-body">${esc(c.failureMode.triggerToReconsider)}`;
+      if (c.failureMode.expectedTimeframe) {
+        html += ` <em class="failure-mode-tf">(expected timeframe: ${esc(c.failureMode.expectedTimeframe)})</em>`;
+      }
+      html += `</div></div>`;
+    }
+
     const patientContext = teachingText(c.patientContextConsiderations);
     if (patientContext) {
       html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-people-roof"></i> Patient Context</div><p>${esc(patientContext)}</p></div>`;
     }
 
-    const communicationScenario = teachingText(c.communicationTeaching?.scenario);
+   const communicationScenario = teachingText(c.communicationTeaching?.scenario);
     const communicationScript = teachingText(c.communicationTeaching?.script);
-    if (communicationScenario || communicationScript) {
+    const alternativePhrasings = Array.isArray(c.communicationTeaching?.alternativePhrasings)
+      ? c.communicationTeaching.alternativePhrasings.filter(alt => alt?.text?.trim())
+      : [];
+    if (communicationScenario || communicationScript || alternativePhrasings.length > 0) {
       html += `<div class="prob-subsec teaching-detail"><div class="prob-subsec-label"><i class="fa-solid fa-comments"></i> Communication Teaching</div>`;
       if (communicationScenario) html += `<p><b>Scenario:</b> ${esc(communicationScenario)}</p>`;
-      if (communicationScript) html += `<div class="communication-script">“${esc(communicationScript)}”</div>`;
+      if (communicationScript) html += `<div class="communication-script">"${esc(communicationScript)}"</div>`;
+      if (alternativePhrasings.length > 0) {
+        html += `<div class="alt-phrasings-label">Alternative phrasings — try saying it these ways</div>`;
+        alternativePhrasings.forEach(alt => {
+          html += `<div class="alt-phrasing"><span class="alt-phrasing-style">${esc(alt.style || "Alt")}</span>"${esc(alt.text)}"</div>`;
+        });
+      }
       html += `</div>`;
     }
 
@@ -20521,6 +20793,42 @@ body.dark .history-question-list li { background: rgba(255,255,255,.02); }
   font-style: italic;
   line-height: 1.5;
 }
+.alt-phrasings-label {
+  margin-top: 8px;
+  margin-bottom: 4px;
+  font-family: 'Inter', sans-serif;
+  font-size: 6.5pt;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-d);
+}
+.alt-phrasing {
+  padding: 5px 8px;
+  background: rgba(55, 108, 139, 0.06);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 3px 3px 0;
+  margin-bottom: 4px;
+  font-size: 8pt;
+  font-style: italic;
+  line-height: 1.5;
+  color: var(--fg-m);
+}
+.alt-phrasing-style {
+  display: inline-block;
+  font-family: 'Inter', sans-serif;
+  font-style: normal;
+  font-size: 5.8pt;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--accent);
+  background: rgba(55, 108, 139, 0.12);
+  padding: 1px 5px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+}
 .reading-list { margin: 0; padding-left: 20px; }
 .reading-list li { margin-bottom: 6px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.4; }
 .reading-reference { color: var(--fg); font-weight: 600; }
@@ -20537,6 +20845,239 @@ body.dark .history-question-list li { background: rgba(255,255,255,.02); }
 .patient-voice-text { color: var(--fg); font-size: 9pt; font-style: italic; line-height: 1.5; }
 .figure-ref-links { display: inline-flex; align-items: center; gap: 4px; margin-left: 6px; color: var(--accent); font-size: 7.5pt; font-style: normal; white-space: normal; }
 .figure-ref-links a { color: var(--accent); font-weight: 700; text-decoration: underline; text-decoration-style: dotted; }
+
+/* Priority filter toolbar — student-facing focus control. Hidden in print. */
+.priority-filter-bar {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--panel);
+}
+.priority-filter-label {
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  margin-right: 4px;
+}
+.priority-filter-btn {
+  padding: 3px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  color: var(--fg-m);
+  font-family: inherit;
+  font-size: 7.75pt;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.priority-filter-btn:hover { border-color: var(--accent); color: var(--accent); }
+.priority-filter-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+/* Priority chips and shelf badge on teaching-point items */
+.teaching-point-list li { list-style: none; margin-bottom: 8px; padding-left: 0; }
+.teaching-point-list li[data-hidden="true"] { display: none; }
+.teaching-point-header { display: inline; }
+.priority-chip, .shelf-badge {
+  display: inline-block;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 6pt;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 1px 5px;
+  border-radius: 2px;
+  margin-right: 5px;
+  vertical-align: middle;
+  border: 1px solid;
+}
+.priority-core { background: rgba(255, 87, 87, 0.12); color: #7a1f2b; border-color: rgba(255, 87, 87, 0.32); }
+.priority-context { background: rgba(107, 114, 128, 0.10); color: #4b5563; border-color: rgba(107, 114, 128, 0.28); }
+.priority-deep { background: rgba(55, 108, 139, 0.10); color: var(--accent); border-color: rgba(55, 108, 139, 0.32); }
+.shelf-badge { background: rgba(202, 138, 4, 0.14); color: #78350f; border-color: rgba(202, 138, 4, 0.32); }
+body.dark .priority-core { background: rgba(255, 87, 87, 0.16); color: #f4b4bb; }
+body.dark .priority-context { background: rgba(148, 163, 184, 0.14); color: #cbd5e1; border-color: rgba(148, 163, 184, 0.28); }
+body.dark .priority-deep { background: rgba(99, 143, 168, 0.16); color: #a5cbe2; }
+body.dark .shelf-badge { background: rgba(202, 138, 4, 0.18); color: #fde68a; }
+
+/* Active-recall prompt (collapsible) */
+.recall-prompt { margin-top: 3px; }
+.recall-prompt summary {
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  font-size: 6.5pt;
+  color: var(--accent);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  list-style: none;
+  padding: 2px 0;
+}
+.recall-prompt summary::-webkit-details-marker { display: none; }
+.recall-prompt-body {
+  margin-top: 3px;
+  padding: 5px 8px;
+  background: rgba(55, 108, 139, 0.07);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 3px 3px 0;
+  font-size: 8pt;
+  font-style: italic;
+  color: var(--fg-m);
+  line-height: 1.42;
+}
+
+/* Pause-and-think prompt with reveal */
+.pause-think {
+  margin: 10px 0;
+  padding: 10px 12px;
+  border-left: 3px solid #ca8a04;
+  border-radius: 0 4px 4px 0;
+  background: linear-gradient(90deg, rgba(202, 138, 4, 0.09) 0%, rgba(202, 138, 4, 0.02) 100%);
+  break-inside: avoid;
+}
+.pause-think-label {
+  font-family: 'Inter', sans-serif;
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: #78350f;
+  margin-bottom: 5px;
+}
+.pause-think-prompt {
+  font-size: 8.75pt;
+  font-style: italic;
+  color: var(--fg);
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+.pause-think-reveal summary {
+  cursor: pointer;
+  font-family: 'Inter', sans-serif;
+  font-size: 7pt;
+  color: #78350f;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  list-style: none;
+}
+.pause-think-reveal summary::-webkit-details-marker { display: none; }
+.pause-think-body {
+  margin-top: 5px;
+  padding: 5px 8px;
+  background: white;
+  border: 1px solid rgba(202, 138, 4, 0.24);
+  border-radius: 3px;
+  font-size: 8.5pt;
+  line-height: 1.5;
+  color: var(--fg-m);
+}
+body.dark .pause-think-body { background: rgba(202, 138, 4, 0.06); color: var(--fg); }
+@media print {
+  .pause-think-reveal[open] .pause-think-body,
+  .pause-think-reveal .pause-think-body { display: block !important; }
+  .pause-think-reveal summary { display: none; }
+  .pause-think-body::before { content: "Answer: "; font-weight: 700; }
+}
+
+/* Common wrong turns — reasoning traps */
+.wrong-turns {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-left: 3px solid #ca8a04;
+  border-radius: 0 4px 4px 0;
+  background: rgba(202, 138, 4, 0.06);
+  break-inside: avoid;
+}
+.wrong-turns-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Inter', sans-serif;
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: #78350f;
+  margin-bottom: 5px;
+}
+.wrong-turns ul { margin: 0; padding-left: 18px; list-style: disc; }
+.wrong-turns li {
+  margin-bottom: 3px;
+  color: #713f12;
+  font-size: 8.5pt;
+  line-height: 1.5;
+}
+
+/* Next-patient heuristics — portable rules for future encounters */
+.next-patient {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 4px 4px 0;
+  background: rgba(55, 108, 139, 0.07);
+  break-inside: avoid;
+}
+.next-patient-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Inter', sans-serif;
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 5px;
+}
+.next-patient ul { margin: 0; padding-left: 18px; list-style: disc; }
+.next-patient li {
+  margin-bottom: 3px;
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.5;
+}
+
+/* Failure mode — what would trigger reconsideration */
+.failure-mode {
+  margin: 10px 0;
+  padding: 9px 11px;
+  border-left: 3px solid var(--fg-d);
+  border-radius: 0 4px 4px 0;
+  background: var(--panel);
+  break-inside: avoid;
+}
+.failure-mode-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'Inter', sans-serif;
+  font-size: 7pt;
+  font-weight: 800;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--fg-d);
+  margin-bottom: 5px;
+}
+.failure-mode-body {
+  color: var(--fg-m);
+  font-size: 8.5pt;
+  line-height: 1.5;
+}
+.failure-mode-tf {
+  color: var(--fg-d);
+  font-style: italic;
+}
 
 /* Teaching callouts — warm sand surface with a deep-blue cue.
    The coral is reserved for genuine warning content only. */
@@ -21802,6 +22343,40 @@ function optimizeFiguresForPrint(){
   return pdfFigureOptimizationPromise;
 }
 
+// Priority filter — hide/show teaching points by priority tag.
+(function() {
+  var STORAGE_KEY = 'inroom-${sessionId}-priority';
+  var buttons = document.querySelectorAll('.priority-filter-btn');
+  var items = document.querySelectorAll('.teaching-point-list li');
+
+  function applyFilter(filter) {
+    items.forEach(function(item) {
+      var priority = item.getAttribute('data-priority') || 'context';
+      var shelf = item.getAttribute('data-shelf') === 'true';
+      var show;
+      if (filter === 'all') show = true;
+      else if (filter === 'shelf') show = shelf;
+      else show = priority === filter;
+      item.setAttribute('data-hidden', show ? 'false' : 'true');
+    });
+    buttons.forEach(function(btn) {
+      var active = btn.getAttribute('data-filter') === filter;
+      btn.classList.toggle('active', active);
+    });
+    try { localStorage.setItem(STORAGE_KEY, filter); } catch(e) {}
+  }
+
+  var savedFilter = 'all';
+  try { savedFilter = localStorage.getItem(STORAGE_KEY) || 'all'; } catch(e) {}
+  applyFilter(savedFilter);
+
+  buttons.forEach(function(btn) {
+    btn.addEventListener('click', function() {
+      applyFilter(this.getAttribute('data-filter'));
+    });
+  });
+})();
+
 function printDoc(){
   var waitForFonts = function(){
     if (document.fonts && document.fonts.ready) return document.fonts.ready.catch(function(){});
@@ -21866,6 +22441,14 @@ function printDoc(){
 ${headerHtml}
 ${oneLinerHtml}
 ${allergyBarHtml}
+<div class="priority-filter-bar no-print" role="toolbar" aria-label="Filter learning points by priority">
+  <span class="priority-filter-label">Focus on:</span>
+  <button type="button" class="priority-filter-btn active" data-filter="all">Everything</button>
+  <button type="button" class="priority-filter-btn" data-filter="core">Core only</button>
+  <button type="button" class="priority-filter-btn" data-filter="shelf">Shelf-relevant</button>
+  <button type="button" class="priority-filter-btn" data-filter="context">Context</button>
+  <button type="button" class="priority-filter-btn" data-filter="deep">Deep</button>
+</div>
 ${overviewHtml}
 ${(() => {
   // Aggregated don't-miss strip. Pulls from every enabled patient-diagnosis
@@ -22103,6 +22686,27 @@ function InRoomDocument({ doc, phase, session, onEdit, onPrint }) {
           <Printer className="w-4 h-4" />
           <span className="hidden sm:inline">Print / Searchable PDF</span>
           <span className="sm:hidden">Searchable PDF</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            const html = buildCheatSheetHtml(doc, session);
+            if (!html) return;
+            const w = window.open("", "_blank", "width=850,height=1100");
+            if (!w) {
+              alert("The browser blocked the new window. Please allow popups and try again.");
+              return;
+            }
+            w.document.open();
+            w.document.write(html);
+            w.document.close();
+          }}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 text-sm font-medium"
+          title="Generate a one-page density-optimized cheat sheet for hallway reference"
+        >
+          <FileText className="w-4 h-4" />
+          <span className="hidden sm:inline">One-Page Cheat Sheet</span>
+          <span className="sm:hidden">Cheat Sheet</span>
         </button>
         <button
           type="button"
@@ -23269,10 +23873,30 @@ const renderContent = () => {
           <span className="hidden sm:inline">Print / Save as PDF</span>
           <span className="sm:hidden">Print / PDF</span>
         </button>
-        <button onClick={exportAsHtml} className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium" title="Download as a standalone interactive HTML file to give to the student">
+       <button onClick={exportAsHtml} className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 text-sm font-medium" title="Download as a standalone interactive HTML file to give to the student">
           <FileText className="w-4 h-4" />
           <span className="hidden sm:inline">Export as Interactive HTML</span>
           <span className="sm:hidden">Export HTML</span>
+        </button>
+        <button
+          onClick={() => {
+            const html = buildCheatSheetHtml(doc, session);
+            if (!html) return;
+            const w = window.open("", "_blank", "width=850,height=1100");
+            if (!w) {
+              alert("The browser blocked the new window. Please allow popups and try again.");
+              return;
+            }
+            w.document.open();
+            w.document.write(html);
+            w.document.close();
+          }}
+          className="flex items-center gap-2 px-3 sm:px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 text-sm font-medium"
+          title="Generate a one-page density-optimized cheat sheet for hallway reference"
+        >
+          <FileText className="w-4 h-4" />
+          <span className="hidden sm:inline">One-Page Cheat Sheet</span>
+          <span className="sm:hidden">Cheat Sheet</span>
         </button>
         <button onClick={onEdit} className="px-3 sm:px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm">
           <span className="hidden sm:inline">← Back to Preview</span>
@@ -23690,10 +24314,99 @@ const verifyAbsorbedEvidenceTopics = (enabledCases, evidenceTopics) => {
   return verifiedAbsorbed;
 };
 
+// ============ ACTIVE-LEARNING RENDER HELPERS ============
+// Shared visual language for priority, shelf-relevance, and collapsibles used
+// across post-visit and pre-visit renderers. Priority colors are semantic:
+//   core    = red-adjacent (must-know)
+//   context = neutral gray (default)
+//   deep    = blue (aspirational)
+// Shelf-relevant is a small orange badge — students prioritize by it heavily.
+const PRIORITY_META = {
+  core: {
+    label: "Core",
+    bg: "rgba(255, 87, 87, 0.12)",
+    fg: "#7a1f2b",
+    border: "rgba(255, 87, 87, 0.32)",
+    tooltip: "Core — essential for safe clinical care and shelf-exam-relevant",
+  },
+  context: {
+    label: "Context",
+    bg: "rgba(107, 114, 128, 0.10)",
+    fg: "#4b5563",
+    border: "rgba(107, 114, 128, 0.28)",
+    tooltip: "Context — helps you sound thoughtful on rounds",
+  },
+  deep: {
+    label: "Deep",
+    bg: "rgba(55, 108, 139, 0.10)",
+    fg: "#376c8b",
+    border: "rgba(55, 108, 139, 0.32)",
+    tooltip: "Deep — useful for eventual mastery, not required at your current level",
+  },
+};
+
+const PriorityChip = ({ priority }) => {
+  const meta = PRIORITY_META[priority] || PRIORITY_META.context;
+  return (
+    <span
+      title={meta.tooltip}
+      style={{
+        display: "inline-block",
+        fontFamily: "'Inter', sans-serif",
+        fontSize: "0.6rem",
+        fontWeight: 700,
+        letterSpacing: "0.08em",
+        textTransform: "uppercase",
+        padding: "1px 6px",
+        borderRadius: "3px",
+        background: meta.bg,
+        color: meta.fg,
+        border: `1px solid ${meta.border}`,
+        marginRight: "0.35rem",
+        verticalAlign: "middle",
+      }}
+    >
+      {meta.label}
+    </span>
+  );
+};
+
+const ShelfBadge = () => (
+  <span
+    title="Shelf-relevant — this exact reasoning pattern appears on the IM shelf or Step 2 CK"
+    style={{
+      display: "inline-block",
+      fontFamily: "'Inter', sans-serif",
+      fontSize: "0.6rem",
+      fontWeight: 700,
+      letterSpacing: "0.06em",
+      padding: "1px 5px",
+      borderRadius: "3px",
+      background: "rgba(202, 138, 4, 0.14)",
+      color: "#78350f",
+      border: "1px solid rgba(202, 138, 4, 0.32)",
+      marginRight: "0.35rem",
+      verticalAlign: "middle",
+    }}
+  >
+    SHELF
+  </span>
+);
+
 // ============ DOCUMENT CONTENT (extracted for cleanliness) ============
 function DocumentContent({ doc, phase, session }) {
   const s = doc.sections || {};
   const enabledCases = (s.teachingCases || []).filter(tc => tc.enabled);
+
+  // Priority filter — controls which learning points render in the document.
+  // Persisted per-session so a student's choice sticks while they scroll.
+  const [priorityFilter, setPriorityFilter] = React.useState("all");
+  const filterLearningPoints = (points) => {
+    if (!Array.isArray(points)) return [];
+    if (priorityFilter === "all") return points;
+    if (priorityFilter === "shelf-only") return points.filter(lp => lp?.shelfRelevant);
+    return points.filter(lp => (lp?.priority || "context") === priorityFilter);
+  };
 
   return (
     <div className="doc-body post-visit-document">
@@ -23724,8 +24437,47 @@ function DocumentContent({ doc, phase, session }) {
         </div>
       </div>
 
-      {/* ========== BODY ========== */}
+     {/* ========== BODY ========== */}
       <div className="doc-body-mobile-padded" style={{ padding: "2.5rem 3rem 2rem" }}>
+
+        {/* Priority filter — student-facing toggle to focus their reading.
+            Only shows if any case has learning points with priorities set. */}
+        {enabledCases.some(tc => (tc.data?.keyLearningPoints || []).some(lp => lp?.priority)) && (
+          <div className="no-print keep-together" style={{ marginBottom: "1.25rem", padding: "0.65rem 0.85rem", background: "var(--doc-paper)", border: "1px solid var(--doc-hairline)", borderRadius: "4px", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+            <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.68rem", fontWeight: 700, letterSpacing: "0.11em", textTransform: "uppercase", color: "var(--doc-warm-gray)" }}>
+              Focus on
+            </div>
+            {[
+              { key: "all", label: "Everything" },
+              { key: "core", label: "Core only" },
+              { key: "shelf-only", label: "Shelf-relevant" },
+              { key: "context", label: "Context" },
+              { key: "deep", label: "Deep" },
+            ].map(opt => {
+              const active = priorityFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  onClick={() => setPriorityFilter(opt.key)}
+                  style={{
+                    fontFamily: "'Inter', sans-serif",
+                    fontSize: "0.75rem",
+                    fontWeight: active ? 700 : 500,
+                    padding: "3px 10px",
+                    borderRadius: "12px",
+                    background: active ? "var(--doc-navy)" : "white",
+                    color: active ? "white" : "var(--doc-warm-gray)",
+                    border: active ? "1px solid var(--doc-navy)" : "1px solid var(--doc-hairline)",
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Case at a Glance */}
         {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
@@ -24009,6 +24761,39 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
+              {c.pauseAndThink?.prompt && c.pauseAndThink?.reveal && (
+                <div className="keep-together no-print" style={{ marginBottom: "1.5rem", padding: "0.9rem 1rem", background: "linear-gradient(90deg, rgba(202, 138, 4, 0.09) 0%, rgba(202, 138, 4, 0.02) 100%)", borderLeft: "3px solid #ca8a04", borderRadius: "0 4px 4px 0" }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "#78350f", marginBottom: "0.4rem" }}>
+                    Pause and Think
+                  </div>
+                  <div style={{ fontSize: "0.92rem", fontStyle: "italic", color: "var(--doc-navy)", marginBottom: "0.5rem", lineHeight: 1.55 }}>
+                    {c.pauseAndThink.prompt}
+                  </div>
+                  <details>
+                    <summary style={{ cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: "0.7rem", color: "#78350f", fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase", listStyle: "none" }}>
+                      <span style={{ marginRight: "0.35rem" }}>▸</span>Reveal answer
+                    </summary>
+                    <div style={{ marginTop: "0.5rem", padding: "0.5rem 0.75rem", background: "white", border: "1px solid rgba(202, 138, 4, 0.24)", borderRadius: "3px", fontSize: "0.9rem", lineHeight: 1.55 }}>
+                      {c.pauseAndThink.reveal}
+                    </div>
+                  </details>
+                </div>
+              )}
+              {/* Print-only version — always visible in PDF */}
+              {c.pauseAndThink?.prompt && c.pauseAndThink?.reveal && (
+                <div className="print-only keep-together" style={{ marginBottom: "1.5rem", padding: "0.9rem 1rem", background: "rgba(202, 138, 4, 0.06)", borderLeft: "3px solid #ca8a04" }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "#78350f", marginBottom: "0.4rem" }}>
+                    Pause and Think
+                  </div>
+                  <div style={{ fontSize: "0.92rem", fontStyle: "italic", color: "var(--doc-navy)", marginBottom: "0.4rem" }}>
+                    {c.pauseAndThink.prompt}
+                  </div>
+                  <div style={{ fontSize: "0.9rem", paddingTop: "0.4rem", borderTop: "1px dashed rgba(202, 138, 4, 0.32)" }}>
+                    <strong>Answer:</strong> {c.pauseAndThink.reveal}
+                  </div>
+                </div>
+              )}
+
               {c.differentialDiagnosis?.length > 0 && (    
                 <div style={{ marginBottom: "1.5rem" }}>
                   <div className="doc-subsection-label">Differential Diagnosis</div>
@@ -24033,27 +24818,53 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              {c.keyLearningPoints?.length > 0 && (
-                <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Key Learning Points</div>
-                  <ol style={{ margin: 0, paddingLeft: 0, listStyle: "none", counterReset: "lp" }}>
-                    {c.keyLearningPoints.map((lp, i) => (
-                      <li key={i} className="keep-together" style={{ display: "flex", gap: "0.85rem", marginBottom: "0.85rem", counterIncrement: "lp" }}>
-                        <span style={{ flexShrink: 0, fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: "0.9rem", color: "var(--doc-navy-mid)", minWidth: "1.5rem", textAlign: "right" }}>{i + 1}.</span>
-                        <div style={{ flex: 1 }}>
-                          <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{lp.point}. </span>
-                          <span>{softenTeachingVoice(lp.explanation)}</span>
-                          {lp.citation && (
-                            <span style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", fontSize: "0.85em", color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>
-                              ({lp.citation})
-                            </span>
-                          )}
-                        </div>
-                      </li>
-                    ))}
-                  </ol>
-                </div>
-              )}
+              {c.keyLearningPoints?.length > 0 && (() => {
+                const visiblePoints = filterLearningPoints(c.keyLearningPoints);
+                const hiddenCount = c.keyLearningPoints.length - visiblePoints.length;
+                if (visiblePoints.length === 0) return null;
+                return (
+                  <div style={{ marginBottom: "1.5rem" }}>
+                    <div className="doc-subsection-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "0.5rem" }}>
+                      <span>Key Learning Points</span>
+                      {hiddenCount > 0 && (
+                        <span className="no-print" style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 500, color: "var(--doc-warm-gray)", textTransform: "none", letterSpacing: "normal" }}>
+                          {hiddenCount} more hidden by filter
+                        </span>
+                      )}
+                    </div>
+                    <ol style={{ margin: 0, paddingLeft: 0, listStyle: "none", counterReset: "lp" }}>
+                      {visiblePoints.map((lp, i) => (
+                        <li key={i} className="keep-together" style={{ display: "flex", gap: "0.85rem", marginBottom: "0.85rem", counterIncrement: "lp" }}>
+                          <span style={{ flexShrink: 0, fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: "0.9rem", color: "var(--doc-navy-mid)", minWidth: "1.5rem", textAlign: "right" }}>{i + 1}.</span>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ marginBottom: "0.25rem" }}>
+                              <PriorityChip priority={lp.priority} />
+                              {lp.shelfRelevant && <ShelfBadge />}
+                              <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{lp.point}. </span>
+                              <span>{softenTeachingVoice(lp.explanation)}</span>
+                              {lp.citation && (
+                                <span style={{ fontFamily: "'Source Serif 4', serif", fontStyle: "italic", fontSize: "0.85em", color: "var(--doc-warm-gray)", marginLeft: "0.3rem" }}>
+                                  ({lp.citation})
+                                </span>
+                              )}
+                            </div>
+                            {lp.activeRecallPrompt && (
+                              <details className="no-print" style={{ marginTop: "0.25rem" }}>
+                                <summary style={{ cursor: "pointer", fontFamily: "'Inter', sans-serif", fontSize: "0.72rem", color: "var(--doc-navy-mid)", fontWeight: 600, letterSpacing: "0.04em", listStyle: "none" }}>
+                                  <span style={{ marginRight: "0.35rem" }}>▸</span>Test yourself
+                                </summary>
+                                <div style={{ marginTop: "0.35rem", padding: "0.5rem 0.7rem", background: "rgba(55, 108, 139, 0.06)", borderLeft: "2px solid var(--doc-navy-mid)", borderRadius: "0 3px 3px 0", fontSize: "0.85rem", fontStyle: "italic", color: "var(--doc-navy)" }}>
+                                  {lp.activeRecallPrompt}
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  </div>
+                );
+              })()}
 
               {c.focusedHistoryQuestions?.length > 0 && (
                 <div style={{ marginBottom: "1.5rem" }}>
@@ -24208,8 +25019,33 @@ function DocumentContent({ doc, phase, session }) {
                       fontStyle: "italic",
                       fontSize: "0.92rem",
                       lineHeight: 1.55,
+                      marginBottom: c.communicationTeaching.alternativePhrasings?.length > 0 ? "0.75rem" : 0,
                     }}>
                       "{c.communicationTeaching.script}"
+                    </div>
+                  )}
+                  {Array.isArray(c.communicationTeaching.alternativePhrasings) && c.communicationTeaching.alternativePhrasings.length > 0 && (
+                    <div style={{ marginTop: "0.5rem" }}>
+                      <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--doc-warm-gray)", marginBottom: "0.35rem" }}>
+                        Alternative Phrasings — Try Saying It These Ways
+                      </div>
+                      {c.communicationTeaching.alternativePhrasings.map((alt, i) => (
+                        <div key={i} style={{
+                          padding: "0.5rem 0.85rem",
+                          background: "rgba(55, 108, 139, 0.05)",
+                          borderLeft: "2px solid var(--doc-navy-mid)",
+                          fontFamily: "'Source Serif 4', serif",
+                          fontStyle: "italic",
+                          fontSize: "0.87rem",
+                          lineHeight: 1.5,
+                          marginBottom: "0.35rem",
+                        }}>
+                          <span style={{ fontFamily: "'Inter', sans-serif", fontStyle: "normal", fontSize: "0.62rem", fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", color: "var(--doc-navy)", marginRight: "0.5rem", padding: "1px 5px", background: "rgba(55, 108, 139, 0.12)", borderRadius: "2px", verticalAlign: "middle" }}>
+                            {alt.style}
+                          </span>
+                          "{alt.text}"
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -24249,7 +25085,53 @@ function DocumentContent({ doc, phase, session }) {
                   </div>
                 );
               })()}
-{c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim() && (
+{Array.isArray(c.commonWrongTurns) && c.commonWrongTurns.length > 0 && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem", padding: "0.85rem 1rem", background: "rgba(202, 138, 4, 0.06)", borderLeft: "3px solid #ca8a04", borderRadius: "0 4px 4px 0" }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "#78350f", marginBottom: "0.5rem" }}>
+                    Where Students Commonly Get This Wrong
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                    {c.commonWrongTurns.map((item, i) => (
+                      <li key={i} style={{ marginBottom: "0.4rem", fontSize: "0.88rem", lineHeight: 1.55, color: "#713f12" }}>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {Array.isArray(c.nextPatientLikeThis) && c.nextPatientLikeThis.length > 0 && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem", padding: "0.85rem 1rem", background: "rgba(55, 108, 139, 0.07)", borderLeft: "3px solid var(--doc-navy-mid)", borderRadius: "0 4px 4px 0" }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "var(--doc-navy)", marginBottom: "0.5rem" }}>
+                    Next Time You See a Patient Like This
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: "1.2rem" }}>
+                    {c.nextPatientLikeThis.map((item, i) => (
+                      <li key={i} style={{ marginBottom: "0.4rem", fontSize: "0.88rem", lineHeight: 1.55, color: "var(--doc-navy)" }}>
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              {c.failureMode?.triggerToReconsider && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem", padding: "0.85rem 1rem", background: "var(--doc-paper)", borderLeft: "3px solid var(--doc-warm-gray)", borderRadius: "0 4px 4px 0" }}>
+                  <div style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 800, letterSpacing: "0.13em", textTransform: "uppercase", color: "var(--doc-warm-gray)", marginBottom: "0.4rem" }}>
+                    What Would Make You Reconsider
+                  </div>
+                  <div style={{ fontSize: "0.88rem", lineHeight: 1.55 }}>
+                    {c.failureMode.triggerToReconsider}
+                    {c.failureMode.expectedTimeframe && (
+                      <span style={{ marginLeft: "0.35rem", fontStyle: "italic", color: "var(--doc-warm-gray)" }}>
+                        (expected timeframe: {c.failureMode.expectedTimeframe})
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {c.landmarkTrial?.name?.trim() && c.landmarkTrial?.oneLineSummary?.trim() && (
                 <div className="doc-callout-trial keep-together">
                   <div className="label" style={{ fontFamily: "'Inter', sans-serif", fontWeight: 700, letterSpacing: "0.16em", textTransform: "uppercase", marginBottom: "0.4rem" }}>Landmark Trial · {c.landmarkTrial.name}</div>
                   <div style={{ fontSize: "0.9rem" }}>{c.landmarkTrial.oneLineSummary}</div>
