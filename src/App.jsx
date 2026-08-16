@@ -25692,7 +25692,7 @@ function DocumentContent({ doc, phase, session }) {
                   {relatedCaseLinks.map((link, li) => (
                     
                       key={li}
-                      <a href={`#case-${link.targetIdx + 1}`}
+                      href={`#case-${link.targetIdx + 1}`}
                       onClick={(e) => {
                         e.preventDefault();
                         const target = document.getElementById(`case-${link.targetIdx + 1}`);
