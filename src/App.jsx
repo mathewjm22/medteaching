@@ -20000,8 +20000,12 @@ body.dark .allergy.allergy-warn { background: var(--danger-soft); color: var(--d
   align-items: center;
   gap: 6px;
 }
-.narrative-head i.fa-solid {
-  opacity: 0.7;
+.narrative-head i.fa-solid,
+.narrative-head i.fa-regular,
+.narrative-head i.fa-thin,
+.narrative-head i.fa-light {
+  opacity: 0.55;
+  font-weight: 300;
 }
 .narrative-body {
   width: 100%;
@@ -20117,9 +20121,13 @@ body.dark .narrative-inline-date {
   padding: 6px 10px 4px;
   border-bottom: 1px solid var(--border-l);
 }
-.ref-head i.fa-solid {
-  opacity: 0.7;
+.ref-head i.fa-solid,
+.ref-head i.fa-regular,
+.ref-head i.fa-thin,
+.ref-head i.fa-light {
+  opacity: 0.55;
   margin-right: 5px;
+  font-weight: 300;
 }
 .ref-body { padding: 8px 10px; }
 .pmh-list { list-style: none; }
@@ -20172,8 +20180,12 @@ body.dark .pmh-sc { background: var(--warm-soft); color: var(--palette-sand); bo
   align-items: center;
   gap: 5px;
 }
-.ref-subsection-title i.fa-solid {
-  opacity: 0.7;
+.ref-subsection-title i.fa-solid,
+.ref-subsection-title i.fa-regular,
+.ref-subsection-title i.fa-thin,
+.ref-subsection-title i.fa-light {
+  opacity: 0.55;
+  font-weight: 300;
 }
 .ref-subsection-body {
   font-size: 9pt;
@@ -20752,9 +20764,14 @@ body.dark .background-orientation { background: rgba(242,217,187,.055); }
   border-bottom: 1px solid var(--border-l);
   display: block;
 }
-.prob-subsec-label i.fa-solid {
+.prob-subsec-label i.fa-solid,
+.prob-subsec-label i.fa-regular,
+.prob-subsec-label i.fa-thin,
+.prob-subsec-label i.fa-light {
   margin-right: 5px;
-  opacity: 0.7;
+  opacity: 0.55;
+  font-size: 8pt;
+  font-weight: 300;
 }
 .result-list {
   margin: 4px 0 0;
@@ -21847,6 +21864,30 @@ body.dark .diag-teaching {
   .mil-row { grid-template-columns: 1fr; gap: 2px; }
 }
 
+/* Global bullet consistency — plain <ul> elements in body content get
+   uniform small-square markers. Class-based lists (.pmh-list, .tl-compact,
+   .encounter-list, .background-fact-list, etc.) keep their custom treatments. */
+.page ul:not([class]) {
+  list-style: none;
+  padding-left: 15px;
+  margin: 3px 0;
+}
+.page ul:not([class]) > li {
+  position: relative;
+  padding-left: 3px;
+  margin-bottom: 2px;
+}
+.page ul:not([class]) > li::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 0.55em;
+  width: 3.5px;
+  height: 3.5px;
+  background: var(--fg-d);
+  opacity: 0.7;
+}
+
 /* Timeline */
 .tl-compact { list-style: none; }
 .tl-compact li {
@@ -22256,15 +22297,16 @@ body.dark .figures-box {
   .preventive-status { max-width: none; text-align: left; }
 }
 
-/* Footer */
+/* Footer — single line, quiet gray, centered. */
 .doc-footer {
-  margin-top: 20px;
+  margin-top: 22px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
   font-size: 7.5pt;
   color: var(--fg-d);
   text-align: center;
-  letter-spacing: .03em;
+  letter-spacing: .06em;
+  opacity: 0.85;
 }
 
 @media (max-width: 700px) {
@@ -23432,6 +23474,32 @@ body.post-visit-export.dark .post-visit-document .doc-shelf-answer {
 }
 .post-visit-document figure { border-color: var(--border) !important; background: var(--bg) !important; }
 .post-visit-document img { max-width: 100%; }
+
+/* Bullet consistency — all unordered lists in the document body use the
+   same treatment (small square markers in warm-gray, tighter left padding)
+   regardless of which section they appear in. Overrides any browser default
+   disc/circle markers that would render inconsistently. */
+.post-visit-document ul:not([class]) {
+  list-style: none;
+  padding-left: 1.1rem;
+  margin: 0.35rem 0;
+}
+.post-visit-document ul:not([class]) > li {
+  position: relative;
+  padding-left: 0.35rem;
+  margin-bottom: 0.3rem;
+}
+.post-visit-document ul:not([class]) > li::before {
+  content: "";
+  position: absolute;
+  left: -0.85rem;
+  top: 0.55em;
+  width: 4px;
+  height: 4px;
+  background: var(--doc-warm-gray);
+  opacity: 0.7;
+  border-radius: 0;
+}
 
 .post-visit-preview-shell {
   padding: 20px 0;
@@ -24746,6 +24814,81 @@ function DocumentContent({ doc, phase, session }) {
     return points.filter(lp => (lp?.priority || "context") === priorityFilter);
   };
 
+  // Small inline SVG icon component for section labels. Uses currentColor so
+  // it inherits from the label's own text color, and sits below the baseline
+  // with slight opacity so it reads as chrome rather than as content. Sized
+  // conservatively (11px) so it never competes with the label text.
+  const SectionIcon = ({ path }) => (
+    <svg
+      width="11"
+      height="11"
+      viewBox="0 0 20 20"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{
+        display: "inline-block",
+        verticalAlign: "-0.1em",
+        marginRight: "6px",
+        opacity: 0.6,
+        flexShrink: 0,
+      }}
+      aria-hidden="true"
+    >
+      {path}
+    </svg>
+  );
+
+  // Icon paths for the section labels used across the document. Keeping the
+  // library small — only the sections that consistently benefit from visual
+  // cueing get an icon; short standalone sections (e.g., "Recommended
+  // Reading") stay plain to keep the icon set from feeling exhaustive.
+  const SECTION_ICONS = {
+    glance: <><circle cx="10" cy="10" r="7" /><path d="M10 6v4l2.5 2.5" /></>,
+    goal: <><circle cx="10" cy="10" r="6" /><circle cx="10" cy="10" r="2" /></>,
+    focus: <><path d="M10 3v14M3 10h14" /></>,
+    dontMiss: <><path d="M10 2L2 17h16L10 2z" /><path d="M10 8v4" /><circle cx="10" cy="14.5" r="0.5" fill="currentColor" /></>,
+    illness: <><path d="M6 4h8v12H6z" /><path d="M9 8h2v4H9z" /></>,
+    differential: <><path d="M4 6h12M4 10h8M4 14h6" /></>,
+    learning: <><path d="M3 6l7-3 7 3-7 3-7-3zM6 8v5c0 1.5 2 3 4 3s4-1.5 4-3V8" /></>,
+    history: <><circle cx="10" cy="10" r="7" /><path d="M10 6v4l3 2" /></>,
+    exam: <><circle cx="10" cy="8" r="3" /><path d="M6 17c0-2 2-4 4-4s4 2 4 4" /></>,
+    results: <><path d="M4 4h12v14H4z" /><path d="M7 8h6M7 11h6M7 14h4" /></>,
+    treatment: <><path d="M10 3v14M3 10h14" /><circle cx="10" cy="10" r="7" /></>,
+    context: <><circle cx="7" cy="7" r="3" /><circle cx="13" cy="13" r="3" /><path d="M9 9l2 2" /></>,
+    communication: <><path d="M3 6c0-1 1-2 2-2h10c1 0 2 1 2 2v6c0 1-1 2-2 2h-6l-4 3v-3H5c-1 0-2-1-2-2z" /></>,
+    reading: <><path d="M3 5h6c1 0 2 1 2 2v10c0-1-1-2-2-2H3zM17 5h-6c-1 0-2 1-2 2v10c0-1 1-2 2-2h6z" /></>,
+    trial: <><path d="M7 3v6M13 3v6M6 9h8l-1 8H7z" /></>,
+    pearl: <><path d="M10 3l2 5 5 1-4 4 1 5-4-3-4 3 1-5-4-4 5-1z" /></>,
+    quote: <><path d="M6 6c-1 0-2 1-2 2v3c0 1 1 2 2 2h1c-1 1-2 2-2 3M14 6c-1 0-2 1-2 2v3c0 1 1 2 2 2h1c-1 1-2 2-2 3" /></>,
+    reflection: <><circle cx="10" cy="10" r="7" /><path d="M10 6v4M10 13v.5" /></>,
+    themes: <><path d="M4 4l6 6-6 6M14 4l-6 6 6 6" /></>,
+    interaction: <><path d="M6 6c2-2 6-2 8 0M6 14c2 2 6 2 8 0M4 10h12" /></>,
+    figures: <><path d="M3 4h14v12H3z" /><circle cx="7" cy="8" r="1.5" /><path d="M3 14l4-4 5 5 3-3 2 2" /></>,
+    questions: <><circle cx="10" cy="10" r="7" /><path d="M8 8c0-1 1-2 2-2s2 1 2 2c0 1-2 1-2 3" /><circle cx="10" cy="14.5" r="0.5" fill="currentColor" /></>,
+    goals: <><path d="M4 17l4-8 3 4 5-9" /><circle cx="16" cy="4" r="1" /></>,
+    prep: <><path d="M5 4h10v12l-5-3-5 3z" /></>,
+  };
+
+  // Convenience wrapper for adding an icon inside a doc-subsection-label div
+  // without touching every existing render site. Existing plain labels stay
+  // as-is; only labels we explicitly pass an icon prop get the icon.
+  const SectionLabel = ({ icon, children, style }) => (
+    <div
+      className="doc-subsection-label"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        ...style,
+      }}
+    >
+      {icon && SECTION_ICONS[icon] && <SectionIcon path={SECTION_ICONS[icon]} />}
+      {children}
+    </div>
+  );
+
   return (
     <div className="doc-body post-visit-document">
       {/* ========== COVER ========== */}
@@ -24817,10 +24960,13 @@ function DocumentContent({ doc, phase, session }) {
           </div>
         )}
 
-        {/* Case at a Glance */}
+       {/* Case at a Glance */}
         {s.caseAtGlance?.enabled && (doc.chiefConcern || doc.workingDx || doc.selectedProblems?.length > 0) && (
           <section className="keep-together" style={{ marginBottom: "2rem" }}>
-            <h2 className="doc-h2">Case at a Glance</h2>
+            <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
+              <SectionIcon path={SECTION_ICONS.glance} />
+              Case at a Glance
+            </h2>
             <div className="doc-table-scroll">
             <table className="doc-table">
               <tbody>
@@ -25051,9 +25197,9 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              {c.primaryDiagnosis?.name && (
+             {c.primaryDiagnosis?.name && (
                 <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Primary Diagnosis</div>
+                  <SectionLabel icon="focus">Primary Diagnosis</SectionLabel>
                   <p style={{ margin: 0 }}>
                     <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>{c.primaryDiagnosis.name}. </span>
                     {c.primaryDiagnosis.briefDefinition}
@@ -25061,9 +25207,8 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              {c.illnessScript && (c.illnessScript.epidemiology || c.illnessScript.timeCourse || c.illnessScript.keySymptoms) && (
-                <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Illness Script</div>
+              <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
+                  <SectionLabel icon="illness">Illness Script</SectionLabel>
                   <p style={{ margin: "0 0 0.6rem", fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
                     The classic pattern for this diagnosis — anchored to how our patient fits or diverges. Build this into your library for faster pattern recognition next time.
                   </p>
@@ -25111,7 +25256,7 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.differentialDiagnosis?.length > 0 && (    
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Differential Diagnosis</div>
+                  <SectionLabel icon="differential">Differential Diagnosis</SectionLabel>
                   <div className="doc-table-scroll">
                   <table className="doc-table">
                     <thead>
@@ -25140,7 +25285,10 @@ function DocumentContent({ doc, phase, session }) {
                 return (
                   <div style={{ marginBottom: "1.5rem" }}>
                     <div className="doc-subsection-label" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "0.5rem" }}>
-                      <span>Key Learning Points</span>
+                      <span style={{ display: "flex", alignItems: "center" }}>
+                        <SectionIcon path={SECTION_ICONS.learning} />
+                        Key Learning Points
+                      </span>
                       {hiddenCount > 0 && (
                         <span className="no-print" style={{ fontFamily: "'Inter', sans-serif", fontSize: "0.65rem", fontWeight: 500, color: "var(--doc-warm-gray)", textTransform: "none", letterSpacing: "normal" }}>
                           {hiddenCount} more hidden by filter
@@ -25149,8 +25297,8 @@ function DocumentContent({ doc, phase, session }) {
                     </div>
                     <ol style={{ margin: 0, paddingLeft: 0, listStyle: "none", counterReset: "lp" }}>
                       {visiblePoints.map((lp, i) => (
-                        <li key={i} className="keep-together" style={{ display: "flex", gap: "0.85rem", marginBottom: "0.85rem", counterIncrement: "lp" }}>
-                          <span style={{ flexShrink: 0, fontFamily: "'Inter', sans-serif", fontWeight: 600, fontSize: "0.9rem", color: "var(--doc-navy-mid)", minWidth: "1.5rem", textAlign: "right" }}>{i + 1}.</span>
+                        <li key={i} className="keep-together" style={{ display: "flex", gap: "0.75rem", marginBottom: "0.85rem", counterIncrement: "lp" }}>
+                          <span style={{ flexShrink: 0, fontFamily: "'Inter', sans-serif", fontWeight: 700, fontSize: "0.75rem", color: "var(--doc-warm-gray)", minWidth: "1.4rem", textAlign: "right", letterSpacing: "0.06em", paddingTop: "0.15rem" }}>{String(i + 1).padStart(2, "0")}</span>
                           <div style={{ flex: 1 }}>
                             <div style={{ marginBottom: "0.25rem" }}>
                               <PriorityChip priority={lp.priority} />
@@ -25183,9 +25331,9 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.focusedHistoryQuestions?.length > 0 && (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">
+                  <SectionLabel icon="history">
                     {c.kind === "tangential" ? "Focused History Questions" : "Key History That Anchored the Diagnosis"}
-                  </div>
+                  </SectionLabel>
                   <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
                     {c.focusedHistoryQuestions.map((hq, i) => (
                       <li key={i} className="keep-together" style={{ marginBottom: "0.75rem", paddingLeft: "0.85rem", borderLeft: "1px solid var(--doc-hairline)" }}>
@@ -25199,9 +25347,9 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.physicalExam?.maneuver && (
                 <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">
+                  <SectionLabel icon="exam">
                     {c.kind === "tangential" ? "Physical Examination" : "Physical Exam Findings That Mattered"}
-                  </div>
+                  </SectionLabel>
                   <div style={{ fontWeight: 600, color: "var(--doc-navy)", marginBottom: "0.4rem" }}>{c.physicalExam.maneuver}</div>
                   {c.physicalExam.steps?.length > 0 && (
                     <ol style={{ margin: "0 0 0.5rem", paddingLeft: "1.3rem" }}>
@@ -25218,7 +25366,7 @@ function DocumentContent({ doc, phase, session }) {
 
               {patientResults.length > 0 && (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Chart Results: Labs, Imaging & Procedures</div>
+                  <SectionLabel icon="results">Chart Results: Labs, Imaging & Procedures</SectionLabel>
                   <div className="doc-table-scroll">
                     <table className="doc-table" style={{ fontSize: "0.82rem" }}>
                       <thead>
@@ -25253,7 +25401,7 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.treatmentApproach && (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Treatment Approach</div>
+                  <SectionLabel icon="treatment">Treatment Approach</SectionLabel>
                   {c.treatmentApproach.firstLine?.length > 0 && (
                     <div className="keep-together" style={{ marginBottom: "1rem" }}>
                       <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>First-Line Management</div>
@@ -25313,14 +25461,14 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.patientContextConsiderations && (
                 <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Patient Context</div>
+                  <SectionLabel icon="context">Patient Context</SectionLabel>
                   <p style={{ margin: 0 }}>{c.patientContextConsiderations}</p>
                 </div>
               )}
 
               {c.communicationTeaching?.scenario && (
                 <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Communication Teaching</div>
+                  <SectionLabel icon="communication">Communication Teaching</SectionLabel>
                   <div style={{ marginBottom: "0.5rem" }}>
                     <span style={{ fontWeight: 600, color: "var(--doc-navy)" }}>Scenario. </span>
                     {c.communicationTeaching.scenario}
@@ -25368,7 +25516,7 @@ function DocumentContent({ doc, phase, session }) {
 
               {c.recommendedReading?.length > 0 && (
                 <div style={{ marginBottom: "1.5rem" }}>
-                  <div className="doc-subsection-label">Recommended Reading</div>
+                  <SectionLabel icon="reading">Recommended Reading</SectionLabel>
                   <ol style={{ margin: 0, paddingLeft: "1.3rem" }}>
                     {c.recommendedReading.map((r, i) => (
                       <li key={i} style={{ marginBottom: "0.5rem" }}>
@@ -25497,7 +25645,10 @@ function DocumentContent({ doc, phase, session }) {
         {/* Lab Trends */}
         {s.labTrends?.enabled && s.labTrends.content?.length > 0 && (
           <section style={{ marginTop: "2.5rem" }}>
-            <h2 className="doc-h2">Lab & Vital Trends for Interpretation</h2>
+            <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
+              <SectionIcon path={SECTION_ICONS.results} />
+              Lab & Vital Trends for Interpretation
+            </h2>
             <div className="doc-table-scroll">
             <table className="doc-table">
               <thead>
@@ -25524,7 +25675,10 @@ function DocumentContent({ doc, phase, session }) {
         {/* Cross-Cutting Themes */}
         {s.crossCuttingThemes?.enabled && s.crossCuttingThemes.content?.length > 0 && (
           <section style={{ marginTop: "2.5rem" }} className="keep-together">
-            <h2 className="doc-h2">Cross-Cutting Themes</h2>
+            <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
+              <SectionIcon path={SECTION_ICONS.themes} />
+              Cross-Cutting Themes
+            </h2>
             <ol style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
               {s.crossCuttingThemes.content.map((t, i) => (
                 <li key={i} style={{
@@ -25554,7 +25708,13 @@ function DocumentContent({ doc, phase, session }) {
 
         {s.crossProblemInteractions?.enabled && s.crossProblemInteractions.content?.length > 0 && (
           <section style={{ marginTop: "2.5rem" }} className="keep-together">
-            <h2 className="doc-h2">Cross-Problem Interactions</h2>
+              <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
+                <SectionIcon path={SECTION_ICONS.figures} />
+                Figure Gallery
+              </h2>
+              <SectionIcon path={SECTION_ICONS.interaction} />
+              Cross-Problem Interactions
+            </h2>
             <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
               How this patient's problems change each other's workup or management.
             </p>
@@ -25701,7 +25861,10 @@ function DocumentContent({ doc, phase, session }) {
         {/* Practice Questions */}
         {enabledCases.some(tc => tc.data.shelfQuestions?.length > 0) && (
           <section style={{ marginTop: "2.5rem" }}>
-            <h2 className="doc-h2">Practice Questions</h2>
+            <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
+              <SectionIcon path={SECTION_ICONS.questions} />
+              Practice Questions
+            </h2>
             <p style={{ marginTop: "-0.5rem", marginBottom: "1.25rem", fontSize: "0.85rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
               Shelf-style questions covering the problems taught in this case.
             </p>
@@ -25750,7 +25913,10 @@ function DocumentContent({ doc, phase, session }) {
               const hidden = goals.length - shown.length;
               return (
                 <section>
-                  <h2 className="doc-h2">Ongoing Learning Goals</h2>
+                  <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
+                    <SectionIcon path={SECTION_ICONS.goals} />
+                    Ongoing Learning Goals
+                  </h2>
                   <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none" }}>
                     {shown.map(g => (
                       <li key={g.id} style={{ marginBottom: "0.75rem", paddingLeft: "0.85rem", borderLeft: "2px solid var(--doc-navy-mid)" }}>
@@ -25769,7 +25935,10 @@ function DocumentContent({ doc, phase, session }) {
             })()}
             {s.nextSessionPrep?.enabled && (
               <section>
-                <h2 className="doc-h2">Prep for Next Session</h2>
+                <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
+                  <SectionIcon path={SECTION_ICONS.prep} />
+                  Prep for Next Session
+                </h2>
                 {s.nextSessionPrep.reflectionQuestions?.length > 0 && (
                   <div style={{ marginBottom: "1rem" }}>
                     <div className="doc-meta-label" style={{ marginBottom: "0.4rem" }}>Reflect On</div>
@@ -25813,18 +25982,20 @@ function DocumentContent({ doc, phase, session }) {
           </div>
         )}
 
-        {/* Footer */}
+        {/* Footer — consolidated to two lines. Line 1: attribution + scope
+            disclaimer (comma-separated). Line 2: all session metadata in a
+            single italic string. Keeps essential information without stacking
+            four separate paragraphs at the bottom of every export. */}
         <div className="doc-footer">
-          <div>Trek Foothills LIC Teaching Document · Aligned with the CU School of Medicine MEPO framework</div>
-          <div style={{ marginTop: "0.35rem", fontStyle: "italic" }}>For educational purposes only. Verify citations, dosing, and current recommendations before clinical application.</div>
-          <div style={{ marginTop: "0.5rem", fontSize: "0.65rem" }}>
-            Generated {doc.generated} · Session {doc.sessionId || "unsaved"}
-            {doc.sessionTitle && ` · "${doc.sessionTitle}"`}
+          <div>
+            Trek Foothills LIC Teaching Document, aligned with the CU School of Medicine MEPO framework · For educational purposes only — verify citations, dosing, and current recommendations before clinical application.
           </div>
-          <div style={{ marginTop: "0.25rem", fontSize: "0.6rem", opacity: 0.7 }}>
-            Created with LIC Teaching Document Generator
+          <div style={{ marginTop: "0.4rem", fontSize: "0.65rem", fontStyle: "italic", opacity: 0.85 }}>
+            Generated {doc.generated}
+            {doc.sessionId && ` · Session ${doc.sessionId}`}
+            {doc.sessionTitle && ` · "${doc.sessionTitle}"`}
             {doc.appOrigin && (
-              <> · <a href={`${doc.appOrigin}?session=${doc.sessionId || ""}`} style={{ color: "inherit", textDecoration: "underline" }}>{doc.appOrigin}</a></>
+              <> · Created with <a href={`${doc.appOrigin}?session=${doc.sessionId || ""}`} style={{ color: "inherit", textDecoration: "underline" }}>LIC Teaching Document Generator</a></>
             )}
           </div>
         </div>
