@@ -25690,9 +25690,9 @@ function DocumentContent({ doc, phase, session }) {
                     Related cases
                   </span>
                   {relatedCaseLinks.map((link, li) => (
-                    
+                    <a
                       key={li}
-                      <a href={`#case-${link.targetIdx + 1}`}
+                      href={`#case-${link.targetIdx + 1}`}
                       onClick={(e) => {
                         e.preventDefault();
                         const target = document.getElementById(`case-${link.targetIdx + 1}`);
