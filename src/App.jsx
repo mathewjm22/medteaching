@@ -25708,10 +25708,7 @@ function DocumentContent({ doc, phase, session }) {
 
         {s.crossProblemInteractions?.enabled && s.crossProblemInteractions.content?.length > 0 && (
           <section style={{ marginTop: "2.5rem" }} className="keep-together">
-              <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
-                <SectionIcon path={SECTION_ICONS.figures} />
-                Figure Gallery
-              </h2>
+            <h2 className="doc-h2" style={{ display: "flex", alignItems: "center" }}>
               <SectionIcon path={SECTION_ICONS.interaction} />
               Cross-Problem Interactions
             </h2>
