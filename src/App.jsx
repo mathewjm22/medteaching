@@ -25692,7 +25692,7 @@ function DocumentContent({ doc, phase, session }) {
                   {relatedCaseLinks.map((link, li) => (
                     
                       key={li}
-                      href={`#case-${link.targetIdx + 1}`}
+                      <a href={`#case-${link.targetIdx + 1}`}
                       onClick={(e) => {
                         e.preventDefault();
                         const target = document.getElementById(`case-${link.targetIdx + 1}`);
@@ -25769,7 +25769,8 @@ function DocumentContent({ doc, phase, session }) {
                 </div>
               )}
 
-              <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
+              {c.illnessScript && (c.illnessScript.epidemiology || c.illnessScript.timeCourse || c.illnessScript.keySymptoms) && (
+                <div className="keep-together" style={{ marginBottom: "1.5rem" }}>
                   <SectionLabel icon="illness">Illness Script</SectionLabel>
                   <p style={{ margin: "0 0 0.6rem", fontSize: "0.82rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
                     The classic pattern for this diagnosis — anchored to how our patient fits or diverges. Build this into your library for faster pattern recognition next time.
