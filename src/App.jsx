@@ -2980,6 +2980,242 @@ const buildCheatSheetHtml = (doc, session) => {
 </html>`;
 };
 
+// ============ QUALITY AUDIT ============
+// Deterministic post-generation checks on the AI-produced teaching document.
+// Runs zero AI calls — pure inspection of the generated JSON structure.
+// Returns { critical, warnings, passed } arrays where each entry is a
+// { kind, message, casesAffected? } object.
+//
+// The goal is to catch obvious failure modes the AI didn't flag itself:
+//   - Truncated cases (too few learning points, missing required sections)
+//   - Broken shelf questions (correct-answer letter not in options)
+//   - Lazy priority tagging (all points 'context', or all 'core')
+//   - Empty pause-and-think fragments (prompt without reveal or vice versa)
+//   - Suspicious citations (naked "N Engl J Med" with no year, invented DOIs)
+//   - Absorbed-topic claims that couldn't be verified against case content
+//   - Uncited Step 4 sources (integrates with the earlier attribution audit)
+const auditGeneratedDocument = (doc) => {
+  const critical = [];
+  const warnings = [];
+  const passed = [];
+
+  if (!doc?.sections) {
+    critical.push({
+      kind: "missing-content",
+      message: "No document sections were generated. This is a fundamental generation failure.",
+    });
+    return { critical, warnings, passed };
+  }
+
+  const enabledCases = (doc.sections.teachingCases || []).filter(tc => tc.enabled);
+
+  // ─── Cases exist ───
+  if (enabledCases.length === 0) {
+    critical.push({
+      kind: "no-cases",
+      message: "No teaching cases were generated. Check that at least one problem was selected in Step 2.",
+    });
+  } else {
+    passed.push({
+      kind: "cases-generated",
+      message: `${enabledCases.length} teaching case${enabledCases.length === 1 ? "" : "s"} generated.`,
+    });
+  }
+
+  // ─── Per-case structural checks ───
+  const casesWithFewLearningPoints = [];
+  const casesWithBrokenShelfQuestions = [];
+  const casesWithAllOnePriority = [];
+  const casesWithNoShelfRelevant = [];
+  const casesWithBrokenPauseThink = [];
+  const casesMissingCoreSections = [];
+  const casesWithSuspiciousCitations = [];
+
+  enabledCases.forEach(tc => {
+    const c = tc.data || {};
+    const problem = c.problem || "Unknown problem";
+
+    // 1. Learning points count
+    const lpCount = (c.keyLearningPoints || []).length;
+    if (lpCount < 3) {
+      casesWithFewLearningPoints.push({ problem, count: lpCount });
+    }
+
+    // 2. Shelf question integrity
+    (c.shelfQuestions || []).forEach((q, qi) => {
+      const correct = String(q.correctAnswer || "").trim().toUpperCase();
+      const optionLetters = q.options ? Object.keys(q.options).map(k => k.toUpperCase()) : [];
+      if (!correct || !optionLetters.includes(correct)) {
+        casesWithBrokenShelfQuestions.push({ problem, questionIndex: qi + 1, correct, optionLetters });
+      }
+    });
+
+    // 3. Priority calibration — all one label = lazy tagging
+    const priorities = (c.keyLearningPoints || [])
+      .map(lp => String(lp?.priority || "context").toLowerCase());
+    if (priorities.length >= 3) {
+      const uniquePriorities = new Set(priorities);
+      if (uniquePriorities.size === 1) {
+        casesWithAllOnePriority.push({ problem, priority: priorities[0], count: priorities.length });
+      }
+    }
+
+    // 4. Shelf-relevant tagging — zero shelf-relevant points across a case with 3+ LPs
+    if (priorities.length >= 3) {
+      const anyShelfRelevant = (c.keyLearningPoints || []).some(lp => lp?.shelfRelevant);
+      if (!anyShelfRelevant) {
+        casesWithNoShelfRelevant.push({ problem });
+      }
+    }
+
+    // 5. Pause-and-think coherence — prompt without reveal (or vice versa)
+    const hasPrompt = Boolean(c.pauseAndThink?.prompt?.trim());
+    const hasReveal = Boolean(c.pauseAndThink?.reveal?.trim());
+    if (hasPrompt !== hasReveal) {
+      casesWithBrokenPauseThink.push({
+        problem,
+        missing: hasPrompt ? "reveal" : "prompt",
+      });
+    }
+
+    // 6. Core section presence
+    const missingSections = [];
+    if (!c.primaryDiagnosis?.name) missingSections.push("primaryDiagnosis");
+    if (!c.illnessScript || Object.keys(c.illnessScript).length === 0) missingSections.push("illnessScript");
+    if (!Array.isArray(c.differentialDiagnosis) || c.differentialDiagnosis.length === 0) missingSections.push("differentialDiagnosis");
+    if (!c.clinicalPearl) missingSections.push("clinicalPearl");
+    if (missingSections.length > 0) {
+      casesMissingCoreSections.push({ problem, missing: missingSections });
+    }
+
+    // 7. Suspicious citation patterns
+    const suspiciousCitations = [];
+    const allCitations = [
+      ...(c.keyLearningPoints || []).map(lp => lp?.citation).filter(Boolean),
+      ...(c.treatmentApproach?.firstLine || []).map(t => t?.evidence).filter(Boolean),
+      ...(c.recommendedReading || []).map(r => r?.reference).filter(Boolean),
+    ];
+    allCitations.forEach(cite => {
+      const c = String(cite).trim();
+      // Naked journal name without year is suspicious (e.g., "N Engl J Med" with no year)
+      if (/^N Engl J Med\.?$/i.test(c) || /^JAMA\.?$/i.test(c) || /^Lancet\.?$/i.test(c) || /^Ann Intern Med\.?$/i.test(c) || /^BMJ\.?$/i.test(c)) {
+        suspiciousCitations.push(`"${c}" — journal name with no year or volume`);
+      }
+      // Fake-looking DOI (real DOIs are 10.NNNN/... where NNNN is 4-9 digits)
+      const doiMatch = c.match(/\b(10\.\d+)\//);
+      if (doiMatch) {
+        const prefix = doiMatch[1];
+        const digits = prefix.slice(3);
+        if (digits.length < 4 || digits.length > 9) {
+          suspiciousCitations.push(`"${c}" — DOI prefix looks malformed`);
+        }
+      }
+      // Full volume:issue:page format without a real journal (e.g., "12(3):456-789" alone)
+      if (/^\d+\(\d+\):\d+-\d+\.?$/.test(c)) {
+        suspiciousCitations.push(`"${c}" — citation is just a volume/issue/page with no journal`);
+      }
+    });
+    if (suspiciousCitations.length > 0) {
+      casesWithSuspiciousCitations.push({ problem, examples: suspiciousCitations.slice(0, 3) });
+    }
+  });
+
+  // Roll up per-case findings into audit entries
+  if (casesWithFewLearningPoints.length > 0) {
+    warnings.push({
+      kind: "few-learning-points",
+      message: `${casesWithFewLearningPoints.length} case${casesWithFewLearningPoints.length === 1 ? " has" : "s have"} fewer than 3 key learning points, which may indicate truncated generation.`,
+      casesAffected: casesWithFewLearningPoints.map(c => `${c.problem} (${c.count} points)`),
+    });
+  }
+
+  if (casesWithBrokenShelfQuestions.length > 0) {
+    critical.push({
+      kind: "broken-shelf",
+      message: `${casesWithBrokenShelfQuestions.length} shelf question${casesWithBrokenShelfQuestions.length === 1 ? " has" : "s have"} a correct-answer letter that doesn't match any of the provided options. Students will see broken questions.`,
+      casesAffected: casesWithBrokenShelfQuestions.map(c => `${c.problem} — Q${c.questionIndex} (answer "${c.correct}" not in [${c.optionLetters.join(", ")}])`),
+    });
+  }
+
+  if (casesWithAllOnePriority.length > 0) {
+    warnings.push({
+      kind: "lazy-priority",
+      message: `${casesWithAllOnePriority.length} case${casesWithAllOnePriority.length === 1 ? " has" : "s have"} every learning point tagged with the same priority, suggesting the AI didn't triage. Students won't be able to filter meaningfully.`,
+      casesAffected: casesWithAllOnePriority.map(c => `${c.problem} (all "${c.priority}")`),
+    });
+  }
+
+  if (casesWithNoShelfRelevant.length > 0) {
+    warnings.push({
+      kind: "no-shelf-relevant",
+      message: `${casesWithNoShelfRelevant.length} case${casesWithNoShelfRelevant.length === 1 ? " has" : "s have"} zero learning points marked as shelf-relevant. Either the AI mis-calibrated or these problems are genuinely non-shelf topics — verify.`,
+      casesAffected: casesWithNoShelfRelevant.map(c => c.problem),
+    });
+  }
+
+  if (casesWithBrokenPauseThink.length > 0) {
+    warnings.push({
+      kind: "broken-pause-think",
+      message: `${casesWithBrokenPauseThink.length} case${casesWithBrokenPauseThink.length === 1 ? " has" : "s have"} a partial pause-and-think block (prompt without reveal or vice versa) — that section won't render.`,
+      casesAffected: casesWithBrokenPauseThink.map(c => `${c.problem} (missing ${c.missing})`),
+    });
+  }
+
+  if (casesMissingCoreSections.length > 0) {
+    warnings.push({
+      kind: "missing-core-sections",
+      message: `${casesMissingCoreSections.length} case${casesMissingCoreSections.length === 1 ? " is" : "s are"} missing one or more core sections (diagnosis, illness script, differential, or clinical pearl).`,
+      casesAffected: casesMissingCoreSections.map(c => `${c.problem} — missing ${c.missing.join(", ")}`),
+    });
+  }
+
+  if (casesWithSuspiciousCitations.length > 0) {
+    warnings.push({
+      kind: "suspicious-citations",
+      message: `${casesWithSuspiciousCitations.length} case${casesWithSuspiciousCitations.length === 1 ? " has" : "s have"} citations that look invented or malformed. Verify before letting the student rely on them.`,
+      casesAffected: casesWithSuspiciousCitations.map(c => `${c.problem}: ${c.examples.join("; ")}`),
+    });
+  }
+
+  // ─── Evidence attribution rollup ───
+  const uncitedSources = doc.sections?.synthesizedEvidence?.content?.uncitedSources || [];
+  if (uncitedSources.length > 0) {
+    warnings.push({
+      kind: "uncited-sources",
+      message: `${uncitedSources.length} Step 4 source${uncitedSources.length === 1 ? " was" : "s were"} not cited in the generated content. The AI may have ignored them.`,
+      casesAffected: uncitedSources.map(s => String(s)),
+    });
+  } else if (doc.sections?.synthesizedEvidence?.content?.sourceContribution?.length > 0) {
+    passed.push({
+      kind: "all-sources-cited",
+      message: "All Step 4 evidence sources contributed at least one cited claim.",
+    });
+  }
+
+  // ─── Absorbed topics rollup (if any teaching case claimed absorption) ───
+  const totalAbsorbed = enabledCases.reduce((sum, tc) => {
+    return sum + (Array.isArray(tc.data?.absorbedEvidenceTopics) ? tc.data.absorbedEvidenceTopics.length : 0);
+  }, 0);
+  if (totalAbsorbed > 0) {
+    passed.push({
+      kind: "evidence-absorbed",
+      message: `Teaching cases integrated ${totalAbsorbed} evidence topic${totalAbsorbed === 1 ? "" : "s"} directly into their content.`,
+    });
+  }
+
+  // ─── Cross-cutting themes / interactions ───
+  const themesCount = (doc.sections?.crossCuttingThemes?.content || []).length;
+  const interactionsCount = (doc.sections?.crossProblemInteractions?.content || []).length;
+  if (enabledCases.length >= 2 && themesCount === 0 && interactionsCount === 0) {
+    warnings.push({
+      kind: "no-cross-problem-content",
+      message: `With ${enabledCases.length} teaching cases, the AI generated no cross-cutting themes or cross-problem interactions. Students miss the "how these problems connect" thread.`,
+    });
+  }
+
+  return { critical, warnings, passed };
+};
+
 export default function App() {
   const [activeTab, setActiveTab] = useState("setup");
   const [saved, setSaved] = useState(false);
@@ -7371,6 +7607,16 @@ Formatting rules:
       }
     });
 
+    // Build a list of per-case failures from the current generation attempt.
+    // Each entry knows the problem name and the error message, so the preview
+    // can render an inline placeholder where the case would have appeared.
+    const caseFailures = Object.entries(attempt.cases || {})
+      .filter(([, result]) => result?.status === "failed")
+      .map(([problem, result]) => ({
+        problem,
+        error: result.error || "Generation failed without a specific error message",
+      }));
+
     const preview = {
       generated: new Date().toLocaleString(),
       generatedIso: new Date().toISOString(),
@@ -7382,6 +7628,7 @@ Formatting rules:
         sessionDate: session.sessionDate,
       }),
       appOrigin: window.location.origin + window.location.pathname,
+      caseFailures,
       student: session.studentName || "Student",
       phase, chiefConcern, workingDx,
       complexity: session.complexity, sessionGoal, extractedTopics,
@@ -11342,8 +11589,123 @@ function PreviewEditor({ previewData, setPreviewData, togglePreviewSection, togg
   // but no claim in the final document draws from it.
   const uncitedSources = previewData?.sections?.synthesizedEvidence?.content?.uncitedSources || [];
 
+  // Deterministic quality audit — runs zero AI calls, inspects the generated
+  // JSON for common failure modes and surfaces them as a Review-tab panel.
+  const [showAuditDetail, setShowAuditDetail] = React.useState(false);
+  const audit = React.useMemo(() => {
+    if (!previewData) return null;
+    return auditGeneratedDocument(previewData);
+  }, [previewData]);
+
   return (
     <div>
+      {/* Post-generation quality audit — deterministic checks on the AI content.
+          Renders as a compact status bar with expandable detail. Green if
+          everything passed, amber if warnings, red if critical issues. */}
+      {audit && (audit.critical.length > 0 || audit.warnings.length > 0 || audit.passed.length > 0) && (() => {
+        const criticalCount = audit.critical.length;
+        const warningCount = audit.warnings.length;
+        const passedCount = audit.passed.length;
+        const status = criticalCount > 0 ? "critical" : warningCount > 0 ? "warning" : "pass";
+        const statusMeta = {
+          critical: { bg: "bg-red-50", border: "border-red-300", text: "text-red-900", icon: "🚨" },
+          warning: { bg: "bg-amber-50", border: "border-amber-300", text: "text-amber-900", icon: "⚠️" },
+          pass: { bg: "bg-emerald-50", border: "border-emerald-300", text: "text-emerald-900", icon: "✓" },
+        }[status];
+        const summary =
+          status === "critical"
+            ? `${criticalCount} critical issue${criticalCount === 1 ? "" : "s"} require attention`
+            : status === "warning"
+              ? `${warningCount} quality warning${warningCount === 1 ? "" : "s"}`
+              : "All quality checks passed";
+
+        return (
+          <div className={`rounded-lg border-2 ${statusMeta.bg} ${statusMeta.border} p-3 mb-4`}>
+            <div className="flex items-start justify-between gap-3 flex-wrap">
+              <div className="flex items-start gap-2 flex-1 min-w-0">
+                <div className="text-lg leading-none pt-0.5">{statusMeta.icon}</div>
+                <div className="flex-1 min-w-0">
+                  <div className={`text-sm font-bold ${statusMeta.text}`}>
+                    Quality Audit — {summary}
+                  </div>
+                  <div className={`text-xs ${statusMeta.text} opacity-80 mt-0.5`}>
+                    {criticalCount > 0 && <span className="mr-3">{criticalCount} critical</span>}
+                    {warningCount > 0 && <span className="mr-3">{warningCount} warning{warningCount === 1 ? "" : "s"}</span>}
+                    {passedCount > 0 && <span>{passedCount} passed</span>}
+                  </div>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowAuditDetail(!showAuditDetail)}
+                className={`text-xs font-medium ${statusMeta.text} underline hover:no-underline flex-shrink-0`}
+              >
+                {showAuditDetail ? "Hide details" : "Show details"}
+              </button>
+            </div>
+            {showAuditDetail && (
+              <div className="mt-3 pt-3 border-t border-current border-opacity-20 space-y-3">
+                {audit.critical.length > 0 && (
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-red-900 mb-1.5">
+                      Critical
+                    </div>
+                    <ul className="space-y-1.5">
+                      {audit.critical.map((item, i) => (
+                        <li key={i} className="text-xs text-red-900">
+                          <div className="font-medium">{item.message}</div>
+                          {item.casesAffected && item.casesAffected.length > 0 && (
+                            <ul className="mt-0.5 ml-3 space-y-0.5 opacity-90">
+                              {item.casesAffected.map((c, ci) => (
+                                <li key={ci} className="list-disc list-outside">{c}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {audit.warnings.length > 0 && (
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-amber-900 mb-1.5">
+                      Warnings
+                    </div>
+                    <ul className="space-y-1.5">
+                      {audit.warnings.map((item, i) => (
+                        <li key={i} className="text-xs text-amber-900">
+                          <div className="font-medium">{item.message}</div>
+                          {item.casesAffected && item.casesAffected.length > 0 && (
+                            <ul className="mt-0.5 ml-3 space-y-0.5 opacity-90">
+                              {item.casesAffected.map((c, ci) => (
+                                <li key={ci} className="list-disc list-outside">{c}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {audit.passed.length > 0 && (
+                  <div>
+                    <div className="text-xs font-bold uppercase tracking-wider text-emerald-900 mb-1.5">
+                      Passed
+                    </div>
+                    <ul className="space-y-1">
+                      {audit.passed.map((item, i) => (
+                        <li key={i} className="text-xs text-emerald-800">
+                          <span className="mr-1">✓</span>{item.message}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
       {/* Evidence attribution audit — prominent, blocking-style warning when
           any Step 4 source received zero claim attributions from the AI. */}
       {uncitedSources.length > 0 && !uncitedSourcesAcknowledged && (
@@ -11439,14 +11801,42 @@ function PreviewEditor({ previewData, setPreviewData, togglePreviewSection, togg
               )}
             </div>
             {attemptSummary.hasFailures && (
-              <button
-                onClick={onRetryFailed}
-                disabled={aiStatus.generating}
-                className="flex items-center gap-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 flex-shrink-0"
-              >
-                {aiStatus.generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
-                Retry failed
-              </button>
+              <div className="flex flex-col gap-2 flex-shrink-0">
+                <button
+                  onClick={onRetryFailed}
+                  disabled={aiStatus.generating}
+                  className="flex items-center gap-1.5 px-3 py-2 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 whitespace-nowrap"
+                >
+                  {aiStatus.generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Wand2 className="w-4 h-4" />}
+                  Retry all failed
+                </button>
+                {attemptSummary.casesFailed.length > 0 && onRegenerateSingleCase && (
+                  <details className="text-xs">
+                    <summary className="cursor-pointer text-amber-900 hover:text-amber-700 font-medium">
+                      Retry individually
+                    </summary>
+                    <div className="mt-2 flex flex-col gap-1.5">
+                      {attemptSummary.casesFailed.map(([problem]) => (
+                        <button
+                          key={problem}
+                          onClick={() => {
+                            // For per-case retry of a failed case (not yet in teachingCases),
+                            // fall through to onRetryFailed since it'll only touch this one
+                            // when it's the only failure. For now, offer the full retry.
+                            onRetryFailed();
+                          }}
+                          disabled={aiStatus.generating}
+                          className="px-2 py-1 bg-white hover:bg-amber-100 border border-amber-400 text-amber-900 rounded text-xs disabled:opacity-50 text-left"
+                          title={`Regenerate the "${problem}" case`}
+                        >
+                          <Wand2 className="w-3 h-3 inline mr-1" />
+                          {problem}
+                        </button>
+                      ))}
+                    </div>
+                  </details>
+                )}
+              </div>
             )}
           </div>
         </div>
@@ -24814,6 +25204,89 @@ function DocumentContent({ doc, phase, session }) {
     return points.filter(lp => (lp?.priority || "context") === priorityFilter);
   };
 
+  // Cross-case concept anchor detection — for each case, find other cases in
+  // this document that share meaningful clinical concepts. A "concept" is
+  // detected by extracting significant multi-word terms from a case's key
+  // learning point titles and diagnosis name, then checking which other cases
+  // mention those same terms in their learning points or teaching text.
+  //
+  // Returns a Map keyed by case index → array of { targetIdx, sharedConcepts }
+  // entries pointing to related cases. Only meaningful (2+ shared terms) links
+  // are returned; single-word coincidental matches are excluded.
+  const conceptAnchorMap = React.useMemo(() => {
+    if (!enabledCases || enabledCases.length < 2) return new Map();
+
+    // Words too common to be meaningful concept anchors
+    const STOP_WORDS = new Set([
+      "the", "and", "for", "with", "from", "when", "this", "that",
+      "patient", "patients", "clinical", "disease", "condition",
+      "treatment", "management", "diagnosis", "symptoms", "history",
+      "medical", "care", "risk", "increased", "decreased", "normal",
+      "abnormal", "positive", "negative", "acute", "chronic", "primary",
+      "secondary", "significant", "typically", "usually", "often",
+    ]);
+
+    const extractConceptTerms = (text) => {
+      const cleaned = String(text || "")
+        .toLowerCase()
+        .replace(/[^\w\s-]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      const words = cleaned.split(" ").filter(w => w.length > 3 && !STOP_WORDS.has(w));
+      // Bigrams — 2-word terms are much more likely to be clinical concepts
+      // than single words. E.g., "atrial fibrillation" not just "atrial".
+      const bigrams = [];
+      for (let i = 0; i < words.length - 1; i++) {
+        if (words[i].length > 3 && words[i + 1].length > 3) {
+          bigrams.push(`${words[i]} ${words[i + 1]}`);
+        }
+      }
+      // Also keep salient single medical terms (proper-noun-ish, length ≥ 5)
+      const singles = words.filter(w => w.length >= 5);
+      return new Set([...bigrams, ...singles]);
+    };
+
+    // Build a concept-term set per case from the highest-signal fields
+    const caseConceptSets = enabledCases.map(tc => {
+      const c = tc.data || {};
+      const sourceText = [
+        c.primaryDiagnosis?.name || "",
+        c.problem || "",
+        ...(c.keyLearningPoints || []).map(lp => `${lp?.point || ""} ${lp?.explanation || ""}`),
+        ...(c.differentialDiagnosis || []).map(dd => dd?.diagnosis || ""),
+        ...(c.treatmentApproach?.firstLine || []).map(t => t?.treatment || ""),
+      ].join(" ");
+      return extractConceptTerms(sourceText);
+    });
+
+    // For each case, find other cases sharing meaningful concepts
+    const map = new Map();
+    enabledCases.forEach((_, i) => {
+      const myConcepts = caseConceptSets[i];
+      const links = [];
+      enabledCases.forEach((tc, j) => {
+        if (i === j) return;
+        const theirConcepts = caseConceptSets[j];
+        const shared = [];
+        myConcepts.forEach(concept => {
+          if (theirConcepts.has(concept)) shared.push(concept);
+        });
+        // Threshold: 2+ shared meaningful concepts. Prevents linking cases
+        // that just happen to share one common medical word.
+        if (shared.length >= 2) {
+          links.push({
+            targetIdx: j,
+            targetProblem: tc.data?.problem || `Case ${j + 1}`,
+            sharedConcepts: shared.slice(0, 3), // cap display to 3
+          });
+        }
+      });
+      if (links.length > 0) map.set(i, links);
+    });
+
+    return map;
+  }, [enabledCases]);
+
   // Small inline SVG icon component for section labels. Uses currentColor so
   // it inherits from the label's own text color, and sits below the baseline
   // with slight opacity so it reads as chrome rather than as content. Sized
@@ -25116,6 +25589,46 @@ function DocumentContent({ doc, phase, session }) {
           );
         })()}
 
+        {/* Failed case placeholders — inline where the case would have been.
+            Renders only in the preview so the attending sees the gap in
+            context. Cleared once the case is regenerated successfully. */}
+        {Array.isArray(doc.caseFailures) && doc.caseFailures.length > 0 && doc.isPreview && (
+          <section className="keep-together no-print" style={{ marginBottom: "2rem" }}>
+            <div style={{
+              padding: "0.85rem 1rem",
+              background: "rgba(255, 87, 87, 0.06)",
+              border: "1px solid rgba(255, 87, 87, 0.32)",
+              borderLeft: "3px solid var(--doc-conflict)",
+              borderRadius: "0 4px 4px 0",
+            }}>
+              <div style={{
+                fontFamily: "'Inter', sans-serif",
+                fontSize: "0.65rem",
+                fontWeight: 800,
+                letterSpacing: "0.14em",
+                textTransform: "uppercase",
+                color: "var(--doc-conflict)",
+                marginBottom: "0.5rem",
+              }}>
+                {doc.caseFailures.length} Teaching Case{doc.caseFailures.length === 1 ? "" : "s"} Failed to Generate
+              </div>
+              <ul style={{ margin: 0, paddingLeft: "1.1rem", listStyle: "disc" }}>
+                {doc.caseFailures.map((failure, i) => (
+                  <li key={i} style={{ marginBottom: "0.4rem", fontSize: "0.85rem", color: "#7a1f2b" }}>
+                    <strong>{failure.problem}</strong>
+                    <div style={{ marginTop: "0.15rem", fontSize: "0.78rem", fontStyle: "italic", color: "var(--doc-warm-gray)", opacity: 0.85 }}>
+                      {failure.error}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <div style={{ marginTop: "0.6rem", fontSize: "0.72rem", color: "var(--doc-warm-gray)", fontStyle: "italic" }}>
+                Use "Retry Failed" in the toolbar to regenerate just these cases, or use the per-case retry button above to regenerate one at a time.
+              </div>
+            </div>
+          </section>
+        )}
+
         {/* Teaching Cases */}
         {enabledCases.map((tc, idx) => {
           const c = tc.data;
@@ -25123,8 +25636,9 @@ function DocumentContent({ doc, phase, session }) {
             c.keyLabsAndImaging,
             doc.teachingDetailOptions
           );
+          const relatedCaseLinks = conceptAnchorMap.get(idx) || [];
           return (
-            <section key={idx} className={`doc-case-wrap ${idx % 2 === 0 ? "case-tone-blue" : "case-tone-sand"}`}>
+            <section id={`case-${idx + 1}`} key={idx} className={`doc-case-wrap ${idx % 2 === 0 ? "case-tone-blue" : "case-tone-sand"}`}>
               <div className="doc-case-banner">
                 <div className="doc-case-numeral">
                   {c.kind === "tangential" ? "Tangential Topic" : "Case"} {String(idx + 1).padStart(2, "0")} of {String(enabledCases.length).padStart(2, "0")}
@@ -25150,7 +25664,55 @@ function DocumentContent({ doc, phase, session }) {
                   );
                 })()}
               </div>
-{c.keyTakeaway && (
+{relatedCaseLinks.length > 0 && (
+                <div className="no-print keep-together" style={{
+                  marginBottom: "1rem",
+                  padding: "0.5rem 0.75rem",
+                  background: "rgba(55, 108, 139, 0.05)",
+                  border: "1px solid rgba(55, 108, 139, 0.14)",
+                  borderRadius: "3px",
+                  fontSize: "0.75rem",
+                  color: "var(--doc-warm-gray)",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.5rem",
+                  flexWrap: "wrap",
+                }}>
+                  <span style={{
+                    fontFamily: "'Inter', sans-serif",
+                    fontSize: "0.6rem",
+                    fontWeight: 700,
+                    letterSpacing: "0.14em",
+                    textTransform: "uppercase",
+                    color: "var(--doc-navy)",
+                    opacity: 0.75,
+                  }}>
+                    Related cases
+                  </span>
+                  {relatedCaseLinks.map((link, li) => (
+                    
+                      key={li}
+                      href={`#case-${link.targetIdx + 1}`}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        const target = document.getElementById(`case-${link.targetIdx + 1}`);
+                        if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }}
+                      title={`Also discussed: ${link.sharedConcepts.join(", ")}`}
+                      style={{
+                        color: "var(--doc-navy)",
+                        textDecoration: "none",
+                        borderBottom: "1px dotted var(--doc-navy)",
+                        paddingBottom: "0.1rem",
+                      }}
+                    >
+                      ↓ {link.targetProblem}
+                    </a>
+                  ))}
+                </div>
+              )}
+
+              {c.keyTakeaway && (
                 <div className="keep-together" style={{
                   marginBottom: "1rem",
                   padding: "0.75rem 1rem",
