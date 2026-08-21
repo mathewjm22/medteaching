@@ -4,7 +4,7 @@ import { parsePrenote } from "./prenoteParser.mjs";
 
 // ===== Hardcoded config =====
 const WORKER_URL = "https://medteachingtool.sweet-dream-0ed6.workers.dev/";
-const DEFAULT_MODEL = "openrouter/free";
+const DEFAULT_MODEL = "meta-llama/Llama-3.3-70B-Instruct";
 // ===== Doc title helper =====
 // Used only for the exported HTML filename and the doc footer.
 const deriveDocTitle = ({ workingDx, chiefConcern, sessionDate }) => {
@@ -3828,7 +3828,7 @@ const [customTopics, setCustomTopics] = useState([]);
     const temperature = Number.isFinite(options.temperature)
       ? options.temperature
       : 0.5;
-    // Bound every AI call at 90 seconds. A hung OpenRouter connection otherwise
+    // Bound every AI call at 90 seconds. A hung Hugging Face connection otherwise
     // leaves the user staring at "Generating case 2 of 4..." with no
     // recovery. On timeout, the existing catch/retry path takes over.
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 90000;
