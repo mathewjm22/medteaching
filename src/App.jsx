@@ -4,7 +4,7 @@ import { parsePrenote } from "./prenoteParser.mjs";
 
 // ===== Hardcoded config =====
 const WORKER_URL = "https://medteachingtool.sweet-dream-0ed6.workers.dev/";
-const DEFAULT_MODEL = "gpt-oss-120b";
+const DEFAULT_MODEL = "openrouter/free";
 // ===== Doc title helper =====
 // Used only for the exported HTML filename and the doc footer.
 const deriveDocTitle = ({ workingDx, chiefConcern, sessionDate }) => {
@@ -3828,7 +3828,7 @@ const [customTopics, setCustomTopics] = useState([]);
     const temperature = Number.isFinite(options.temperature)
       ? options.temperature
       : 0.5;
-    // Bound every AI call at 90 seconds. A hung Groq connection otherwise
+    // Bound every AI call at 90 seconds. A hung OpenRouter connection otherwise
     // leaves the user staring at "Generating case 2 of 4..." with no
     // recovery. On timeout, the existing catch/retry path takes over.
     const timeoutMs = Number.isFinite(options.timeoutMs) ? options.timeoutMs : 90000;
@@ -3896,13 +3896,16 @@ const [customTopics, setCustomTopics] = useState([]);
             ? Math.ceil(parseFloat(waitMatch[1])) + 3
             : (retryCount + 1) * 30;
 
+        const rateLimitSource =
+          res.headers.get("X-RateLimit-Source") || "unknown";
+
         console.warn(
-          `[callAi] Rate limit. Waiting ${waitSec}s, retry ${retryCount + 1}/${maxRetries}`
+          `[callAi] Rate limit from ${rateLimitSource}. Waiting ${waitSec}s, retry ${retryCount + 1}/${maxRetries}`
         );
 
         setAiStatus(prev => ({
           ...prev,
-          progress: `Pausing briefly to stay within AI service limits (${waitSec}s)...`,
+          progress: `Rate limited by ${rateLimitSource} \u2014 retrying in ${waitSec}s...`,
         }));
 
         await new Promise(
@@ -5234,7 +5237,7 @@ BEFORE YOU FINALIZE: Look at your generated topics/claims and count how many cla
 
   // ===== Generate case-specific teaching content =====
   // Generates ONE teaching case per API call with waits between,
-  // to stay under Groq's tokens-per-minute rate limit.
+  // to stay under the upstream provider's tokens-per-minute rate limit.
   //
   // Accepts:
   //   synthesizedEvidenceParam: the synthesized evidence (or null)
