@@ -10,7 +10,7 @@
  */
 
 const DIVIDER_RE = /^\s*([=\-.])\1{7,}\s*$/;
-const PAUSE_RE = /^\s*\[\[PAUSED\s*-\s*TYPE\s+CONTINUE\]\]\s*$/i;
+const PAUSE_RE = /^\s*\[\[PAUSED(?:\s*-\s*|\s+)TYPE\s+CONTINUE\]\]\s*$/i;
 const MARKDOWN_HEADING_RE = /^\s*#{1,6}\s+(.+?)\s*$/;
 
 const STATUS_VALUES = [
@@ -74,7 +74,11 @@ const SECTION_DEFINITIONS = [
   },
   {
     key: "allergies",
-    match: (value) => value === "ALLERGIES",
+    match: (value) =>
+      value === "ALLERGIES" ||
+      value === "ALLERGIES / ADVERSE REACTIONS" ||
+      value === "ALLERGIES AND ADVERSE REACTIONS" ||
+      value === "ALLERGIES & ADVERSE REACTIONS",
   },
   {
     key: "surgicalHistory",
@@ -102,14 +106,31 @@ const SECTION_DEFINITIONS = [
       value === "HISTORICAL MEDICATIONS",
   },
   {
+    key: "immunizations",
+    match: (value) =>
+      value === "IMMUNIZATIONS" ||
+      value === "IMMUNIZATION HISTORY" ||
+      value === "VACCINATIONS" ||
+      value === "VACCINE HISTORY",
+  },
+  {
     key: "preventiveMedicine",
-    match: (value) => value === "PREVENTIVE MEDICINE",
+    match: (value) =>
+      value === "PREVENTIVE MEDICINE" ||
+      value === "PREVENTIVE CARE" ||
+      value === "PREVENTIVE CARE / HEALTH MAINTENANCE" ||
+      value === "PREVENTIVE CARE & HEALTH MAINTENANCE" ||
+      value === "PREVENTIVE CARE AND HEALTH MAINTENANCE" ||
+      value === "HEALTH MAINTENANCE / PREVENTIVE CARE" ||
+      value === "HEALTH MAINTENANCE & PREVENTIVE CARE" ||
+      value === "HEALTH MAINTENANCE AND PREVENTIVE CARE",
   },
   {
     key: "advanceDirectives",
     match: (value) =>
       value === "ADVANCE DIRECTIVES" ||
-      value === "ADVANCE DIRECTIVE",
+      value === "ADVANCE DIRECTIVE" ||
+      value === "ADVANCE CARE PLANNING",
   },
   {
     key: "healthMaintenance",
@@ -120,11 +141,16 @@ const SECTION_DEFINITIONS = [
   {
     key: "specialtyCare",
     match: (value) =>
+      value === "SPECIALTY CARE COORDINATION" ||
       value === "SPECIALTY CARE / CONSULTS" ||
       value === "SPECIALTY CARE" ||
       value === "CONSULTS" ||
+      value === "CONSULTS / REFERRALS" ||
+      value === "CONSULTS & REFERRALS" ||
+      value === "CONSULTS AND REFERRALS" ||
       value === "ACTIVE CONSULTS" ||
       value === "CARE TEAM" ||
+      value === "CARE COORDINATION" ||
       value === "PENDING STUDIES/REFERRALS" ||
       value === "PENDING STUDIES / REFERRALS" ||
       value === "PENDING STUDIES AND REFERRALS" ||
@@ -136,9 +162,27 @@ const SECTION_DEFINITIONS = [
     match: (value) =>
       value === "HOSPITALIZATIONS / ER VISITS" ||
       value === "HOSPITALIZATIONS / ER VISITS (PAST YEAR)" ||
+      value === "HOSPITALIZATIONS / ED VISITS" ||
+      value === "HOSPITALIZATIONS / EMERGENCY DEPARTMENT VISITS" ||
       value === "HOSPITALIZATIONS" ||
       value === "ER VISITS" ||
+      value === "ED VISITS" ||
       value === "HOSPITALIZATIONS AND ER VISITS",
+  },
+  {
+    key: "imagingStudies",
+    match: (value) =>
+      value === "IMAGING STUDIES" ||
+      value === "IMAGING / DIAGNOSTIC STUDIES" ||
+      value === "IMAGING AND DIAGNOSTIC STUDIES" ||
+      value === "IMAGING / DIAGNOSTICS",
+  },
+  {
+    key: "procedures",
+    match: (value) =>
+      value === "PROCEDURES" ||
+      value === "PROCEDURES / INTERVENTIONS" ||
+      value === "PROCEDURES AND INTERVENTIONS",
   },
   {
     key: "assessmentPlanSummary",
@@ -176,6 +220,7 @@ const SECTION_DEFINITIONS = [
       value === "ACTIVE MEDICAL PROBLEMS & ASSESSMENTS" ||
       value === "ACTIVE MEDICAL PROBLEMS AND ASSESSMENTS" ||
       value === "ACTIVE MEDICAL PROBLEMS" ||
+      value === "ASSESSMENT & PLAN" ||
       value === "ASSESSMENT AND PLAN",
   },
   {
@@ -190,7 +235,12 @@ const SECTION_DEFINITIONS = [
     match: (value) =>
       value === "FOLLOW-UP" ||
       value === "FOLLOW UP" ||
-      value === "FOLLOWUP",
+      value === "FOLLOWUP" ||
+      value === "PENDING ORDERS / FOLLOW-UP" ||
+      value === "PENDING ORDERS / FOLLOW UP" ||
+      value === "PENDING ORDERS & FOLLOW-UP" ||
+      value === "PENDING ORDERS AND FOLLOW-UP" ||
+      value === "PENDING ORDERS AND FOLLOW UP",
   },
 ];
 
@@ -204,7 +254,14 @@ const DIAGNOSTICS_HARD_END_KEYS = new Set([
   "surgicalHistory",
   "militaryHistory",
   "medRec",
+  "immunizations",
   "preventiveMedicine",
+  "healthMaintenance",
+  "specialtyCare",
+  "hospitalizations",
+  "imagingStudies",
+  "procedures",
+  "advanceDirectives",
   "followUp",
 ]);
 
@@ -338,10 +395,14 @@ function reintroduceStructuralNewlines(text) {
   const knownSectionHeaders = [
     "PRENOTE", "WHAT TO KNOW ABOUT", "UPDATES / RECENT VISITS",
     "PAST MEDICAL HISTORY", "SOCIAL HISTORY", "SOCIAL", "FAMILY HISTORY",
-    "ALLERGIES", "SURGICAL HISTORY", "MILITARY HISTORY",
+    "ALLERGIES", "ALLERGIES / ADVERSE REACTIONS", "SURGICAL HISTORY", "MILITARY HISTORY",
     "MED REC", "MEDICATION RECONCILIATION",
     "CURRENT MEDICATIONS", "RECENTLY DISCONTINUED", "SIGNIFICANT HISTORICAL MEDICATIONS",
-    "PREVENTIVE MEDICINE", "VITAL SIGNS TRENDS", "VITAL SIGNS",
+    "IMMUNIZATIONS", "PREVENTIVE MEDICINE", "PREVENTIVE CARE / HEALTH MAINTENANCE",
+    "CONSULTS / REFERRALS", "CARE COORDINATION", "SPECIALTY CARE COORDINATION",
+    "PENDING ORDERS / FOLLOW-UP", "ADVANCE CARE PLANNING",
+    "HOSPITALIZATIONS / ED VISITS", "IMAGING STUDIES", "PROCEDURES",
+    "ASSESSMENT & PLAN", "VITAL SIGNS TRENDS", "VITAL SIGNS",
     "DIAGNOSTICS", "LAB TRENDS", "IMAGING AND DIAGNOSTIC PROCEDURES",
     "KEY DIAGNOSES", "FOLLOW-UP",
   ];
@@ -350,6 +411,14 @@ function reintroduceStructuralNewlines(text) {
     const re = new RegExp(`[ \\t]+(${header.replace(/\//g, "\\/")})(?=\\s|:)`, "g");
     t = t.replace(re, "\n$1");
   }
+
+  // FOLLOW-UP is also a suffix of the compound top-level heading
+  // "PENDING ORDERS / FOLLOW-UP". The generic inline-heading recovery pass
+  // above must not turn that valid heading into two physical lines.
+  t = t.replace(
+    /PENDING ORDERS\s*\/\s*\n\s*FOLLOW[- ]?UP/gi,
+    "PENDING ORDERS / FOLLOW-UP",
+  );
 
   // Break before pipe-delimited table rows (COLLECTION | ... or similar)
   // when they appear inline
@@ -477,7 +546,7 @@ function canonicalSectionKey(heading) {
 }
 
 function isDiagnosticsSelfCheck(heading) {
-  return normalizeHeading(heading) === "DIAGNOSTICS SELF-CHECK";
+  return /^DIAGNOSTICS SELF-CHECK(?: COMPLETE)?$/.test(normalizeHeading(heading));
 }
 
 function isKnownDiagnosticsSubsection(heading) {
@@ -881,8 +950,23 @@ export function extractPrenoteSections(input) {
       continue;
     }
 
-    // Unrecognized major box: preserve it inside the current section instead
-    // of silently dropping content.
+    // An unrecognized MAJOR divider box is still a real top-level boundary.
+    // Never attach it to the preceding recognized section (that is how an
+    // unknown heading such as IMMUNIZATIONS can accidentally turn into part
+    // of FAMILY HISTORY). Preserve the block under an explicit unclassified
+    // bucket so downstream code/AI can still see it without miscategorizing it.
+    if (token.kind === "major") {
+      flush(i);
+      currentKey = "unclassified";
+      currentStart = token.start;
+      currentHeader = token;
+      currentLines = [];
+      i = token.end;
+      continue;
+    }
+
+    // Unrecognized minor/dotted boxes are subsection labels inside the
+    // current section and should remain visible there.
     if (currentKey) {
       currentLines.push(token.title);
     }
@@ -946,6 +1030,17 @@ export function extractPrenoteSections(input) {
     }
     sections[key] = uniqueTexts.join("\n\n");
   }
+
+  const unclassifiedParts = occurrences.unclassified ?? [];
+  sections.unclassified = unclassifiedParts
+    .map((part) => {
+      const body = String(part.text || "").trim();
+      const header = String(part.header || "").replace(/:\s*$/, "").trim();
+      if (!header) return body;
+      return body ? `${header}:\n${body}` : header;
+    })
+    .filter(Boolean)
+    .join("\n\n");
 
   return {
     normalizedText,
@@ -1545,17 +1640,28 @@ export function buildPrenoteAiInput(parsedPrenote) {
     ["SURGICAL HISTORY", sections.surgicalHistory],
     ["MILITARY HISTORY", sections.militaryHistory],
     ["MED REC", sections.medRec],
+    ["IMMUNIZATIONS", sections.immunizations],
     ["PREVENTIVE MEDICINE", sections.preventiveMedicine],
+    ["HEALTH MAINTENANCE", sections.healthMaintenance],
+    ["SPECIALTY CARE / CONSULTS", sections.specialtyCare],
+    ["HOSPITALIZATIONS / ED VISITS", sections.hospitalizations],
+    ["IMAGING STUDIES", sections.imagingStudies],
+    ["PROCEDURES", sections.procedures],
+    ["ADVANCE DIRECTIVES", sections.advanceDirectives],
     ["VITAL SIGNS TRENDS", sections.vitalSigns],
     ["DIAGNOSTICS", sections.diagnostics],
     ["ACTIVE MEDICAL PROBLEMS & ASSESSMENTS", sections.activeMedicalProblems],
     ["KEY DIAGNOSES", sections.keyDiagnoses],
     ["FOLLOW-UP", sections.followUp],
+    ["OTHER / UNCLASSIFIED", sections.unclassified],
   ];
 
   return labels
     .filter(([, value]) => String(value ?? "").trim())
-    .map(([label, value]) => `===== ${label} =====\n${String(value).trim()}`)
+    // Markdown headings are explicit enough for the AI while avoiding long
+    // runs of '=' characters that can be echoed back into student-facing
+    // content as literal divider artifacts.
+    .map(([label, value]) => `### ${label}\n${String(value).trim()}`)
     .join("\n\n");
 }
 

@@ -1336,10 +1336,13 @@ const extractPrenoteSections = (rawText) => {
     { title: "RECENT LABS", regex: /^(?:MOST\s+)?RECENT\s+(?:LABS?|LABORATORY\s+RESULTS?)(?:\s*\([^)]*\))?/i },
     { title: "LABORATORY DATA", regex: /^LABORATORY\s+(?:DATA|STUDIES|RESULTS|TRENDS)/i },
     { title: "IMAGING AND DIAGNOSTIC PROCEDURES", regex: /^(?:(?:COMMUNITY\s+CARE\s*[–—-]\s*)?IMAGING\s*(?:\/|AND|&)\s*(?:DIAGNOSTIC\s+PROCEDURES?|RADIOLOGIC\s+(?:STUDIES|IMAGING)|DIAGNOSTICS?)|(?:COMMUNITY\s+CARE\s*[–—-]\s*)?DIAGNOSTIC\s+PROCEDURES?,?\s*IMAGING,?\s*(?:AND|&)\s*PULMONARY\s+FUNCTION\s+TESTING|(?:COMMUNITY\s+CARE\s*[–—-]\s*)?DIAGNOSTIC\s+PROCEDURES?\s*(?:&|AND)\s*RADIOLOGIC\s+IMAGING|IMAGING\s+AND\s+RADIOLOGIC\s+STUDIES)/i },
+    { title: "IMAGING STUDIES", regex: /^IMAGING\s+(?:STUDIES|DIAGNOSTICS?)\b/i },
+    { title: "PROCEDURES", regex: /^PROCEDURES?(?:\s*(?:\/|&|AND)\s*INTERVENTIONS?)?\b/i },
     { title: "PATHOLOGY", regex: /^PATHOLOGY\b/i },
     { title: "DIAGNOSTICS", regex: /^DIAGNOSTICS(?!\s+SELF[- ]?CHECK)/i },
     { title: "MED REC", regex: /^(?:MED(?:ICATION)?\s+REC(?:ONCILIATION)?|MEDICATIONS?(?:\s+RECONCILIATION)?)/i },
-    { title: "PREVENTIVE MEDICINE", regex: /^(?:PREVENTIVE(?:\s+MEDICINE|\s+CARE\s*(?:(?:&|AND)|\/)\s*HEALTH\s+MAINTENANCE)|HEALTH\s+MAINTENANCE\s*(?:(?:&|AND)|\/)\s*PREVENTIVE\s+CARE)/i },
+    { title: "IMMUNIZATIONS", regex: /^(?:IMMUNIZATIONS?|VACCINATIONS?|IMMUNIZATION\s+HISTORY|VACCINE\s+HISTORY)\b/i },
+    { title: "PREVENTIVE MEDICINE", regex: /^(?:PREVENTIVE(?:\s+MEDICINE|\s+CARE(?:\s*(?:(?:&|AND)|\/)\s*HEALTH\s+MAINTENANCE)?)|HEALTH\s+MAINTENANCE\s*(?:(?:&|AND)|\/)\s*PREVENTIVE\s+CARE)/i },
     { title: "SOCIAL HISTORY", regex: /^SOCIAL\s+HISTORY(?:\s*(?:&|AND)\s*FUNCTIONAL\s+STATUS)?/i },
     { title: "SOCIAL", regex: /^SOCIAL\b/i },
     { title: "FAMILY HISTORY", regex: /^FAMILY\s+HISTORY/i },
@@ -1348,12 +1351,14 @@ const extractPrenoteSections = (rawText) => {
     { title: "MILITARY HISTORY", regex: /^MILITARY\s+HISTORY/i },
     { title: "CARE COORDINATION", regex: /^(?:CARE\s+COORDINATION(?:\s*(?:&|AND|\/)\s*COMMUNITY\s+CARE)?|COMMUNITY\s+CARE\s*[–—-]\s*SPECIALTY\s+NOTES?)/i },
     { title: "ASSESSMENT AND PLAN CONSIDERATIONS", regex: /^ASSESSMENT\s*(?:&|AND)\s*PLAN\s+CONSIDERATIONS/i },
-    { title: "FOLLOW-UP", regex: /^(?:FOLLOW[- ]?UP|PENDING\s+WORKUP\s*(?:&|AND|\/)\s*FOLLOW[- ]?UP)/i },
+    { title: "ASSESSMENT & PLAN", regex: /^ASSESSMENT\s*(?:&|AND)\s*PLAN\b/i },
+    { title: "FOLLOW-UP", regex: /^(?:FOLLOW[- ]?UP|PENDING\s+(?:WORKUP|ORDERS?)\s*(?:&|AND|\/)\s*FOLLOW[- ]?UP)/i },
     { title: "ADVANCE DIRECTIVES", regex: /^ADVANCE\s+(?:DIRECTIVES|CARE\s+PLANNING)/i },
+    { title: "HOSPITALIZATIONS / ED VISITS", regex: /^HOSPITALIZATIONS?(?:\s*(?:\/|&|AND)\s*(?:ED|ER|EMERGENCY\s+DEPARTMENT)\s+VISITS?)?\b/i },
     { title: "ACTIVE ORDERS", regex: /^ACTIVE\s+ORDERS/i },
     { title: "CARE TEAM", regex: /^CARE\s+TEAM\b/i },
     { title: "PENDING STUDIES / REFERRALS", regex: /^PENDING\s+(?:STUDIES|WORKUP)\s*(?:\/|&|AND)\s*REFERRALS?\b/i },
-    { title: "CONSULTS", regex: /^(?:SPECIALTY\s+CARE\s*(?:\/|&|AND)\s*CONSULTS?|CONSULTS\b|ACTIVE\s+CONSULTS?\s*(?:&|AND|\/)\s*REFERRALS?)/i },
+    { title: "CONSULTS", regex: /^(?:SPECIALTY\s+CARE\s*(?:\/|&|AND)\s*CONSULTS?|CONSULTS?\s*(?:\/|&|AND)\s*REFERRALS?|CONSULTS\b|ACTIVE\s+CONSULTS?\s*(?:&|AND|\/)\s*REFERRALS?)/i },
     { title: "SUMMARY KEY ISSUES", regex: /^SUMMARY\s*(?:&|AND)\s+KEY\s+ISSUES(?:\s+FOR\s+TODAY['’]S\s+VISIT)?/i },
   ];
 
@@ -5020,19 +5025,24 @@ Focus on: ${phase.focus}`;
         img.replaceWith(document.createTextNode(` [FIGURE:${figId} alt="${(img.alt || "figure").replace(/"/g, "'")}"] `));
       });
       const text = div.textContent.replace(/\s+/g, " ").trim();
-      return { text, figures };
+      // Keep the source's semantic rich-text structure for the single-source
+      // fallback. Images are replaced above with figure placeholders so the
+      // document can render them once in the dedicated Figures appendix.
+      const richHtml = div.innerHTML;
+      return { text, richHtml, figures };
     };
 
     // Build a per-source content package for the AI
     const sourcePackages = [];
     filledNonPubmed.forEach(s => {
-      const { text, figures } = extractTextAndFigures(sourceResponses[s].html, sourceLabels[s]);
+      const { text, richHtml, figures } = extractTextAndFigures(sourceResponses[s].html, sourceLabels[s]);
       const wordCount = text.split(/\s+/).length;
       const detailLevel = wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief";
       sourcePackages.push({
         key: s,
         label: sourceLabels[s],
         text,
+        richHtml,
         figures,
         wordCount,
         detailLevel,
@@ -5055,6 +5065,7 @@ Focus on: ${phase.focus}`;
         label: displayLabel,
         fullCitation: pdf.citation || null,
         text: truncatedText,
+        richHtml: "",
         figures: [],
         wordCount,
         detailLevel: wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief",
@@ -5065,10 +5076,12 @@ Focus on: ${phase.focus}`;
     if (filledPubmedTopics.length > 0) {
       // Roll up per-topic PubMed AI into one "source" but preserve topic labels inline
       let combinedText = "";
+      let combinedRichHtml = "";
       const combinedFigures = [];
       filledPubmedTopics.forEach(([topic, v], ti) => {
-        const { text, figures } = extractTextAndFigures(v.html, `PubMed AI (${topic})`);
+        const { text, richHtml, figures } = extractTextAndFigures(v.html, `PubMed AI (${topic})`);
         combinedText += `\n\n--- On "${topic}" ---\n${text}`;
+        combinedRichHtml += `<h3>On ${String(topic).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</h3>${richHtml}`;
         // Re-label figure IDs to include topic
         figures.forEach((f, i) => {
           f.id = `fig-pubmed-${ti + 1}-${i + 1}`;
@@ -5080,6 +5093,7 @@ Focus on: ${phase.focus}`;
         key: "pubmedai",
         label: "PubMed AI",
         text: combinedText.trim(),
+        richHtml: combinedRichHtml,
         figures: combinedFigures,
         wordCount,
         detailLevel: wordCount > 800 ? "high" : wordCount > 300 ? "medium" : "brief",
@@ -5099,7 +5113,10 @@ Focus on: ${phase.focus}`;
     if (!aiEnabled || totalFilled === 1) {
       return {
         synthesized: false,
-        singleSource: totalFilled === 1 ? { source: sourcePackages[0].label, contentHtml: sourcePackages[0].text } : null,
+        singleSource: totalFilled === 1 ? {
+          source: sourcePackages[0].label,
+          contentHtml: sourcePackages[0].richHtml || sourcePackages[0].text,
+        } : null,
         sourceContribution,
         allFigures,
       };
@@ -12936,6 +12953,167 @@ const buildInRoomHtml = (doc, session) => {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 
+  // Step 4 source responses are captured in a rich-paste editor. Preserve
+  // their semantic structure (headings, paragraphs, lists, tables, emphasis)
+  // in the exported/printed document instead of flattening the response into
+  // one paragraph. Only a small safe tag set is serialized; pasted styles,
+  // scripts, event handlers, and other attributes are discarded.
+  const renderEvidenceRichContent = (rawValue) => {
+    const raw = String(rawValue || "").trim();
+    if (!raw) return "";
+    const stripFigurePlaceholders = (value) =>
+      String(value || "")
+        .replace(/\s*\[FIGURE:[^\]]+\]\s*/gi, " ")
+        .replace(/[ \t]{2,}/g, " ");
+
+    const renderPlainStructured = (plainValue) => {
+      let text = stripFigurePlaceholders(plainValue)
+        .replace(/\u00a0/g, " ")
+        .replace(/\r\n?/g, "\n")
+        .replace(/\s*---\s*(?=(?:Problem|Section|Cross[- ]Problem|References)\b)/gi, "\n")
+        .trim();
+      if (!text) return "";
+
+      const sectionLabels = [
+        "Shelf Exam Pearls",
+        "Diagnostic Reasoning (patient-specific)",
+        "Diagnostic Reasoning",
+        "Diagnostic Approach",
+        "Workup",
+        "Management",
+        "Core Principles",
+        "Guideline Comparison Table",
+        "Guideline Comparison",
+        "Alternatives Table",
+        "Alternatives",
+        "High-Yield Citations",
+        "High Yield Citations",
+        "Practice-Changing Evidence (last 2–3 years)",
+        "Practice-Changing Evidence",
+        "Practice Changing Evidence",
+        "Cross-Problem Interactions",
+        "Cross Problem Interactions",
+        "References",
+      ];
+      const labelPattern = sectionLabels
+        .map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+        .join("|");
+
+      // Recover section boundaries from source tools that returned rich text
+      // but whose stored legacy session already contains flattened text.
+      text = text.replace(
+        new RegExp(`(?:^|\\s)(Problem\\s+\\d+\\s*[—–-]\\s*.+?)(?=(?:${labelPattern})\\b)`, "gi"),
+        "\n@@PROBLEM@@$1\n"
+      );
+      text = text.replace(
+        new RegExp(`(?:^|\\s)(${labelPattern})(?=\\s*(?:[:—–-]|[A-Z0-9]))`, "gi"),
+        "\n@@SECTION@@$1\n"
+      );
+      text = text
+        .replace(/([.:;)\]])\s*-\s+(?=[A-Z])/g, "$1\n- ")
+        .replace(/\s+(?=\d+\.\s+[A-Z][A-Za-z])/g, "\n")
+        .replace(/\n{3,}/g, "\n\n");
+
+      const lines = text
+        .split("\n")
+        .map((line) => line.replace(/\s+/g, " ").trim())
+        .filter(Boolean);
+      const out = [];
+      let listType = "";
+      let listItems = [];
+      const flushList = () => {
+        if (!listType || listItems.length === 0) return;
+        const tag = listType === "ol" ? "ol" : "ul";
+        out.push(`<${tag}>${listItems.map((item) => `<li>${esc(item)}</li>`).join("")}</${tag}>`);
+        listType = "";
+        listItems = [];
+      };
+
+      lines.forEach((line) => {
+        if (line.startsWith("@@PROBLEM@@")) {
+          flushList();
+          out.push(`<h3>${esc(line.replace("@@PROBLEM@@", "").trim())}</h3>`);
+          return;
+        }
+        if (line.startsWith("@@SECTION@@")) {
+          flushList();
+          out.push(`<h4>${esc(line.replace("@@SECTION@@", "").trim())}</h4>`);
+          return;
+        }
+        const bullet = line.match(/^[-*•]\s+(.+)$/);
+        if (bullet) {
+          if (listType && listType !== "ul") flushList();
+          listType = "ul";
+          listItems.push(bullet[1]);
+          return;
+        }
+        const numbered = line.match(/^\d+[.)]\s+(.+)$/);
+        if (numbered) {
+          if (listType && listType !== "ol") flushList();
+          listType = "ol";
+          listItems.push(numbered[1]);
+          return;
+        }
+        flushList();
+        out.push(`<p>${esc(line)}</p>`);
+      });
+      flushList();
+      return out.join("");
+    };
+
+    if (typeof document === "undefined" || !document.createElement) {
+      return renderPlainStructured(raw.replace(/<[^>]+>/g, " "));
+    }
+
+    const root = document.createElement("div");
+    root.innerHTML = raw;
+    root.querySelectorAll("script,style,link,meta,iframe,object,embed,form,input,button,textarea,select").forEach((node) => node.remove());
+
+    const semanticBlocks = root.querySelectorAll(
+      "h1,h2,h3,h4,h5,h6,p,ul,ol,li,blockquote,pre,table,tr,th,td"
+    ).length;
+    // A source that has no real block structure is usually a legacy flattened
+    // single-source response. Recover readable headings/lists heuristically.
+    if (semanticBlocks === 0) {
+      return renderPlainStructured(root.innerText || root.textContent || raw);
+    }
+
+    const allowedTags = new Set([
+      "div", "p", "br", "strong", "b", "em", "i", "u", "s", "del",
+      "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "li",
+      "blockquote", "pre", "code", "table", "thead", "tbody", "tfoot",
+      "tr", "th", "td", "sup", "sub", "hr", "a", "span",
+    ]);
+
+    const serialize = (node) => {
+      if (node.nodeType === Node.TEXT_NODE) return esc(stripFigurePlaceholders(node.nodeValue || ""));
+      if (node.nodeType !== Node.ELEMENT_NODE) return "";
+
+      const tag = String(node.tagName || "").toLowerCase();
+      if (tag === "img") return ""; // figures are rendered once in the appendix
+      const children = Array.from(node.childNodes).map(serialize).join("");
+      if (!allowedTags.has(tag)) return children;
+      if (tag === "br" || tag === "hr") return `<${tag}>`;
+
+      let attrs = "";
+      if (tag === "a") {
+        const href = String(node.getAttribute("href") || "").trim();
+        if (/^(?:https?:\/\/|mailto:|#)/i.test(href)) {
+          attrs += ` href="${esc(href)}"`;
+        }
+      }
+      if (tag === "th" || tag === "td") {
+        const colspan = Number.parseInt(node.getAttribute("colspan") || "", 10);
+        const rowspan = Number.parseInt(node.getAttribute("rowspan") || "", 10);
+        if (Number.isFinite(colspan) && colspan > 1 && colspan <= 20) attrs += ` colspan="${colspan}"`;
+        if (Number.isFinite(rowspan) && rowspan > 1 && rowspan <= 50) attrs += ` rowspan="${rowspan}"`;
+      }
+      return `<${tag}${attrs}>${children}</${tag}>`;
+    };
+
+    return Array.from(root.childNodes).map(serialize).join("");
+  };
+
   // Clinical values frequently arrive as plain-text scientific notation such
   // as "WBC 7.8 x10^9/L". Keep the underlying text selectable/searchable but
   // render exponents typographically instead of showing literal caret marks.
@@ -13412,12 +13590,26 @@ const buildInRoomHtml = (doc, session) => {
     .filter(([key, value]) =>
       typeof value === "string" &&
       value.trim() &&
-      /imaging|diagnostic|radiolog|patholog/i.test(key) &&
+      /imaging|diagnostic|radiolog|patholog|procedur/i.test(key) &&
       !/lab|laboratory/i.test(key)
     )
-    .map(([, value]) => extractDiagnosticSubsection(value));
+    .map(([key, value]) =>
+      /^(?:imagingStudies|procedures)$/i.test(key)
+        ? value
+        : extractDiagnosticSubsection(value)
+    );
+
+  const dedicatedImagingAndProceduresText = joinUniqueSections([
+    prenoteSections.imagingStudies
+      ? `IMAGING STUDIES:\n${prenoteSections.imagingStudies}`
+      : "",
+    prenoteSections.procedures
+      ? `PROCEDURES:\n${prenoteSections.procedures}`
+      : "",
+  ]);
 
   const diagnosticsText = selectBestDiagnosticCandidate([
+    dedicatedImagingAndProceduresText,
     extractDedicatedDiagnosticsFromRaw(rawPrenoteForNarratives),
     ...parsedDiagnosticCandidates,
     extractDiagnosticSubsection(prenoteSections.diagnostics),
@@ -13466,7 +13658,7 @@ const buildInRoomHtml = (doc, session) => {
 
   const allergiesText = firstNonEmptyText(
     prenoteSections.allergies,
-    fallbackSection("ALLERGIES")
+    fallbackSection("ALLERGIES", "ALLERGIES / ADVERSE REACTIONS")
   );
 
   const militaryText = firstNonEmptyText(
@@ -13476,7 +13668,7 @@ const buildInRoomHtml = (doc, session) => {
 
   const advanceDirectivesText = firstNonEmptyText(
     prenoteSections.advanceDirectives,
-    fallbackSection("ADVANCE DIRECTIVES")
+    fallbackSection("ADVANCE DIRECTIVES", "ADVANCE CARE PLANNING")
   );
 
   const healthMaintenanceText = firstNonEmptyText(
@@ -13485,7 +13677,10 @@ const buildInRoomHtml = (doc, session) => {
   );
 
   const fallbackSpecialtyCareText = joinUniqueSections([
-    fallbackSection("SPECIALTY CARE / CONSULTS", "SPECIALTY CARE", "CONSULTS"),
+    fallbackSection("SPECIALTY CARE / CONSULTS", "SPECIALTY CARE", "CONSULTS", "CONSULTS / REFERRALS"),
+    fallbackSection("CARE COORDINATION")
+      ? `CARE COORDINATION:\n${fallbackSection("CARE COORDINATION")}`
+      : "",
     fallbackSection("CARE TEAM")
       ? `CARE TEAM:\n${fallbackSection("CARE TEAM")}`
       : "",
@@ -13501,7 +13696,16 @@ const buildInRoomHtml = (doc, session) => {
 
   const hospitalizationsText = firstNonEmptyText(
     prenoteSections.hospitalizations,
-    fallbackSection("HOSPITALIZATIONS / ER VISITS", "HOSPITALIZATIONS")
+    fallbackSection(
+      "HOSPITALIZATIONS / ER VISITS",
+      "HOSPITALIZATIONS / ED VISITS",
+      "HOSPITALIZATIONS"
+    )
+  );
+
+  const followUpText = firstNonEmptyText(
+    prenoteSections.followUp,
+    fallbackSection("PENDING ORDERS / FOLLOW-UP", "FOLLOW-UP")
   );
 
   const assessmentPlanText = firstNonEmptyText(
@@ -13513,10 +13717,23 @@ const buildInRoomHtml = (doc, session) => {
     )
   );
 
-  const rawPreventiveText = firstNonEmptyText(
+  const immunizationsSourceText = firstNonEmptyText(
+    prenoteSections.immunizations,
+    fallbackSection("IMMUNIZATIONS")
+  );
+  const preventiveMedicineSourceText = firstNonEmptyText(
     prenoteSections.preventiveMedicine,
     fallbackSection("PREVENTIVE MEDICINE")
   );
+
+  const rawPreventiveText = joinUniqueSections([
+    immunizationsSourceText
+      ? `IMMUNIZATIONS:\n${immunizationsSourceText}`
+      : "",
+    preventiveMedicineSourceText
+      ? `PREVENTIVE CARE:\n${preventiveMedicineSourceText}`
+      : "",
+  ]);
 
   // Some source formats glue the next top-level section onto PREVENTIVE
   // MEDICINE. Trim only at explicit line-level headings so imaging reports,
@@ -15198,11 +15415,19 @@ const buildInRoomHtml = (doc, session) => {
       .replace(/\r\n?/g, "\n")
       .replace(/\t/g, "    ")
       .split("\n")
-      .filter((line) => line.trim());
+      .map((line) =>
+        String(line || "")
+          .replace(/^\s*(?:[-=_]{8,}|[─━═—–]{8,})\s*/, "")
+          .replace(/\s*(?:[-=_]{8,}|[─━═—–]{8,})\s*$/, "")
+      )
+      .filter((line) => {
+        const value = line.trim();
+        return value && !/^(?:[-=_]{2,}|[─━═—–]{2,}|#{1,6})$/.test(value);
+      });
 
     if (sourceLines.length === 0) return "";
 
-    const sectionHeaderRegex = /^(?:CARE\s+TEAM|PENDING\s+(?:STUDIES|WORKUP)\s*(?:\/|&|AND)\s*REFERRALS?|PRIMARY\s+CARE|SPECIALTY\s+CARE|ACTIVE\s+CONSULTS?|COMPLETED\s+CONSULTS?(?:\s*\([^)]*\))?|PENDING\s+CONSULTS?|PENDING\s+LABS?|PENDING\s+RECORDS?|SCHEDULED\s+APPOINTMENTS?|HOSPITALIZATIONS?|EMERGENCY\s+DEPARTMENT\s+VISITS?|ER\s+VISITS?|URGENT\s+CARE|RECENT\s+ENCOUNTERS?|PAST\s+ENCOUNTERS?|INPATIENT\s+STAYS?|OUTPATIENT\s+VISITS?|ACTIVE\s+REFERRALS?|COMPLETED\s+REFERRALS?)$/i;
+    const sectionHeaderRegex = /^(?:CARE\s+TEAM|CARE\s+COORDINATION|CONSULTS?\s*(?:\/|&|AND)\s*REFERRALS?|PENDING\s+(?:STUDIES|WORKUP)\s*(?:\/|&|AND)\s*REFERRALS?|PRIMARY\s+CARE(?:\s+TEAM)?|COMMUNITY\s+CARE|CARE\s+GAPS?|SPECIALTY\s+CARE|ACTIVE\s+ORDERS?|ACTIVE\s+CONSULTS?|COMPLETED\s+CONSULTS?(?:\s*\([^)]*\))?|CANCELLED\s+CONSULTS?|CANCELED\s+CONSULTS?|PENDING\s+CONSULTS?|PENDING\s+LABS?|PENDING\s+IMAGING|PENDING\s+RECORDS?|PENDING\s+REFERRALS?|RECOMMENDED\s+FOLLOW[- ]?UP|SCHEDULED\s+APPOINTMENTS?|HOSPITALIZATIONS?|EMERGENCY\s+DEPARTMENT\s+VISITS?|ED\s+VISITS?|ER\s+VISITS?|URGENT\s+CARE|RECENT\s+ENCOUNTERS?|PAST\s+ENCOUNTERS?|INPATIENT\s+STAYS?|OUTPATIENT\s+VISITS?|ACTIVE\s+REFERRALS?|COMPLETED\s+REFERRALS?)$/i;
 
     const detailLabelRegex = /^(?:Status|Provider|Indication|Reason|Purpose|Valid\s+through|Veteran\s+preference|Patient\s+preference|Location|Facility|Specialist|Service|Appointment|Scheduled|Ordered|Result|Records?|Authorization|Consult\s+(?:number|status)|VA\s+(?:authorization|number|ID))\s*:/i;
 
@@ -15675,6 +15900,16 @@ const buildInRoomHtml = (doc, session) => {
     : renderAsBulletList(familyText);
   refGridHtml += renderRefSubsection("fa-people-roof", "Family History", familyHtml);
 
+  // Keep the detailed source section available even when the compact allergy
+  // badge at the top already says NKA/NKDA. Adverse-reaction details belong in
+  // their own clinical-reference subsection, never under Family History.
+  const allergiesReferenceHtml = renderAsBulletList(allergiesText);
+  refGridHtml += renderRefSubsection(
+    "fa-shield-halved",
+    "Allergies / Adverse Reactions",
+    allergiesReferenceHtml
+  );
+
   // Military History — prefer the deterministic source section and use
   // structured AI content only when the source section is absent.
   const militarySourceText = militaryText || (
@@ -15697,7 +15932,7 @@ const buildInRoomHtml = (doc, session) => {
   }
 
   // Fallback message if nothing populated
-  const anyRefContent = surgicalHtml || familyHtml || militaryHtml || advanceDirectivesText || healthMaintenanceText || lastPcpDate;
+  const anyRefContent = surgicalHtml || familyHtml || allergiesReferenceHtml || militaryHtml || advanceDirectivesText || healthMaintenanceText || lastPcpDate;
   if (!anyRefContent) {
     refGridHtml += `<div style="font-size:8pt;color:var(--fg-d);font-style:italic;">No additional reference data documented.</div>`;
   }
@@ -15710,6 +15945,7 @@ const buildInRoomHtml = (doc, session) => {
   const specialtyCoordinationSource = joinUniqueSections([
     specialtyCareCoordinationText,
     specialtyCareText,
+    followUpText,
   ]);
   if (specialtyCoordinationSource) {
     const coordinationSummaryHtml = renderSpecialtyCoordination(
@@ -15718,9 +15954,16 @@ const buildInRoomHtml = (doc, session) => {
     const specialtyEncounterHtml = specialtyCareText
       ? renderHierarchicalEncounterList(specialtyCareText)
       : "";
+    const followUpEncounterHtml = followUpText
+      ? renderHierarchicalEncounterList(followUpText)
+      : "";
+    const followUpCoordinationHtml = followUpEncounterHtml
+      ? `<div class="followup-coordination"><div class="followup-coordination-title">Pending Orders / Follow-Up</div>${followUpEncounterHtml}</div>`
+      : "";
     const specialtyBodyHtml = [
       coordinationSummaryHtml,
       specialtyEncounterHtml,
+      followUpCoordinationHtml,
     ].filter(Boolean).join('<div class="specialty-care-separator"></div>') ||
       renderCompactSummaryRows(specialtyCoordinationSource);
     if (specialtyBodyHtml) {
@@ -19747,9 +19990,9 @@ const buildProblemCard = (tc, idx, isSelected, anchorId = "") => {
 
       if (singleSource && !evidenceContent.synthesized) {
         const sourceName = String(singleSource.source || "Selected source").trim();
-        const sourceText = String(singleSource.contentHtml || "").replace(/\s+/g, " ").trim();
-        evidenceHtml += `<div class="evidence-topic"><div class="evidence-topic-title">${esc(sourceName)}</div>`;
-        if (sourceText) evidenceHtml += `<p>${esc(sourceText)}</p>`;
+        const sourceContentHtml = renderEvidenceRichContent(singleSource.contentHtml || "");
+        evidenceHtml += `<div class="evidence-topic evidence-topic-rich"><div class="evidence-topic-title">${esc(sourceName)}</div>`;
+        if (sourceContentHtml) evidenceHtml += `<div class="evidence-rich-content">${sourceContentHtml}</div>`;
         evidenceHtml += `</div>`;
       }
 
@@ -20503,6 +20746,18 @@ body.dark .narrative-inline-date {
 }
 .specialty-care-integrated .encounter-group-title {
   margin-bottom: 6px;
+}
+.followup-coordination-title {
+  margin: 0 0 7px;
+  padding: 5px 8px;
+  border-left: 2px solid var(--warm);
+  border-radius: 3px;
+  background: var(--warm-soft);
+  color: var(--fg-d);
+  font-size: 7pt;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: .08em;
 }
 .ref-head {
   background: transparent;
@@ -22491,6 +22746,74 @@ body.dark .diag-teaching {
 .evidence-takeaways li { margin-bottom: 3px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.45; }
 .evidence-topic { margin-top: 9px; padding: 9px 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); page-break-inside: avoid; }
 .evidence-topic-title { color: var(--accent); font-size: 9pt; font-weight: 800; line-height: 1.35; }
+.evidence-topic-rich { page-break-inside: auto; break-inside: auto; }
+.evidence-rich-content { margin-top: 7px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.52; }
+.evidence-rich-content > :first-child { margin-top: 0; }
+.evidence-rich-content > :last-child { margin-bottom: 0; }
+.evidence-rich-content p,
+.evidence-rich-content div { margin: 0 0 7px; }
+.evidence-rich-content h1,
+.evidence-rich-content h2,
+.evidence-rich-content h3,
+.evidence-rich-content h4,
+.evidence-rich-content h5,
+.evidence-rich-content h6 {
+  margin: 13px 0 5px;
+  color: var(--accent);
+  font-weight: 800;
+  line-height: 1.3;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+.evidence-rich-content h1,
+.evidence-rich-content h2 { font-size: 10.5pt; }
+.evidence-rich-content h3 { font-size: 9.5pt; }
+.evidence-rich-content h4,
+.evidence-rich-content h5,
+.evidence-rich-content h6 {
+  font-size: 8pt;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+.evidence-rich-content ul,
+.evidence-rich-content ol { margin: 4px 0 9px; padding-left: 19px; }
+.evidence-rich-content li { margin: 0 0 4px; padding-left: 1px; }
+.evidence-rich-content li > ul,
+.evidence-rich-content li > ol { margin: 3px 0 2px; }
+.evidence-rich-content blockquote {
+  margin: 7px 0;
+  padding: 6px 9px;
+  border-left: 2px solid var(--border);
+  background: var(--panel);
+  color: var(--fg-d);
+}
+.evidence-rich-content table {
+  width: 100%;
+  margin: 8px 0 10px;
+  border-collapse: collapse;
+  table-layout: auto;
+  font-size: 7.7pt;
+}
+.evidence-rich-content th,
+.evidence-rich-content td {
+  padding: 4px 5px;
+  border: 1px solid var(--border-l);
+  text-align: left;
+  vertical-align: top;
+}
+.evidence-rich-content th { background: var(--panel-h); color: var(--fg-d); font-weight: 800; }
+.evidence-rich-content pre {
+  margin: 7px 0;
+  padding: 7px 8px;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  border: 1px solid var(--border-l);
+  border-radius: 3px;
+  background: var(--panel);
+  font-size: 7.5pt;
+}
+.evidence-rich-content code { font-family: 'JetBrains Mono', monospace; font-size: .92em; }
+.evidence-rich-content a { color: var(--accent); text-decoration: underline; text-underline-offset: 1px; }
 .evidence-claim { padding: 7px 0; border-bottom: 1px solid var(--border-l); }
 .evidence-claim:last-child { border-bottom: none; padding-bottom: 0; }
 .evidence-claim-line { display: flex; align-items: flex-start; gap: 7px; color: var(--fg-m); font-size: 8.5pt; line-height: 1.5; }
